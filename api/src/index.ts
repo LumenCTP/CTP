@@ -1243,190 +1243,42 @@ app.delete("/api/vendors/:id", (c) => {
 });
 
 // ── Documents ──────────────────────────────────────────
+const DOCS_DIR = path.join(import.meta.dir, "..", "data", "uploads");
+const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
+const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
-const DOCS_DIR = path.join(import.meta.dir, "..", "data", "documents");
-
-// Allowed file types
-const ALLOWED_TYPES = [
-  "application/pdf",
-  "image/png",
-  "image/jpeg",
-  "image/jpg",
-  "application/msword",
-  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-];
-const ALLOWED_EXTENSIONS = [".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx"];
-const MAX_FILE_SIZE = 20 * 1024 * 1024; // 20MB
-
-function isAllowedFile(filename: string, mimeType: string): boolean {
-  const ext = path.extname(filename).toLowerCase();
-  return ALLOWED_EXTENSIONS.includes(ext) || ALLOWED_TYPES.includes(mimeType);
-}
-
-// POST /api/documents/upload — upload a document, run AI extraction
+// POST /api/documents/upload — persist immediately, extract asynchronously
 app.post("/api/documents/upload", async (c) => {
   try {
-    const db = getDb();
-    const form = await c.req.formData();
-
-    const file = form.get("file");
-    if (!file || !(file instanceof File)) {
-      return c.json({ error: "File is required" }, 400);
-    }
-
-    if (!isAllowedFile(file.name, file.type)) {
-      return c.json({ error: "Unsupported file type. Allowed: PDF, PNG, JPG, JPEG, DOC, DOCX" }, 400);
-    }
-
-    if (file.size > MAX_FILE_SIZE) {
-      return c.json({ error: "File too large. Maximum size is 20MB" }, 400);
-    }
-
-    const clientIdRaw = form.get("client_id");
-    const vendorIdRaw = form.get("vendor_id");
-    const senderName = form.get("sender_name");
-    const senderEmail = form.get("sender_email");
-
-    if (!clientIdRaw) {
-      return c.json({ error: "client_id is required" }, 400);
-    }
-    if (!vendorIdRaw) {
-      return c.json({ error: "vendor_id is required" }, 400);
-    }
-
-    const clientId = Number(clientIdRaw);
-    const vendorId = Number(vendorIdRaw);
-
-    // Verify client exists
-    const clientExists = db.query("SELECT id FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: clientId, $tenant_id: c.get("tenant_id") as number });
-    if (!clientExists) {
-      return c.json({ error: "Client not found" }, 404);
-    }
-
-    // Verify vendor exists and belongs to client
-    const vendor = db.query(
-      "SELECT id FROM vendors WHERE id = $id AND tenant_id = $tenant_id AND client_id = $client_id"
-    ).get({ $id: vendorId, $client_id: clientId, $tenant_id: c.get("tenant_id") as number }) as { id: number } | undefined;
-    if (!vendor) {
-      return c.json({ error: "Vendor not found or does not belong to this client" }, 404);
-    }
-
-    // Save file to disk
-    const timestamp = Date.now();
-    const safeFilename = `${timestamp}_${file.name}`;
-    const clientDir = path.join(DOCS_DIR, String(clientId));
-    if (!existsSync(clientDir)) {
-      mkdirSync(clientDir, { recursive: true });
-    }
-
-    const filePath = path.join(clientDir, safeFilename);
-    const relativePath = `data/documents/${clientId}/${safeFilename}`;
-    const buffer = Buffer.from(await file.arrayBuffer());
-    Bun.write(filePath, buffer);
-
-    // Determine initial document type from filename
-    const nameLower = file.name.toLowerCase();
-    let docType = "Other";
-    if (/coi|certificate\s*of\s*insurance/i.test(nameLower)) docType = "COI";
-    else if (/w-?9|w9/i.test(nameLower)) docType = "W-9";
-    else if (/workers?\s*comp|wc/i.test(nameLower)) docType = "Workers Comp";
-    else if (/commercial\s*auto|auto\s*liability/i.test(nameLower)) docType = "Commercial Auto";
-    else if (/general\s*liability|gl/i.test(nameLower)) docType = "General Liability";
-    else if (/umbrella/i.test(nameLower)) docType = "Umbrella";
-    else if (/business\s*lic|bl/i.test(nameLower)) docType = "Business License";
-
-    // Create document record
-    const docResult = db.query(`
-      INSERT INTO documents (tenant_id, vendor_id, client_id, document_type, file_path, original_filename, sender_name, sender_email, received_date)
-      VALUES ($tenant_id, $vendor_id, $client_id, $document_type, $file_path, $original_filename, $sender_name, $sender_email, datetime('now'))
-    `).run({
-      $tenant_id: c.get("tenant_id") as number,
-      $vendor_id: vendorId,
-      $client_id: clientId,
-      $document_type: docType,
-      $file_path: relativePath,
-      $original_filename: file.name,
-      $sender_name: senderName ? String(senderName).trim() || null : null,
-      $sender_email: senderEmail ? String(senderEmail).trim() || null : null,
-    });
-
-    const newDocId = Number(docResult.lastInsertRowid);
-
-    // Run AI extraction
-    let extraction: ReturnType<typeof extractDocumentInfo> extends Promise<infer T> ? T : never;
-    try {
-      const result = await extractDocumentInfo(filePath, file.name);
-      extraction = result;
-    } catch (extractErr) {
-      console.error("[extract] Extraction failed:", extractErr);
-      // Fallback: low-confidence empty result
-      extraction = {
-        vendor_name: null,
-        insurance_carrier: null,
-        policy_number: null,
-        effective_date: null,
-        expiration_date: null,
-        certificate_holder: null,
-        document_type: docType,
-        ai_confidence_score: 0,
-      };
-    }
-
-    // Determine if this needs review
-    const isReviewed = extraction.ai_confidence_score >= 70 ? 1 : 0;
-
-    // Store extraction
-    const extResult = db.query(`
-      INSERT INTO document_extractions (document_id, vendor_name, insurance_carrier, policy_number, effective_date, expiration_date, certificate_holder, document_type, ai_confidence_score, is_reviewed)
-      VALUES ($document_id, $vendor_name, $insurance_carrier, $policy_number, $effective_date, $expiration_date, $certificate_holder, $document_type, $ai_confidence_score, $is_reviewed)
-    `).run({
-      $document_id: newDocId,
-      $vendor_name: extraction.vendor_name,
-      $insurance_carrier: extraction.insurance_carrier,
-      $policy_number: extraction.policy_number,
-      $effective_date: extraction.effective_date,
-      $expiration_date: extraction.expiration_date,
-      $certificate_holder: extraction.certificate_holder,
-      $document_type: extraction.document_type,
-      $ai_confidence_score: extraction.ai_confidence_score,
-      $is_reviewed: isReviewed,
-    });
-
-    const newExtractionId = Number(extResult.lastInsertRowid);
-
-    // Recalculate vendor compliance using the engine
-    calculateVendorCompliance(vendorId, clientId, c.get("tenant_id") as number);
-
-    logAudit(db, "document", newDocId, "uploaded", {
-      vendor_id: vendorId,
-      client_id: clientId,
-      filename: file.name,
-      confidence: extraction.ai_confidence_score,
-      is_reviewed: !!isReviewed,
-    });
-
-    // Fetch the full document record
-    const doc = db.query(
-      "SELECT id, vendor_id, client_id, document_type, file_path, original_filename, sender_name, sender_email, received_date, created_at FROM documents WHERE id = $id AND tenant_id = $tenant_id"
-    ).get({ $id: newDocId }) as any;
-
-    const ext = db.query(
-      "SELECT id, document_id, vendor_name, insurance_carrier, policy_number, effective_date, expiration_date, certificate_holder, document_type, ai_confidence_score, is_reviewed, extracted_at FROM document_extractions WHERE id = $id"
-    ).get({ $id: newExtractionId }) as any;
-
-    return c.json(
-      {
-        document: { ...doc, is_reviewed: !!ext.is_reviewed },
-        extraction: ext,
-      },
-      201
-    );
-  } catch (err) {
-    console.error("[upload] Error:", err);
-    return c.json({ error: String(err) }, 500);
-  }
+    const db = getDb(); const tenantId = c.get("tenant_id") as number;
+    const form = await c.req.formData(); const file = form.get("file");
+    if (!file || !(file instanceof File)) return c.json({ error: "File is required" }, 400);
+    if (!ALLOWED_TYPES.includes(file.type)) return c.json({ error: "Unsupported file type. Allowed: PDF, JPG, PNG" }, 400);
+    if (file.size > MAX_UPLOAD_SIZE) return c.json({ error: "File too large. Maximum size is 10MB" }, 400);
+    const clientRaw = form.get("client_id"); const vendorRaw = form.get("vendor_id");
+    const clientId = clientRaw ? Number(clientRaw) : null; const vendorId = vendorRaw ? Number(vendorRaw) : null;
+    if (clientRaw && !Number.isInteger(clientId)) return c.json({ error: "Invalid client_id" }, 400);
+    if (vendorRaw && !Number.isInteger(vendorId)) return c.json({ error: "Invalid vendor_id" }, 400);
+    if (clientId !== null && !db.query("SELECT id FROM clients WHERE id=$id AND tenant_id=$tid").get({$id:clientId,$tid:tenantId})) return c.json({error:"Client not found"},404);
+    if (vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND tenant_id=$tid").get({$id:vendorId,$tid:tenantId})) return c.json({error:"Vendor not found"},404);
+    if (clientId !== null && vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND client_id=$cid AND tenant_id=$tid").get({$id:vendorId,$cid:clientId,$tid:tenantId})) return c.json({error:"Vendor does not belong to client"},400);
+    const originalFilename = file.name.replace(/[\\/]/g, "_");
+    const dir = path.join(DOCS_DIR, String(tenantId)); mkdirSync(dir, { recursive: true });
+    const filePath = path.join(dir, `${Date.now()}-${originalFilename}`); await Bun.write(filePath, file);
+    const relPath = `data/uploads/${tenantId}/${path.basename(filePath)}`;
+    const result = db.query(`INSERT INTO documents (vendor_id,client_id,document_type,file_path,original_filename,content_type,file_size,sender_name,sender_email,tenant_id) VALUES ($vid,$cid,'Other',$path,$name,$type,$size,$sender,$email,$tid)`).run({$vid:vendorId,$cid:clientId,$path:relPath,$name:originalFilename,$type:file.type,$size:file.size,$sender:form.get("sender_name")?.toString()||null,$email:form.get("sender_email")?.toString()||null,$tid:tenantId});
+    const documentId = Number(result.lastInsertRowid); db.query("INSERT INTO ingestion_events (document_id,status) VALUES ($id,'uploaded')").run({$id:documentId});
+    logAudit(db,"document",documentId,"uploaded",{filename:originalFilename,file_size:file.size,content_type:file.type,tenant_id:tenantId});
+    db.query("UPDATE ingestion_events SET status='processing',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
+    extractDocumentInfo(filePath, originalFilename).then((extraction) => {
+      db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,document_type,ai_confidence_score) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$type,$confidence)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$type:extraction.document_type,$confidence:extraction.ai_confidence_score});
+      db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
+      db.query("UPDATE ingestion_events SET status='ready',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
+      if (vendorId !== null && clientId !== null) calculateVendorCompliance(vendorId,clientId,tenantId);
+    }).catch((err) => { db.query("UPDATE ingestion_events SET status='error',error_message=$error,updated_at=datetime('now') WHERE document_id=$id").run({$error:String(err),$id:documentId}); });
+    return c.json({document:{id:documentId,original_filename:originalFilename,content_type:file.type,file_size:file.size},ingestion_status:"processing"},201);
+  } catch (err) { console.error("[upload]",err); return c.json({error:String(err)},500); }
 });
-
 // GET /api/documents — list documents with filters
 app.get("/api/documents", (c) => {
   try {
@@ -1442,7 +1294,7 @@ app.get("/api/documents", (c) => {
         c.name AS client_name,
         d.document_type, d.file_path, d.original_filename,
         d.sender_name, d.sender_email,
-        d.received_date, d.created_at,
+        d.received_date, d.created_at, ie.status AS ingestion_status, d.content_type, d.file_size,
         de.ai_confidence_score,
         de.is_reviewed,
         de.insurance_carrier,
@@ -1452,9 +1304,10 @@ app.get("/api/documents", (c) => {
         de.certificate_holder,
         de.document_type AS extracted_document_type
       FROM documents d
-      JOIN clients c ON d.client_id = c.id
-      JOIN vendors v ON d.vendor_id = v.id
+      LEFT JOIN clients c ON d.client_id = c.id
+      LEFT JOIN vendors v ON d.vendor_id = v.id
       LEFT JOIN document_extractions de ON de.document_id = d.id
+      LEFT JOIN ingestion_events ie ON ie.document_id = d.id
       WHERE d.tenant_id = $tenant_id
     `;
 
@@ -1501,7 +1354,7 @@ app.get("/api/documents/:id", (c) => {
         c.name AS client_name,
         d.document_type, d.file_path, d.original_filename,
         d.sender_name, d.sender_email,
-        d.received_date, d.created_at,
+        d.received_date, d.created_at, ie.status AS ingestion_status, d.content_type, d.file_size,
         de.ai_confidence_score,
         de.is_reviewed,
         de.insurance_carrier,
@@ -1511,9 +1364,10 @@ app.get("/api/documents/:id", (c) => {
         de.certificate_holder,
         de.document_type AS extracted_document_type
       FROM documents d
-      JOIN clients c ON d.client_id = c.id
-      JOIN vendors v ON d.vendor_id = v.id
+      LEFT JOIN clients c ON d.client_id = c.id
+      LEFT JOIN vendors v ON d.vendor_id = v.id
       LEFT JOIN document_extractions de ON de.document_id = d.id
+      LEFT JOIN ingestion_events ie ON ie.document_id = d.id
       WHERE d.id = $id AND d.tenant_id = $tenant_id
     `).get({ $id: id, $tenant_id: c.get("tenant_id") as number }) as any | undefined;
 
@@ -1694,8 +1548,8 @@ app.get("/api/needs-review", (c) => {
         de.id AS extraction_id,
         de.vendor_name AS extracted_vendor_name
       FROM documents d
-      JOIN clients c ON d.client_id = c.id
-      JOIN vendors v ON d.vendor_id = v.id
+      LEFT JOIN clients c ON d.client_id = c.id
+      LEFT JOIN vendors v ON d.vendor_id = v.id
       JOIN document_extractions de ON de.document_id = d.id
       WHERE de.is_reviewed = 0 AND d.tenant_id = $tenant_id
       ORDER BY de.ai_confidence_score ASC, d.created_at DESC

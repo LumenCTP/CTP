@@ -213,6 +213,21 @@ function runMigrations(db: Database): void {
     );
   `);
 
+  ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
+  // MVP document uploads may be unassigned until a client/vendor is selected.
+  const docCols = db.query("PRAGMA table_info(documents)").all() as Array<{ name: string; notnull: number }>;
+  if (docCols.some(c => (c.name === "vendor_id" || c.name === "client_id") && c.notnull === 1)) {
+    db.exec(`CREATE TABLE documents_new (id INTEGER PRIMARY KEY AUTOINCREMENT, vendor_id INTEGER, client_id INTEGER, document_type TEXT, file_path TEXT NOT NULL, original_filename TEXT NOT NULL, content_type TEXT, file_size INTEGER, sender_name TEXT, sender_email TEXT, received_date TEXT NOT NULL DEFAULT (datetime('now')), created_at TEXT NOT NULL DEFAULT (datetime('now')), tenant_id INTEGER, FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE, FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE)`);
+    db.exec(`INSERT INTO documents_new (id,vendor_id,client_id,document_type,file_path,original_filename,sender_name,sender_email,received_date,created_at,tenant_id) SELECT id,vendor_id,client_id,document_type,file_path,original_filename,sender_name,sender_email,received_date,created_at,tenant_id FROM documents`);
+    db.exec("DROP TABLE documents");
+    db.exec("ALTER TABLE documents_new RENAME TO documents");
+  }
+  ensureColumn(db, "documents", "content_type TEXT", "content_type");
+  ensureColumn(db, "documents", "file_size INTEGER", "file_size");
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_vendor_id ON documents(vendor_id); CREATE INDEX IF NOT EXISTS idx_documents_client_id ON documents(client_id);`);
+  db.exec(`CREATE TABLE IF NOT EXISTS ingestion_events (id INTEGER PRIMARY KEY AUTOINCREMENT, document_id INTEGER NOT NULL, status TEXT NOT NULL DEFAULT 'uploaded' CHECK (status IN ('uploaded','processing','ready','error')), error_message TEXT, created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')), FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE)`);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_ingestion_events_document_id ON ingestion_events(document_id); CREATE INDEX IF NOT EXISTS idx_ingestion_events_status ON ingestion_events(status);");
+
   // tenant_id columns on existing tables (SQLite lacks ADD COLUMN IF NOT EXISTS,
   // so check PRAGMA table_info first — this is the "IF NOT EXISTS" pattern)
   ensureColumn(db, "users", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
