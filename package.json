@@ -1,0 +1,13 @@
+{
+  "name": "clear-to-pay",
+  "version": "0.1.0",
+  "private": true,
+  
+  "scripts": {
+    "dev": "concurrently -n api,web -c blue,green \"bun run --cwd api dev\" \"bun run --cwd web dev\"",
+    "db:seed": "bun run --cwd api seed"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

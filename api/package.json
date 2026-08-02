@@ -1,0 +1,13 @@
+{
+  "name": "@clear-to-pay/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "seed": "bun run src/seed.ts"
+  },
+  "dependencies": {
+    "hono": "^4.7.5"
+  }
+}

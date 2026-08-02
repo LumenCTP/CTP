@@ -1,0 +1,7 @@
+node_modules
+dist
+api/data/cleartopay.db
+api/data/documents/*
+!api/data/documents/.gitkeep
+*.log
+.env

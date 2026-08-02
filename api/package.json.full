@@ -1,0 +1,19 @@
+{
+  "name": "@clear-to-pay/api",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bun run --watch src/index.ts",
+    "seed": "bun run src/seed.ts"
+  },
+  "dependencies": {
+    "@types/pdfkit": "^0.17.6",
+    "exceljs": "^4.4.0",
+    "hono": "^4.7.5",
+    "pdfkit": "^0.19.1"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
