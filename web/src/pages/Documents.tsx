@@ -3,20 +3,17 @@ import type {
   DocumentListItem,
   ClientWithRequiredDocs,
   VendorListItem,
+  IngestionStatus,
 } from "@clear-to-pay/shared";
 
 interface UploadForm {
   client_id: number | "";
   vendor_id: number | "";
-  sender_name: string;
-  sender_email: string;
 }
 
 const emptyUploadForm: UploadForm = {
   client_id: "",
   vendor_id: "",
-  sender_name: "",
-  sender_email: "",
 };
 
 function confidenceColor(score: number | null | undefined): string {
@@ -33,12 +30,37 @@ function confidenceBg(score: number | null | undefined): string {
   return "var(--red-light)";
 }
 
-function statusBadge(isReviewed: boolean) {
+function reviewBadge(isReviewed: boolean) {
   return isReviewed ? (
     <span className="badge badge-approved">Reviewed</span>
   ) : (
     <span className="badge badge-needs_review">Needs Review</span>
   );
+}
+
+function ingestionBadge(status: IngestionStatus) {
+  const colors: Record<IngestionStatus, { bg: string; fg: string; label: string }> = {
+    uploaded:  { bg: "var(--gray-100)", fg: "var(--gray-600)", label: "Uploaded" },
+    processing:{ bg: "#fef3c7", fg: "#92400e", label: "Processing" },
+    ready:     { bg: "#d1fae5", fg: "#065f46", label: "Ready" },
+    error:     { bg: "#fee2e2", fg: "#991b1b", label: "Error" },
+  };
+  const c = colors[status] || colors.uploaded;
+  return (
+    <span style={{
+      display: "inline-block", padding: "2px 8px", borderRadius: "9999px",
+      fontSize: "0.75rem", fontWeight: 600, color: c.fg, background: c.bg,
+    }}>
+      {c.label}
+    </span>
+  );
+}
+
+function formatSize(bytes: number | null): string {
+  if (bytes == null) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 export default function Documents() {
@@ -121,6 +143,20 @@ export default function Documents() {
     fetchDocs();
   }, [fetchDocs]);
 
+  // ── Poll for ingestion status updates ────────────
+  useEffect(() => {
+    const hasPending = docs.some(
+      (d) => d.ingestion_status === "uploaded" || d.ingestion_status === "processing"
+    );
+    if (!hasPending) return;
+
+    const interval = setInterval(() => {
+      fetchDocs();
+    }, 5000);
+
+    return () => clearInterval(interval);
+  }, [docs, fetchDocs]);
+
   // ── Client change → refresh vendors ────────────
 
   function handleClientChange(clientId: number | "") {
@@ -176,26 +212,16 @@ export default function Documents() {
       return;
     }
 
-    if (!uploadForm.client_id) {
-      setUploadError("Please select a client");
-      return;
-    }
-
-    if (!uploadForm.vendor_id) {
-      setUploadError("Please select a vendor");
-      return;
-    }
-
     // Validate file type
-    const allowedExts = [".pdf", ".png", ".jpg", ".jpeg", ".doc", ".docx"];
-    const ext = selectedFile.name.split(".").pop()?.toLowerCase();
-    if (!ext || !allowedExts.includes(`.${ext}`)) {
-      setUploadError("Unsupported file type. Allowed: PDF, PNG, JPG, JPEG, DOC, DOCX");
+    const allowedTypes = ["application/pdf", "image/png", "image/jpeg"];
+    if (!allowedTypes.includes(selectedFile.type)) {
+      setUploadError("Unsupported file type. Allowed: PDF, PNG, JPG");
       return;
     }
 
-    if (selectedFile.size > 20 * 1024 * 1024) {
-      setUploadError("File too large. Maximum size is 20MB");
+    const MAX_SIZE = 10 * 1024 * 1024; // 10MB
+    if (selectedFile.size > MAX_SIZE) {
+      setUploadError("File too large. Maximum size is 10MB");
       return;
     }
 
@@ -205,16 +231,12 @@ export default function Documents() {
     try {
       const formData = new FormData();
       formData.append("file", selectedFile);
-      formData.append("client_id", String(uploadForm.client_id));
-      formData.append("vendor_id", String(uploadForm.vendor_id));
-      if (uploadForm.sender_name.trim()) {
-        formData.append("sender_name", uploadForm.sender_name.trim());
+      if (uploadForm.client_id) {
+        formData.append("client_id", String(uploadForm.client_id));
       }
-      if (uploadForm.sender_email.trim()) {
-        formData.append("sender_email", uploadForm.sender_email.trim());
+      if (uploadForm.vendor_id) {
+        formData.append("vendor_id", String(uploadForm.vendor_id));
       }
-
-      setUploadProgress("Extracting data...");
 
       const res = await fetch("/api/documents/upload", {
         method: "POST",
@@ -228,7 +250,7 @@ export default function Documents() {
 
       const result = await res.json();
       setUploadSuccess(
-        `Uploaded "${selectedFile.name}" (confidence: ${result.extraction.ai_confidence_score}%)`
+        `Uploaded "${selectedFile.name}" — processing started`
       );
       setSelectedFile(null);
       setUploadForm(emptyUploadForm);
@@ -291,7 +313,7 @@ export default function Documents() {
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".pdf,.png,.jpg,.jpeg,.doc,.docx"
+                accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
                 onChange={handleFileSelect}
                 style={{ display: "none" }}
                 id="doc-file-input"
@@ -312,7 +334,7 @@ export default function Documents() {
               value={uploadForm.client_id}
               onChange={(e) => handleClientChange(e.target.value ? Number(e.target.value) : "")}
             >
-              <option value="">Select client…</option>
+              <option value="">Select client (optional)…</option>
               {clients.map((c) => (
                 <option key={c.id} value={c.id}>
                   {c.name}
@@ -330,33 +352,13 @@ export default function Documents() {
               }
               disabled={!uploadForm.client_id}
             >
-              <option value="">Select vendor…</option>
+              <option value="">Select vendor (optional)…</option>
               {vendors.map((v) => (
                 <option key={v.id} value={v.id}>
                   {v.name}
                 </option>
               ))}
             </select>
-
-            {/* Sender name */}
-            <input
-              type="text"
-              className="form-input"
-              style={{ width: "160px" }}
-              placeholder="Sender name"
-              value={uploadForm.sender_name}
-              onChange={(e) => setUploadForm({ ...uploadForm, sender_name: e.target.value })}
-            />
-
-            {/* Sender email */}
-            <input
-              type="email"
-              className="form-input"
-              style={{ width: "200px" }}
-              placeholder="Sender email"
-              value={uploadForm.sender_email}
-              onChange={(e) => setUploadForm({ ...uploadForm, sender_email: e.target.value })}
-            />
 
             {/* Upload button */}
             <button
@@ -371,7 +373,7 @@ export default function Documents() {
           {/* Drag hint */}
           {!selectedFile && (
             <p className="text-muted text-sm" style={{ margin: 0 }}>
-              or drag &amp; drop a file here (PDF, PNG, JPG, DOC, DOCX — max 20MB)
+              or drag &amp; drop a file here (PDF, PNG, JPG — max 10MB)
             </p>
           )}
 
@@ -431,11 +433,14 @@ export default function Documents() {
             <thead>
               <tr>
                 <th>Filename</th>
+                <th>Type</th>
+                <th>Size</th>
                 <th>Vendor</th>
                 <th>Client</th>
                 <th>Doc Type</th>
+                <th>Ingestion</th>
                 <th>Confidence</th>
-                <th>Status</th>
+                <th>Review</th>
                 <th>Date</th>
                 <th>Actions</th>
               </tr>
@@ -498,14 +503,19 @@ function DocumentRow({
   return (
     <>
       <tr style={{ cursor: "pointer" }} onClick={loadDetail}>
-        <td className="td-name" style={{ maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <td className="td-name" style={{ maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           {doc.original_filename}
         </td>
+        <td className="text-muted text-sm">
+          {doc.content_type ? doc.content_type.split("/")[1]?.toUpperCase() || doc.content_type : "—"}
+        </td>
+        <td className="text-muted text-sm">{formatSize(doc.file_size)}</td>
         <td>{doc.vendor_name || "—"}</td>
         <td>{doc.client_name || "—"}</td>
         <td>
           <span className="doc-tag">{displayDocType}</span>
         </td>
+        <td>{ingestionBadge(doc.ingestion_status)}</td>
         <td>
           <span
             style={{
@@ -521,7 +531,7 @@ function DocumentRow({
             {score != null ? `${score}%` : "—"}
           </span>
         </td>
-        <td>{statusBadge(doc.is_reviewed)}</td>
+        <td>{reviewBadge(doc.is_reviewed)}</td>
         <td className="text-muted text-sm">
           {doc.received_date ? new Date(doc.received_date).toLocaleDateString() : "—"}
         </td>
@@ -542,7 +552,7 @@ function DocumentRow({
       {/* Expanded extraction detail */}
       {isExpanded && detail && (
         <tr>
-          <td colSpan={8} style={{ padding: "0" }}>
+          <td colSpan={11} style={{ padding: "0" }}>
             <div className="extraction-detail" style={{ padding: "16px 20px", background: "var(--gray-50)", borderTop: "1px solid var(--gray-200)" }}>
               <h4 style={{ marginBottom: "12px", fontSize: "0.9rem", color: "var(--gray-700)" }}>
                 Extraction Details{" "}

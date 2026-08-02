@@ -49,11 +49,13 @@ export interface Vendor {
 
 export interface Document {
   id: number;
-  vendor_id: number;
-  client_id: number;
+  vendor_id: number | null;
+  client_id: number | null;
   document_type: DocumentType;
   file_path: string;
   original_filename: string;
+  content_type: string | null;
+  file_size: number | null;
   sender_name: string | null;
   sender_email: string | null;
   received_date: string;
@@ -136,19 +138,24 @@ export interface VendorCreateBody {
 
 // ── Document API ──────────────────────────────────────
 
+export type IngestionStatus = "uploaded" | "processing" | "ready" | "error";
+
 export interface DocumentListItem {
   id: number;
-  vendor_id: number;
-  client_id: number;
+  vendor_id: number | null;
+  client_id: number | null;
   vendor_name: string | null;
   client_name: string | null;
   document_type: DocumentType;
   file_path: string;
   original_filename: string;
+  content_type: string | null;
+  file_size: number | null;
   sender_name: string | null;
   sender_email: string | null;
   received_date: string;
   created_at: string;
+  ingestion_status: IngestionStatus;
   ai_confidence_score: number | null;
   is_reviewed: boolean;
   insurance_carrier: string | null;
@@ -175,8 +182,13 @@ export interface ExtractionUpdateBody {
 }
 
 export interface DocumentUploadResponse {
-  document: Document;
-  extraction: DocumentExtraction;
+  document: {
+    id: number;
+    original_filename: string;
+    content_type: string;
+    file_size: number;
+  };
+  ingestion_status: IngestionStatus;
 }
 
 // ── Dashboard ─────────────────────────────────────────
