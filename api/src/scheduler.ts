@@ -10,6 +10,7 @@ import {
   markReminderSent,
 } from "./email";
 import { calculatePaymentWeek } from "./compliance";
+import { computeWeeklyPaymentStatus, hasPriorYearW9 } from "./mapping";
 import path from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 
@@ -113,6 +114,9 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
 
       sendEmail(recipients, subject, emailBody, config.client_id, undefined, "weekly_report");
       console.log(`[scheduler] Weekly report sent for client ${config.client_id}`);
+      for (const result of computeWeeklyPaymentStatus(db, (db.query("SELECT tenant_id FROM clients WHERE id=$id").get({$id: config.client_id}) as {tenant_id:number}).tenant_id)) {
+        db.query("INSERT INTO compliance_status (vendor_id,client_id,payment_status,status,calculated_at) VALUES ($vid,$cid,$payment,$status,datetime('now')) ON CONFLICT(vendor_id) DO UPDATE SET client_id=excluded.client_id,payment_status=excluded.payment_status,calculated_at=datetime('now')").run({$vid:result.vendorId,$cid:result.clientId,$payment:result.paymentStatus,$status:result.paymentStatus === "approved" ? "compliant" : result.paymentStatus === "review" ? "expiring_soon" : "expired"});
+      }
     } catch (err) {
       console.error(`[scheduler] Error generating weekly report for client ${config.client_id}:`, err);
       // Log error to email_log
@@ -281,13 +285,17 @@ function checkRenewals(now: Date, todayStr: string): void {
               doc.expiration_date,
               window,
             );
+            const outreach = hasPriorYearW9(db, doc.vendor_id, now.getFullYear() - 1)
+              ? "Please submit an updated Certificate of Insurance (COI)."
+              : "Please submit an updated Certificate of Insurance (COI) and a new W-9 form.";
+            const emailBodyWithOutreach = `${emailBody}\n\n${outreach}`;
 
             const subject = `Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${window === 0 ? "today" : `in ${window} days`}`;
 
             sendEmail(
               [doc.sender_email],
               subject,
-              emailBody,
+              emailBodyWithOutreach,
               config.client_id,
               doc.vendor_id,
               "renewal_reminder",

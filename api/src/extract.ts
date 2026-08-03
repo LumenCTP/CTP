@@ -16,6 +16,10 @@ export interface ExtractionResult {
   effective_date: string | null;
   expiration_date: string | null;
   certificate_holder: string | null;
+  certificate_holder_address: string | null;
+  certificate_holder_name_confidence: number;
+  insured_address: string | null;
+  form_date: string | null;
   document_type: string | null;
   ai_confidence_score: number;
 }
@@ -106,6 +110,11 @@ export async function extractDocumentInfo(
     "Harbor Development Corp.",
   ];
   const certificateHolder = holders[Math.floor(Math.random() * holders.length)];
+  const addresses = ["100 Main Street, Denver CO 80202", "250 Market Ave, Austin TX 78701", "42 Oak Road, Phoenix AZ 85001"];
+  const certificateHolderAddress = addresses[Math.floor(Math.random() * addresses.length)];
+  const insuredAddress = addresses[Math.floor(Math.random() * addresses.length)];
+  const certificateHolderNameConfidence = documentType === "COI" ? (Math.random() < 0.7 ? 0.8 + Math.random() * 0.19 : 0.5 + Math.random() * 0.29) : 0;
+  const formDate = documentType === "W-9" ? `${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}/${now.getFullYear()}` : null;
 
   // ── Confidence score: weighted to produce some low-confidence results ──
   // ~30% chance of being in Needs Review (below 70)
@@ -132,6 +141,10 @@ export async function extractDocumentInfo(
     effective_date: effectiveDate,
     expiration_date: expirationDate,
     certificate_holder: certificateHolder,
+    certificate_holder_address: certificateHolderAddress,
+    certificate_holder_name_confidence: certificateHolderNameConfidence,
+    insured_address: insuredAddress,
+    form_date: formDate,
     document_type: documentType,
     ai_confidence_score: aiConfidenceScore,
   };

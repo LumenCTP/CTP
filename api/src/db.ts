@@ -234,6 +234,14 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "clients", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
   ensureColumn(db, "vendors", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
+  ensureColumn(db, "document_extractions", "certificate_holder_address TEXT", "certificate_holder_address");
+  ensureColumn(db, "document_extractions", "certificate_holder_name_confidence REAL NOT NULL DEFAULT 0.0", "certificate_holder_name_confidence");
+  ensureColumn(db, "document_extractions", "insured_address TEXT", "insured_address");
+  ensureColumn(db, "document_extractions", "w9_form_date TEXT", "w9_form_date");
+  ensureColumn(db, "vendors", "address TEXT", "address");
+  ensureColumn(db, "vendors", "normalized_key TEXT", "normalized_key");
+  ensureColumn(db, "clients", "normalized_key TEXT", "normalized_key");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_tenant_normalized ON clients(tenant_id, normalized_key) WHERE normalized_key IS NOT NULL; CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_client_normalized ON vendors(client_id, normalized_key) WHERE normalized_key IS NOT NULL;");
 
   // Backfill legacy/test users so every authenticated user has an isolated tenant.
   const legacyUsers = db.query("SELECT id, company_name FROM users WHERE tenant_id IS NULL").all() as Array<{ id: number; company_name: string }>;
