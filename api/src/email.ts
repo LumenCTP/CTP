@@ -1,21 +1,25 @@
 import { getDb } from "./db";
 import type { ReportData } from "./reports";
 
-// ── Constants ────────────────────────────────────────────
+// ── Email Identity ───────────────────────────────────────
 
-const EMAIL_INBOX = "cleartopay-compliance-0d8d884b@ctomail.io";
+const EMAIL_FROM_ADDRESS = "cleartopay-compliance-0d8d884b@ctomail.io";
+const EMAIL_FROM_NAME = "ClearToPay Compliance";
+const EMAIL_REPLY_TO = "cleartopay-compliance-0d8d884b@ctomail.io";
 
-// ── Email Sender Stub ────────────────────────────────────
+// ── Email Sender ─────────────────────────────────────────
 
 /**
- * Stub email sender: logs the email to email_log with status "sent".
+ * Sends email by writing to the outgoing_email_queue table.
  *
- * To swap in a real email provider (SendGrid, AWS SES, etc.), replace the
- * body of this function — the call signature should remain the same:
- *   sendEmail(to: string[], subject: string, htmlBody: string)
+ * The queue is processed by the platform's email delivery system.
+ * Emails are also logged to email_log for audit purposes.
  *
- * All callers pass an array of recipient email addresses, a subject line,
- * and an HTML body string.
+ * From:     ClearToPay Compliance <cleartopay-compliance-0d8d884b@ctomail.io>
+ * Reply-To: cleartopay-compliance-0d8d884b@ctomail.io
+ *
+ * To swap in a real email provider (SendGrid, AWS SES, Resend, etc.),
+ * replace the queue insert with an HTTP fetch call.
  */
 export function sendEmail(
   to: string[],
@@ -28,18 +32,18 @@ export function sendEmail(
   const db = getDb();
 
   console.log("══════════════════════════════════════════════");
-  console.log(`[email] SENDING EMAIL`);
-  console.log(`[email] From: ${EMAIL_INBOX}`);
+  console.log(`[email] QUEUING EMAIL`);
+  console.log(`[email] From: ${EMAIL_FROM_NAME} <${EMAIL_FROM_ADDRESS}>`);
+  console.log(`[email] Reply-To: ${EMAIL_REPLY_TO}`);
   console.log(`[email] To: ${to.join(", ")}`);
   console.log(`[email] Subject: ${subject}`);
   console.log(`[email] Type: ${emailType ?? "manual"}`);
-  console.log(`[email] Body (first 200 chars): ${htmlBody.substring(0, 200)}...`);
   console.log("══════════════════════════════════════════════");
 
   // Log to email_log for every recipient
   const insertStmt = db.query(`
     INSERT INTO email_log (client_id, vendor_id, email_type, recipient_email, subject, status, sent_at)
-    VALUES ($client_id, $vendor_id, $email_type, $recipient_email, $subject, 'sent', datetime('now'))
+    VALUES ($client_id, $vendor_id, $email_type, $recipient_email, $subject, 'queued', datetime('now'))
   `);
 
   for (const recipient of to) {
@@ -49,6 +53,22 @@ export function sendEmail(
       $email_type: emailType ?? "weekly_report",
       $recipient_email: recipient.trim(),
       $subject: subject,
+    });
+
+    // Queue for delivery
+    db.query(`
+      INSERT INTO outgoing_email_queue (from_address, from_name, reply_to, recipient_email, subject, html_body, client_id, vendor_id, email_type)
+      VALUES ($from_addr, $from_name, $reply_to, $recipient, $subject, $body, $client_id, $vendor_id, $email_type)
+    `).run({
+      $from_addr: EMAIL_FROM_ADDRESS,
+      $from_name: EMAIL_FROM_NAME,
+      $reply_to: EMAIL_REPLY_TO,
+      $recipient: recipient.trim(),
+      $subject: subject,
+      $body: htmlBody,
+      $client_id: clientId ?? null,
+      $vendor_id: vendorId ?? null,
+      $email_type: emailType ?? "weekly_report",
     });
   }
 }
@@ -246,7 +266,7 @@ export function buildRenewalReminderEmail(
     </p>
 
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
-      Documents can be emailed directly to <a href="mailto:${EMAIL_INBOX}" style="color: #1a56db;">${EMAIL_INBOX}</a>.
+      Documents can be emailed directly to <a href="mailto:${EMAIL_FROM_ADDRESS}" style="color: #1a56db;">${EMAIL_FROM_ADDRESS}</a>.
     </p>
   </div>
 

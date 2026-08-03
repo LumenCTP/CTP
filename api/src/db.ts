@@ -138,7 +138,7 @@ function runMigrations(db: Database): void {
       recipient_email TEXT NOT NULL,
       subject TEXT NOT NULL,
       sent_at TEXT NOT NULL DEFAULT (datetime('now')),
-      status TEXT NOT NULL DEFAULT 'sent' CHECK (status IN ('sent', 'error')),
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'error')),
       error_message TEXT,
       FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL,
       FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
@@ -211,6 +211,25 @@ function runMigrations(db: Database): void {
       status TEXT DEFAULT 'sent',
       FOREIGN KEY (tenant_id) REFERENCES tenants(id)
     );
+
+    CREATE TABLE IF NOT EXISTS outgoing_email_queue (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      from_address TEXT NOT NULL,
+      from_name TEXT NOT NULL,
+      reply_to TEXT,
+      recipient_email TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      html_body TEXT NOT NULL,
+      client_id INTEGER,
+      vendor_id INTEGER,
+      email_type TEXT NOT NULL DEFAULT 'manual',
+      status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued','sent','failed')),
+      error_message TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      sent_at TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_outgoing_email_queue_status ON outgoing_email_queue(status);
   `);
 
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
