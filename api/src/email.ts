@@ -4,7 +4,7 @@ import type { ReportData } from "./reports";
 // ── Email Identity ───────────────────────────────────────
 
 const EMAIL_FROM_ADDRESS = "cleartopay-compliance-0d8d884b@ctomail.io";
-const EMAIL_FROM_NAME = "ClearToPay Compliance";
+const EMAIL_FROM_NAME = "ClearToPay Docs";
 const EMAIL_REPLY_TO = "cleartopay-compliance-0d8d884b@ctomail.io";
 
 // ── Email Sender ─────────────────────────────────────────
