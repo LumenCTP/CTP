@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "bun run --watch src/index.ts",
+    "dev": "QUEUE_SECRET=db0457ca-9035-48b7-9c78-36f56d5fcbd1 bun run --watch src/index.ts",
     "seed": "bun run src/seed.ts"
   },
   "dependencies": {
