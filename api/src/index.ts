@@ -57,7 +57,7 @@ const TENANT_DATA_PATHS = [
 // by a shared secret (they are called by the internal scheduler/delivery worker).
 function isQueueRoute(c: any): boolean {
   const path = c.req.path;
-  return path === "/api/emails/process-queue" || path === "/api/emails/mark-sent" || path === "/api/emails/mark-failed";
+  return path === "/api/emails/process-queue" || path === "/api/emails/mark-sent" || path === "/api/emails/mark-failed" || path === "/api/inbox/ingest" || path === "/api/inbox/relay" || path === "/api/inbox/receive";
 }
 function requireQueueSecret(c: any): Response | null {
   if (c.req.header("X-Queue-Secret") !== QUEUE_SECRET) {
@@ -169,6 +169,7 @@ interface TenantRow {
   admin_email: string | null;
   created_at: string;
   updated_at: string;
+  inbox_slug: string | null;
 }
 
 interface WizardRow {
@@ -203,15 +204,19 @@ function createTenantForUser(
 ): TenantRow {
   const name = opts?.name || "My Company";
   const status = opts?.subscription_status || "TRIAL";
+  const base = name.toLowerCase().replace(/[\s_-]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "company";
+  let slug = base, suffix = 2;
+  while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug").get({ $slug: slug })) slug = `${base.slice(0, Math.max(1, 40 - String(suffix).length - 1))}-${suffix++}`;
   const result = db.query(`
-    INSERT INTO tenants (name, owner_user_id, subscription_status, subscription_period_start, subscription_period_end)
-    VALUES ($name, $uid, $status, $start, $end)
+    INSERT INTO tenants (name, owner_user_id, subscription_status, subscription_period_start, subscription_period_end, inbox_slug)
+    VALUES ($name, $uid, $status, $start, $end, $slug)
   `).run({
     $name: name,
     $uid: userId,
     $status: status,
     $start: opts?.periodStart ?? null,
     $end: opts?.periodEnd ?? null,
+    $slug: slug,
   });
   const tenantId = Number(result.lastInsertRowid);
 
@@ -641,6 +646,8 @@ app.get("/api/auth/me", async (c) => {
     subscription_status: tenant?.subscription_status ?? null,
     payment_week_start_day: tenant?.payment_week_start_day ?? "monday",
     wizard_status: wizard?.status ?? null,
+    inbox_slug: tenant?.inbox_slug ?? null,
+    inbox_address: tenant?.inbox_slug ? `cleartopay-compliance-0d8d884b+${tenant.inbox_slug}@ctomail.io` : null,
   });
 });
 
@@ -702,6 +709,8 @@ app.get("/api/setup", requireAuth, requireTenant, (c) => {
         name: tenant.name,
         subscription_status: tenant.subscription_status,
         payment_week_start_day: tenant.payment_week_start_day,
+        inbox_slug: tenant.inbox_slug,
+        inbox_address: tenant.inbox_slug ? `cleartopay-compliance-0d8d884b+${tenant.inbox_slug}@ctomail.io` : null,
       },
       wizard: wizard
         ? {
@@ -759,10 +768,14 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
 
     // Update tenant name to company_name (if provided) + payment week start day
     if (company_name) {
+      const slugBase = company_name.toLowerCase().replace(/[\s_-]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "company";
+      const current = db.query("SELECT inbox_slug FROM tenants WHERE id=$id").get({$id:tenantId}) as {inbox_slug:string|null}|undefined;
+      let slug = current?.inbox_slug || slugBase, suffix=2;
+      while (!current?.inbox_slug && db.query("SELECT id FROM tenants WHERE inbox_slug=$slug AND id!=$id").get({$slug:slug,$id:tenantId})) slug = `${slugBase.slice(0, Math.max(1,40-String(suffix).length-1))}-${suffix++}`;
       db.query(`
-        UPDATE tenants SET name = $name, payment_week_start_day = $day, updated_at = datetime('now')
+        UPDATE tenants SET name = $name, inbox_slug = $slug, payment_week_start_day = $day, updated_at = datetime('now')
         WHERE id = $id
-      `).run({ $name: company_name, $day: payment_week_start_day, $id: tenantId });
+      `).run({ $name: company_name, $slug: slug, $day: payment_week_start_day, $id: tenantId });
     } else {
       db.query(`
         UPDATE tenants SET payment_week_start_day = $day, updated_at = datetime('now')
@@ -1514,7 +1527,8 @@ async function ingestDocumentAttachment(opts: {
   if (opts.content.length > MAX_UPLOAD_SIZE) throw new Error("File too large. Maximum size is 10MB");
   const originalFilename = path.basename(opts.filename).replace(/[\\/]/g, "_") || "attachment";
   const clientId = opts.clientId ?? null;
-  const vendorId = opts.vendorId ?? null;
+  let vendorId = opts.vendorId ?? null;
+  if (vendorId === null && opts.senderEmail) { const matches = db.query("SELECT id FROM vendors WHERE lower(contact_email)=lower($email) AND tenant_id=$tid").all({$email:opts.senderEmail,$tid:tenantId}) as Array<{id:number}>; if (matches.length === 1) { vendorId = matches[0].id; console.log(`[inbox] matched sender ${opts.senderEmail} to vendor ${vendorId}`); } }
   if (clientId !== null && !db.query("SELECT id FROM clients WHERE id=$id AND tenant_id=$tid").get({$id:clientId,$tid:tenantId})) throw new Error("Client not found");
   if (vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND tenant_id=$tid").get({$id:vendorId,$tid:tenantId})) throw new Error("Vendor not found");
   if (clientId !== null && vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND client_id=$cid AND tenant_id=$tid").get({$id:vendorId,$cid:clientId,$tid:tenantId})) throw new Error("Vendor does not belong to client");
@@ -1556,7 +1570,10 @@ app.post("/api/inbox/ingest", async (c) => {
   try {
     const body = await c.req.json();
     if (!Array.isArray(body?.attachments) || body.attachments.length === 0) return c.json({error:"attachments must be a non-empty array"},400);
-    const tenantId = c.get("tenant_id") as number, db = getDb();
+    const db = getDb();
+    let tenantId = c.get("tenant_id") as number | undefined;
+    if (!tenantId && c.req.header("X-Queue-Secret") === QUEUE_SECRET && typeof body.tenant_slug === "string") { const t = db.query("SELECT id FROM tenants WHERE inbox_slug=$slug").get({$slug:body.tenant_slug}) as {id:number}|undefined; if (!t) return c.json({error:"Unknown tenant_slug"},404); tenantId=t.id; }
+    if (!tenantId) return c.json({error:"Tenant is required"},401);
     const clientId = body.client_id == null ? null : Number(body.client_id), vendorId = body.vendor_id == null ? null : Number(body.vendor_id);
     if (clientId !== null && !Number.isInteger(clientId) || vendorId !== null && !Number.isInteger(vendorId)) return c.json({error:"Invalid client_id or vendor_id"},400);
     const documents = [];
@@ -1567,6 +1584,17 @@ app.post("/api/inbox/ingest", async (c) => {
     }
     return c.json({documents,ingested_count:documents.length},201);
   } catch (err) { console.error("[inbox/ingest]",err); return c.json({error:String(err)},400); }
+});
+
+// POST /api/inbox/receive — queue raw email from an external mailbox poller.
+app.post("/api/inbox/receive", async (c) => {
+  const denied = requireQueueSecret(c); if (denied) return denied;
+  try { const body = await c.req.json(); const to=String(body.to_address||""); const local=to.split("@")[0]; const slug=(local.match(/\+([a-z0-9-]+)/i)||[])[1];
+    if (!slug || !Array.isArray(body.attachments)) return c.json({error:"to_address with +tenant-slug and attachments are required"},400);
+    const db=getDb(); const t=db.query("SELECT id FROM tenants WHERE inbox_slug=$slug").get({$slug:slug}) as {id:number}|undefined; if(!t) return c.json({error:"Unknown tenant slug"},404);
+    const raw={...body,tenant_slug:slug}; const q=db.query("INSERT INTO inbox_queue (raw_email_json,processed) VALUES ($raw,1)").run({$raw:JSON.stringify(raw)});
+    const docs=[]; for(const a of body.attachments) { if(typeof a.filename!=="string"||typeof a.content_base64!=="string"||typeof a.content_type!=="string") return c.json({error:"Invalid attachment"},400); const content=Uint8Array.from(atob(a.content_base64.replace(/^data:[^;]+;base64,/,"")),ch=>ch.charCodeAt(0)); docs.push(await ingestDocumentAttachment({db,tenantId:t.id,filename:a.filename,content,contentType:a.content_type,senderName:body.from_name,senderEmail:body.from_address})); }
+    return c.json({queued:true,queue_id:Number(q.lastInsertRowid),documents:docs},201); } catch(err){ console.error("[inbox/receive]",err); return c.json({error:String(err)},400); }
 });
 
 // POST /api/inbox/relay — multipart receiver for future email webhook providers.

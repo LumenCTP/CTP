@@ -258,3 +258,10 @@ export interface EmailLog {
   status: EmailStatus;
   error_message: string | null;
 }
+
+export interface Tenant {
+  id: number;
+  name: string;
+  inbox_slug: string | null;
+  subscription_status: string;
+}

@@ -249,6 +249,11 @@ function runMigrations(db: Database): void {
   `);
 
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
+  ensureColumn(db, "tenants", "inbox_slug TEXT", "inbox_slug");
+  db.exec(`CREATE TABLE IF NOT EXISTS inbox_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, raw_email_json TEXT NOT NULL, processed BOOLEAN NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')))`) ;
+  // Populate inbox slugs for tenants created before this migration.
+  const missingSlugs = db.query("SELECT id, name FROM tenants WHERE inbox_slug IS NULL OR inbox_slug = ''").all() as Array<{id:number;name:string}>;
+  for (const t of missingSlugs) { let base=(t.name||"company").toLowerCase().replace(/[\s_-]+/g,"-").replace(/[^a-z0-9-]/g,"").replace(/-+/g,"-").replace(/^-|-$/g,"").slice(0,40)||"company"; let slug=base, n=2; while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug AND id != $id").get({$slug:slug,$id:t.id})) slug=`${base.slice(0, Math.max(1,40-(String(n).length+1)))}-${n++}`; db.query("UPDATE tenants SET inbox_slug=$slug WHERE id=$id").run({$slug:slug,$id:t.id}); }
   // MVP document uploads may be unassigned until a client/vendor is selected.
   const docCols = db.query("PRAGMA table_info(documents)").all() as Array<{ name: string; notnull: number }>;
   if (docCols.some(c => (c.name === "vendor_id" || c.name === "client_id") && c.notnull === 1)) {

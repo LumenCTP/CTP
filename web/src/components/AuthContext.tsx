@@ -5,6 +5,8 @@ interface User {
   id: number;
   full_name: string;
   company_name: string;
+  inbox_slug?: string | null;
+  inbox_address?: string | null;
   email: string;
   tenant_id?: number | null;
   tenant_name?: string | null;
