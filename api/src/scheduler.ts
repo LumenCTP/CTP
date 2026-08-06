@@ -11,6 +11,7 @@ import {
 } from "./email";
 import { calculatePaymentWeek } from "./compliance";
 import { computeWeeklyPaymentStatus, hasPriorYearW9 } from "./mapping";
+import { QUEUE_SECRET } from "./secrets";
 import path from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 
@@ -50,9 +51,9 @@ async function tick(): Promise<void> {
 // ── Weekly Report Check ────────────────────────────────
 
 async function checkWeekly(now: Date, todayStr: string): Promise<void> {
-  // Day 1 = Monday, 6:00 AM UTC
+  // Day 1 = Monday, 11:00 AM UTC (= 7:00 AM ET / 6:00 AM EST)
   if (now.getUTCDay() !== 1) return;
-  if (now.getUTCHours() < 6) return;
+  if (now.getUTCHours() < 11) return;
 
   // Determine the Monday of this week
   const { monday } = calculatePaymentWeek();
@@ -60,7 +61,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
   // Prevent duplicate: only send once per Monday
   if (lastWeeklyCheckDate === monday) return;
 
-  console.log(`[scheduler] Monday ${monday} 06:00+ UTC — generating weekly reports`);
+  console.log(`[scheduler] Monday ${monday} 11:00 UTC (7am ET) — generating weekly reports`);
   lastWeeklyCheckDate = monday;
 
   const db = getDb();
@@ -148,7 +149,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
     const port = process.env.PORT || "3001";
     const response = await fetch(`http://127.0.0.1:${port}/api/emails/process-queue`, {
       method: "POST",
-      headers: { "X-Queue-Secret": process.env.QUEUE_SECRET || "cleartopay-queue-secret-dev" },
+      headers: { "X-Queue-Secret": QUEUE_SECRET },
     });
     if (!response.ok) console.error(`[scheduler] Queue processing request failed: HTTP ${response.status}`);
     else console.log(`[scheduler] Queue processing requested (${(await response.json() as unknown[]).length} queued emails)`);

@@ -35,7 +35,7 @@ function ProtectedRoute() {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/app/login" replace />;
   }
 
   return <Outlet />;
@@ -61,7 +61,7 @@ function AppShell() {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/app/login" replace />;
   }
 
   if (needsSetup(user)) {
@@ -92,8 +92,8 @@ export default function App() {
         <Routes>
           {/* Public routes */}
           <Route element={<PublicRoute />}>
-            <Route path="login" element={<Login />} />
-            <Route path="register" element={<Register />} />
+            <Route path="app/login" element={<Login />} />
+            <Route path="app/register" element={<Register />} />
             <Route path="app/set-password" element={<SetPassword />} />
             <Route path="app/reset-password" element={<ResetPassword />} />
           </Route>

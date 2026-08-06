@@ -24,8 +24,20 @@ import { mapCOIToEntities } from "./mapping";
 import { mkdirSync, existsSync } from "node:fs";
 import path from "node:path";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import { QUEUE_SECRET } from "./secrets";
 
 const app = new Hono();
+
+// Global JSON error handler — ensures all errors return JSON, not plaintext
+app.onError((err, c) => {
+  console.error("Unhandled error:", err);
+  return c.json({ error: err.message || "Internal server error" }, 500);
+});
+
+// Global 404 handler — returns JSON instead of Hono's plaintext default
+app.notFound((c) => {
+  return c.json({ error: "Not found" }, 404);
+});
 
 app.use("/*", cors());
 
@@ -43,7 +55,6 @@ const TENANT_DATA_PATHS = [
 ];
 // Queue processor endpoints are intentionally unauthenticated JWT-wise, but protected
 // by a shared secret (they are called by the internal scheduler/delivery worker).
-const QUEUE_SECRET = process.env.QUEUE_SECRET || "cleartopay-queue-secret-dev";
 function isQueueRoute(c: any): boolean {
   const path = c.req.path;
   return path === "/api/emails/process-queue" || path === "/api/emails/mark-sent" || path === "/api/emails/mark-failed";
@@ -59,7 +70,7 @@ function requireQueueSecret(c: any): Response | null {
 
 // ── Auth Token Helpers ──────────────────────────────────
 
-const TOKEN_SECRET = "cleartopay-secret-" + (process.env.TOKEN_SECRET || "dev-secret-key-change-in-production");
+const TOKEN_SECRET = process.env.TOKEN_SECRET || "cleartopay-secret-" + crypto.randomUUID();
 const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 async function createAuthToken(payload: Record<string, unknown>): Promise<string> {
@@ -1729,9 +1740,13 @@ app.put("/api/documents/:id/extraction", async (c) => {
     const db = getDb();
     const id = Number(c.req.param("id"));
 
+    const tenantId = c.get("tenant_id");
     const existing = db.query(
-      "SELECT id, document_id FROM document_extractions WHERE document_id = $document_id ORDER BY extracted_at DESC LIMIT 1"
-    ).get({ $document_id: id }) as { id: number; document_id: number } | undefined;
+      `SELECT de.id, de.document_id FROM document_extractions de
+       JOIN documents d ON d.id = de.document_id
+       WHERE de.document_id = $document_id AND d.tenant_id = $tenant_id
+       ORDER BY de.extracted_at DESC LIMIT 1`
+    ).get({ $document_id: id, $tenant_id: tenantId }) as { id: number; document_id: number } | undefined;
 
     if (!existing) {
       return c.json({ error: "No extraction found for this document" }, 404);
@@ -1788,8 +1803,8 @@ app.put("/api/documents/:id/extraction", async (c) => {
 
     // Always update document_type on the parent document if it changed
     if (document_type !== undefined && document_type) {
-      db.query("UPDATE documents SET document_type = $document_type WHERE id = $id")
-        .run({ $document_type: document_type.trim(), $id: id });
+      db.query("UPDATE documents SET document_type = $document_type WHERE id = $id AND tenant_id = $tenant_id")
+        .run({ $document_type: document_type.trim(), $id: id, $tenant_id: tenantId });
     }
 
     if (updates.length > 0) {
@@ -2395,8 +2410,8 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
       FROM documents d
       JOIN document_extractions de ON de.document_id = d.id
       JOIN vendors v ON v.id = d.vendor_id
-      WHERE d.id = $id AND de.is_reviewed = 1
-    `).get({ $id: docId }) as {
+      WHERE d.id = $id AND de.is_reviewed = 1 AND d.tenant_id = $tenant_id
+    `).get({ $id: docId, $tenant_id: c.get("tenant_id") }) as {
       id: number; vendor_id: number; client_id: number; document_type: string;
       sender_email: string | null; expiration_date: string | null; vendor_name: string;
     } | undefined;

@@ -7,5 +7,6 @@ api/data/documents/*
 !api/data/documents/.gitkeep
 api/data/reports/
 api/data/uploads/
+api/data/audits/
 *.log
 .env
