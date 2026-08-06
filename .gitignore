@@ -1,7 +1,11 @@
 node_modules
 dist
 api/data/cleartopay.db
+api/data/cleartopay.db-shm
+api/data/cleartopay.db-wal
 api/data/documents/*
 !api/data/documents/.gitkeep
+api/data/reports/
+api/data/uploads/
 *.log
 .env

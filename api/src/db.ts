@@ -230,6 +230,22 @@ function runMigrations(db: Database): void {
     );
 
     CREATE INDEX IF NOT EXISTS idx_outgoing_email_queue_status ON outgoing_email_queue(status);
+
+    CREATE TABLE IF NOT EXISTS support_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER,
+      message TEXT NOT NULL,
+      context TEXT,
+      status TEXT NOT NULL DEFAULT 'open',
+      reply_text TEXT,
+      replied_at TEXT,
+      replied_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_support_messages_tenant_id ON support_messages(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_support_messages_status ON support_messages(status);
   `);
 
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
@@ -261,6 +277,39 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "vendors", "normalized_key TEXT", "normalized_key");
   ensureColumn(db, "clients", "normalized_key TEXT", "normalized_key");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_tenant_normalized ON clients(tenant_id, normalized_key) WHERE normalized_key IS NOT NULL; CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_client_normalized ON vendors(client_id, normalized_key) WHERE normalized_key IS NOT NULL;");
+
+  // Password reset tokens (forgot-password flow). SQLite lacks ALTER TABLE ...
+  // ADD COLUMN IF NOT EXISTS, so ensureColumn checks PRAGMA table_info first.
+  ensureColumn(db, "users", "reset_token TEXT", "reset_token");
+  ensureColumn(db, "users", "reset_token_expires TEXT", "reset_token_expires");
+
+  // Extend email_log.email_type CHECK to include 'password_reset'. SQLite can't
+  // ALTER a CHECK constraint, so rebuild the table (same pattern as the
+  // documents table rebuild above). Nothing references email_log, so the
+  // DROP is safe even with foreign_keys = ON.
+  const emailLogDdl = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_log'").get() as { sql: string } | undefined;
+  if (emailLogDdl && !emailLogDdl.sql.includes("'password_reset'")) {
+    db.exec(`
+      CREATE TABLE email_log_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER,
+        vendor_id INTEGER,
+        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset')),
+        recipient_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'error')),
+        error_message TEXT,
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL,
+        FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
+      );
+    `);
+    db.exec(`INSERT INTO email_log_new (id, client_id, vendor_id, email_type, recipient_email, subject, sent_at, status, error_message) SELECT id, client_id, vendor_id, email_type, recipient_email, subject, sent_at, status, error_message FROM email_log`);
+    db.exec("DROP TABLE email_log");
+    db.exec("ALTER TABLE email_log_new RENAME TO email_log");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_client_id ON email_log(client_id); CREATE INDEX IF NOT EXISTS idx_email_log_email_type ON email_log(email_type); CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);");
+    console.log("[db] Extended email_log.email_type CHECK to include password_reset");
+  }
 
   // Backfill legacy/test users so every authenticated user has an isolated tenant.
   const legacyUsers = db.query("SELECT id, company_name FROM users WHERE tenant_id IS NULL").all() as Array<{ id: number; company_name: string }>;

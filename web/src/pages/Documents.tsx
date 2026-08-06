@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+import { apiFetch } from "../lib/api";
 import { useEffect, useState, useCallback, useRef } from "react";
 import type {
   DocumentListItem,
@@ -91,7 +93,7 @@ export default function Documents() {
 
   const fetchClients = useCallback(async () => {
     try {
-      const res = await fetch("/api/clients");
+      const res = await apiFetch("/api/clients");
       if (!res.ok) throw new Error("Failed");
       const data: ClientWithRequiredDocs[] = await res.json();
       setClients(data);
@@ -104,7 +106,7 @@ export default function Documents() {
     try {
       let url = "/api/vendors";
       if (clientId) url += `?client_id=${clientId}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error("Failed");
       const data: VendorListItem[] = await res.json();
       setVendors(data);
@@ -122,7 +124,7 @@ export default function Documents() {
       const qs = params.toString();
       if (qs) url += `?${qs}`;
 
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error("Failed to fetch documents");
       const data: DocumentListItem[] = await res.json();
       setDocs(data);
@@ -238,7 +240,7 @@ export default function Documents() {
         formData.append("vendor_id", String(uploadForm.vendor_id));
       }
 
-      const res = await fetch("/api/documents/upload", {
+      const res = await apiFetch("/api/documents/upload", {
         method: "POST",
         body: formData,
       });
@@ -295,21 +297,31 @@ export default function Documents() {
         ref={dropRef}
         className="upload-zone"
         style={{
-          border: `2px dashed ${dragOver ? "var(--blue)" : "var(--gray-300)"}`,
           borderRadius: "10px",
-          padding: "24px",
+          padding: "8px",
           marginBottom: "20px",
           background: dragOver ? "var(--blue-light)" : "var(--gray-50)",
-          transition: "border-color 0.2s, background 0.2s",
+          transition: "background 0.2s",
         }}
         onDragOver={handleDragOver}
         onDragLeave={handleDragLeave}
         onDrop={handleDrop}
       >
-        <form onSubmit={handleUpload} style={{ display: "flex", flexDirection: "column", gap: "12px" }}>
-          <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+        <div
+          className="report-config-panel"
+          style={{
+            background: "#fff",
+            border: `1px solid ${dragOver ? "var(--blue)" : "var(--gray-200, #e5e7eb)"}`,
+            borderLeft: "5px solid var(--blue)",
+            borderRadius: "10px",
+            boxShadow: "0 2px 8px rgba(15, 23, 42, 0.08)",
+            padding: "24px",
+          }}
+        >
+          <h3 style={{ margin: "0 0 18px", fontSize: "1.2rem" }}>📤 Upload Documents</h3>
+          <form onSubmit={handleUpload} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             {/* File picker */}
-            <div>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -320,78 +332,79 @@ export default function Documents() {
               />
               <button
                 type="button"
-                className="btn btn-outline"
+                className="btn btn-primary"
                 onClick={() => fileInputRef.current?.click()}
               >
-                📎 {selectedFile ? selectedFile.name : "Choose File"}
+                Choose File
               </button>
+              <span className="text-muted text-sm" aria-live="polite">
+                {selectedFile ? selectedFile.name : "No file selected"}
+              </span>
             </div>
 
-            {/* Client selector */}
-            <select
-              className="form-select"
-              style={{ minWidth: "180px" }}
-              value={uploadForm.client_id}
-              onChange={(e) => handleClientChange(e.target.value ? Number(e.target.value) : "")}
-            >
-              <option value="">Select client (optional)…</option>
-              {clients.map((c) => (
-                <option key={c.id} value={c.id}>
-                  {c.name}
-                </option>
-              ))}
-            </select>
+            {/* Client and vendor selectors */}
+            <div style={{ display: "flex", gap: "12px", flexWrap: "wrap" }}>
+              <select
+                className="form-select"
+                style={{ minWidth: "180px", flex: "1 1 220px" }}
+                value={uploadForm.client_id}
+                onChange={(e) => handleClientChange(e.target.value ? Number(e.target.value) : "")}
+              >
+                <option value="">Select client (optional)…</option>
+                {clients.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
 
-            {/* Vendor selector — filtered by client */}
-            <select
-              className="form-select"
-              style={{ minWidth: "180px" }}
-              value={uploadForm.vendor_id}
-              onChange={(e) =>
-                setUploadForm({ ...uploadForm, vendor_id: e.target.value ? Number(e.target.value) : "" })
-              }
-              disabled={!uploadForm.client_id}
-            >
-              <option value="">Select vendor (optional)…</option>
-              {vendors.map((v) => (
-                <option key={v.id} value={v.id}>
-                  {v.name}
-                </option>
-              ))}
-            </select>
+              <select
+                className="form-select"
+                style={{ minWidth: "180px", flex: "1 1 220px" }}
+                value={uploadForm.vendor_id}
+                onChange={(e) =>
+                  setUploadForm({ ...uploadForm, vendor_id: e.target.value ? Number(e.target.value) : "" })
+                }
+                disabled={!uploadForm.client_id}
+              >
+                <option value="">Select vendor (optional)…</option>
+                {vendors.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </div>
 
-            {/* Upload button */}
             <button
               type="submit"
               className="btn btn-primary"
+              style={{ alignSelf: "flex-start" }}
               disabled={uploading || !selectedFile}
             >
-              {uploading ? "Uploading…" : "⬆ Upload"}
+              {uploading ? "Uploading…" : "⬆ Upload Document"}
             </button>
-          </div>
 
-          {/* Drag hint */}
-          {!selectedFile && (
             <p className="text-muted text-sm" style={{ margin: 0 }}>
-              or drag &amp; drop a file here (PDF, PNG, JPG — max 10MB)
+              Supported: PDF, JPG, PNG — up to 10MB. Drag &amp; drop also works.
             </p>
-          )}
 
-          {/* Progress */}
-          {uploadProgress && (
-            <div className="text-sm" style={{ color: "var(--blue)" }}>
-              {uploadProgress}
-            </div>
-          )}
+            {/* Progress */}
+            {uploadProgress && (
+              <div className="text-sm" style={{ color: "var(--blue)" }}>
+                {uploadProgress}
+              </div>
+            )}
 
-          {/* Messages */}
-          {uploadError && <div className="error-message">{uploadError}</div>}
-          {uploadSuccess && (
-            <div className="success-message" style={{ color: "var(--green)", fontSize: "0.875rem", fontWeight: 500 }}>
-              ✓ {uploadSuccess}
-            </div>
-          )}
-        </form>
+            {/* Messages */}
+            {uploadError && <div className="error-message">{uploadError}</div>}
+            {uploadSuccess && (
+              <div className="success-message" style={{ color: "var(--green)", fontSize: "0.875rem", fontWeight: 500 }}>
+                ✓ {uploadSuccess}
+              </div>
+            )}
+          </form>
+        </div>
       </div>
 
       {/* ── Filters ── */}
@@ -486,7 +499,7 @@ function DocumentRow({
     }
     setDetailLoading(true);
     try {
-      const res = await fetch(`/api/documents/${doc.id}`);
+      const res = await apiFetch(`/api/documents/${doc.id}`);
       if (!res.ok) throw new Error("Failed");
       const data = await res.json();
       setDetail(data);
@@ -504,13 +517,15 @@ function DocumentRow({
     <>
       <tr style={{ cursor: "pointer" }} onClick={loadDetail}>
         <td className="td-name" style={{ maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-          {doc.original_filename}
+          <a className="document-name-link" href={`/app/documents/${doc.id}`} onClick={(e) => e.stopPropagation()}>
+            {doc.original_filename}
+          </a>
         </td>
         <td className="text-muted text-sm">
           {doc.content_type ? doc.content_type.split("/")[1]?.toUpperCase() || doc.content_type : "—"}
         </td>
         <td className="text-muted text-sm">{formatSize(doc.file_size)}</td>
-        <td>{doc.vendor_name || "—"}</td>
+        <td>{doc.vendor_id && doc.vendor_name ? <Link to={`/app/vendors/${doc.vendor_id}`}>{doc.vendor_name}</Link> : "—"}</td>
         <td>{doc.client_name || "—"}</td>
         <td>
           <span className="doc-tag">{displayDocType}</span>

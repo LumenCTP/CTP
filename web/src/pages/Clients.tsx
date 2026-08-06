@@ -1,3 +1,4 @@
+import { apiFetch } from "../lib/api";
 import { useEffect, useState, useCallback } from "react";
 import type { ClientWithRequiredDocs, DocumentType } from "@clear-to-pay/shared";
 import { ALL_DOCUMENT_TYPES } from "@clear-to-pay/shared";
@@ -27,6 +28,19 @@ export default function Clients() {
   const [form, setForm] = useState<ClientFormData>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; errors: Array<{ row: number; error: string }> } | null>(null);
+
+  async function handleImport() {
+    if (!importFile) return;
+    setImporting(true); setImportResult(null);
+    const data = new FormData(); data.append("file", importFile);
+    try { const res = await apiFetch("/api/import/clients", { method: "POST", body: data }); const result = await res.json(); if (!res.ok) throw new Error(result.error || "Import failed"); setImportResult(result); await fetchClients(); }
+    catch (e) { setImportResult({ imported: 0, errors: [{ row: 0, error: e instanceof Error ? e.message : "Import failed" }] }); }
+    finally { setImporting(false); }
+  }
 
   // Delete confirmation
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -48,7 +62,7 @@ export default function Clients() {
 
   const fetchClients = useCallback(async () => {
     try {
-      const res = await fetch("/api/clients");
+      const res = await apiFetch("/api/clients");
       if (!res.ok) throw new Error("Failed to fetch clients");
       const data: ClientWithRequiredDocs[] = await res.json();
       setClients(data);
@@ -107,7 +121,7 @@ export default function Clients() {
         : "/api/clients";
       const method = editingClient ? "PUT" : "POST";
 
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -136,7 +150,7 @@ export default function Clients() {
 
   async function handleDelete(id: number) {
     try {
-      const res = await fetch(`/api/clients/${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/clients/${id}`, { method: "DELETE" });
       if (!res.ok) {
         const errData = await res.json();
         throw new Error(errData.error || "Delete failed");
@@ -167,7 +181,7 @@ export default function Clients() {
     setDocsSaving((prev) => ({ ...prev, [key]: true }));
 
     try {
-      const res = await fetch(`/api/clients/${clientId}/documents-required`, {
+      const res = await apiFetch(`/api/clients/${clientId}/documents-required`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ document_types: newDocTypes }),
@@ -193,7 +207,7 @@ export default function Clients() {
     setEmailFeedback(null);
 
     try {
-      const res = await fetch(`/api/emails/config/${clientId}`);
+      const res = await apiFetch(`/api/emails/config/${clientId}`);
       if (!res.ok) throw new Error("Failed to fetch email config");
       const data = await res.json();
       setEmailConfig({
@@ -213,7 +227,7 @@ export default function Clients() {
     setEmailFeedback(null);
 
     try {
-      const res = await fetch(`/api/emails/config/${emailClientId}`, {
+      const res = await apiFetch(`/api/emails/config/${emailClientId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -242,7 +256,7 @@ export default function Clients() {
     setEmailFeedback(null);
 
     try {
-      const res = await fetch(`/api/emails/test-weekly/${emailClientId}`, { method: "POST" });
+      const res = await apiFetch(`/api/emails/test-weekly/${emailClientId}`, { method: "POST" });
       const data = await res.json();
 
       if (!res.ok) {
@@ -281,9 +295,12 @@ export default function Clients() {
     <div className="page-container">
       <div className="page-header">
         <h2 className="page-title">Clients</h2>
-        <button className="btn btn-primary" onClick={openAddModal}>
-          + Add Client
-        </button>
+        <div style={{ display: "flex", gap: "8px" }}>
+          <button className="btn btn-outline" onClick={() => { setShowImport(true); setImportResult(null); }}>
+            Import CSV
+          </button>
+          <button className="btn btn-primary" onClick={openAddModal}>+ Add Client</button>
+        </div>
       </div>
 
       {/* ── Clients Table ── */}
@@ -532,6 +549,17 @@ export default function Clients() {
             </form>
           </div>
         </div>
+      )}
+
+      {showImport && (
+        <div className="modal-overlay" onClick={() => setShowImport(false)}><div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header"><h3>Import Clients CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
+          <div className="modal-body"><p className="text-muted text-sm">Columns: name, contact_email, contact_phone, address</p>
+            <div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
+            <a href="/api/import/clients-template" download>Download Template</a>
+            {importResult && <div className={importResult.errors.length ? "error-message" : "success-message"} style={{ marginTop: 12 }}><strong>{importResult.imported} imported</strong>{importResult.errors.length > 0 && <ul>{importResult.errors.map((x, i) => <li key={i}>Row {x.row}: {x.error}</li>)}</ul>}</div>}
+          </div><div className="modal-footer"><button className="btn btn-outline" onClick={() => setShowImport(false)}>Close</button><button className="btn btn-primary" onClick={handleImport} disabled={!importFile || importing}>{importing ? "Importing…" : "Import"}</button></div>
+        </div></div>
       )}
 
       {/* ── Delete Confirmation ── */}

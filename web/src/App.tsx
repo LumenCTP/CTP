@@ -4,7 +4,9 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import Clients from "./pages/Clients";
 import Vendors from "./pages/Vendors";
+import VendorDetail from "./pages/VendorDetail";
 import Documents from "./pages/Documents";
+import DocumentDetail from "./pages/DocumentDetail";
 import Reports from "./pages/Reports";
 import NeedsReview from "./pages/NeedsReview";
 import EmailLog from "./pages/EmailLog";
@@ -12,6 +14,7 @@ import Login from "./pages/Login";
 import Register from "./pages/Register";
 import SetupWizard from "./pages/SetupWizard";
 import SetPassword from "./pages/SetPassword";
+import ResetPassword from "./pages/ResetPassword";
 
 function LoadingScreen() {
   return (
@@ -92,6 +95,7 @@ export default function App() {
             <Route path="login" element={<Login />} />
             <Route path="register" element={<Register />} />
             <Route path="app/set-password" element={<SetPassword />} />
+            <Route path="app/reset-password" element={<ResetPassword />} />
           </Route>
 
           {/* Protected routes */}
@@ -104,7 +108,9 @@ export default function App() {
               <Route index element={<Dashboard />} />
               <Route path="clients" element={<Clients />} />
               <Route path="vendors" element={<Vendors />} />
+              <Route path="vendors/:id" element={<VendorDetail />} />
               <Route path="documents" element={<Documents />} />
+              <Route path="documents/:id" element={<DocumentDetail />} />
               <Route path="reports" element={<Reports />} />
               <Route path="needs-review" element={<NeedsReview />} />
               <Route path="email-log" element={<EmailLog />} />

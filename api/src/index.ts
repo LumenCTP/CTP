@@ -14,6 +14,7 @@ import {
   sendEmail,
   buildWeeklyReportEmail,
   buildRenewalReminderEmail,
+  buildPasswordResetEmail,
   parseRecipients,
   hasReminderBeenSent,
   markReminderSent,
@@ -36,7 +37,24 @@ const TENANT_DATA_PATHS = [
   "/api/documents", "/api/documents/*", "/api/needs-review",
   "/api/dashboard/stats", "/api/dashboard/*", "/api/compliance/*", "/api/reports/*", "/api/audit/*",
   "/api/emails/*",
+  "/api/inbox/*",
+  "/api/import/*",
+  "/api/support/*",
 ];
+// Queue processor endpoints are intentionally unauthenticated JWT-wise, but protected
+// by a shared secret (they are called by the internal scheduler/delivery worker).
+const QUEUE_SECRET = process.env.QUEUE_SECRET || "cleartopay-queue-secret-dev";
+function isQueueRoute(c: any): boolean {
+  const path = c.req.path;
+  return path === "/api/emails/process-queue" || path === "/api/emails/mark-sent" || path === "/api/emails/mark-failed";
+}
+function requireQueueSecret(c: any): Response | null {
+  if (c.req.header("X-Queue-Secret") !== QUEUE_SECRET) {
+    return c.json({ error: "Invalid queue secret" }, 401);
+  }
+  return null;
+}
+
 // (registered after middleware definitions below)
 
 // ── Auth Token Helpers ──────────────────────────────────
@@ -214,7 +232,41 @@ async function requireTenant(c: any, next: any) {
 }
 
 // Register tenant guard only after both middleware functions are initialized.
-for (const pattern of TENANT_DATA_PATHS) app.use(pattern, requireAuth, requireTenant);
+// Queue worker routes use their shared secret instead of tenant JWT auth.
+for (const pattern of TENANT_DATA_PATHS) {
+  app.use(pattern, async (c, next) => {
+    if (isQueueRoute(c)) return next();
+    return requireAuth(c, () => requireTenant(c, next));
+  });
+}
+
+// ── Support Messages ─────────────────────────────────────
+app.post("/api/support/ask", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const message = typeof body.message === "string" ? body.message.trim() : "";
+  if (!message) return c.json({ error: "Message is required" }, 400);
+  const db = getDb();
+  const result = db.query(`INSERT INTO support_messages (tenant_id, user_id, message, context) VALUES ($tid, $uid, $message, $context)`).run({ $tid: c.get("tenant_id"), $uid: c.get("user").user_id, $message: message, $context: typeof body.context === "string" ? body.context.slice(0, 120) : null });
+  const row = db.query("SELECT id, message, status, created_at FROM support_messages WHERE id = $id").get({ $id: Number(result.lastInsertRowid) });
+  return c.json(row, 201);
+});
+
+app.get("/api/support/messages", (c) => {
+  const rows = getDb().query("SELECT id, message, context, status, created_at, reply_text, replied_at, replied_by FROM support_messages WHERE tenant_id = $tid ORDER BY created_at DESC, id DESC").all({ $tid: c.get("tenant_id") });
+  return c.json(rows);
+});
+
+app.post("/api/support/reply", async (c) => {
+  const body = await c.req.json().catch(() => ({}));
+  const id = Number(body.message_id);
+  const reply = typeof body.reply_text === "string" ? body.reply_text.trim() : "";
+  const by = typeof body.replied_by === "string" ? body.replied_by.trim() : "";
+  if (!Number.isInteger(id) || !reply || !by) return c.json({ error: "message_id, reply_text, and replied_by are required" }, 400);
+  const db = getDb();
+  const result = db.query("UPDATE support_messages SET reply_text = $reply, status = 'closed', replied_at = datetime('now'), replied_by = $by WHERE id = $id AND tenant_id = $tid").run({ $reply: reply, $by: by, $id: id, $tid: c.get("tenant_id") });
+  if (!result.changes) return c.json({ error: "Message not found" }, 404);
+  return c.json({ success: true });
+});
 
 // ── Stripe Webhook ──────────────────────────────────────
 
@@ -485,6 +537,60 @@ app.post("/api/auth/send-setup-link", async (c) => {
   }
 });
 
+app.post("/api/auth/forgot-password", async (c) => {
+  try {
+    const body = await c.req.json();
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    if (!email) return c.json({ error: "Email is required" }, 400);
+    const db = getDb();
+    const user = db.query("SELECT id, full_name FROM users WHERE email = $email").get({ $email: email }) as { id: number; full_name: string } | undefined;
+
+    if (user) {
+      // Generate a reset token: base64url random bytes, valid for 1 hour.
+      const bytes = new Uint8Array(32);
+      crypto.getRandomValues(bytes);
+      const token = Buffer.from(bytes).toString("base64url");
+      const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+      db.query("UPDATE users SET reset_token = $token, reset_token_expires = $expires WHERE id = $id").run({
+        $token: token,
+        $expires: expiresAt,
+        $id: user.id,
+      });
+      const resetLink = `https://cleartopay.ctonew.app/app/reset-password?token=${encodeURIComponent(token)}`;
+      sendEmail([email], "Reset your ClearToPay password", buildPasswordResetEmail(user.full_name, resetLink), undefined, undefined, "password_reset");
+    }
+
+    // Always return success — never reveal whether the email exists.
+    return c.json({ success: true });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+app.post("/api/auth/reset-password", async (c) => {
+  try {
+    const body = await c.req.json();
+    const token = typeof body.token === "string" ? body.token.trim() : "";
+    const newPassword = typeof body.new_password === "string" ? body.new_password : "";
+    if (!token || newPassword.length < 6) {
+      return c.json({ error: "A valid token and a password of at least 6 characters are required" }, 400);
+    }
+    const db = getDb();
+    const user = db.query(
+      "SELECT id FROM users WHERE reset_token = $token AND reset_token_expires > $now"
+    ).get({ $token: token, $now: new Date().toISOString() }) as { id: number } | undefined;
+    if (!user) {
+      return c.json({ error: "Invalid or expired reset link" }, 400);
+    }
+    const passwordHash = await Bun.password.hash(newPassword);
+    db.query("UPDATE users SET password_hash = $password_hash, reset_token = NULL, reset_token_expires = NULL WHERE id = $id").run({
+      $password_hash: passwordHash,
+      $id: user.id,
+    });
+    return c.json({ success: true });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
 app.post("/api/auth/logout", (c) => {
   // JWT is stateless — just return success
   return c.json({ success: true });
@@ -771,6 +877,66 @@ app.get("/api/dashboard/stats", (c) => {
   }
 });
 
+// ── Clear-to-Pay Dashboard ─────────────────────────────
+
+app.get("/api/dashboard/clear-to-pay", (c) => {
+  try {
+    const db = getDb();
+    const tenantId = c.get("tenant_id") as number;
+    const rows = db.query(`
+      SELECT v.id AS vendor_id, v.name AS vendor_name,
+             cl.id AS client_id, cl.name AS client_name,
+             cs.status, cs.payment_status
+      FROM compliance_status cs
+      JOIN vendors v ON v.id = cs.vendor_id
+      JOIN clients cl ON cl.id = cs.client_id
+      WHERE cs.payment_status IN ('approved', 'review', 'hold')
+        AND v.tenant_id = $tenant_id AND cl.tenant_id = $tenant_id
+      ORDER BY cs.payment_status, v.name COLLATE NOCASE
+    `).all({ $tenant_id: tenantId }) as Array<{
+      vendor_id: number; vendor_name: string; client_id: number; client_name: string;
+      status: string; payment_status: string;
+    }>;
+
+    const vendors = rows.map((row) => {
+      const required = db.query(
+        "SELECT document_type FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
+      ).all({ $client_id: row.client_id }) as Array<{ document_type: string }>;
+      const present = db.query(`
+        SELECT DISTINCT d.document_type
+        FROM documents d
+        WHERE d.vendor_id = $vendor_id AND d.tenant_id = $tenant_id
+      `).all({ $vendor_id: row.vendor_id, $tenant_id: tenantId }) as Array<{ document_type: string }>;
+      const presentTypes = new Set(present.map((doc) => doc.document_type));
+      const missingDocuments = required.map((doc) => doc.document_type).filter((type) => !presentTypes.has(type));
+      const expiring = db.query(`
+        SELECT de.expiration_date, COALESCE(de.document_type, d.document_type) AS document_type
+        FROM document_extractions de
+        JOIN documents d ON d.id = de.document_id
+        WHERE d.vendor_id = $vendor_id AND d.tenant_id = $tenant_id
+          AND de.expiration_date IS NOT NULL
+        ORDER BY de.expiration_date ASC LIMIT 1
+      `).get({ $vendor_id: row.vendor_id, $tenant_id: tenantId }) as { expiration_date: string; document_type: string } | null;
+
+      return {
+        vendor_id: row.vendor_id,
+        vendor_name: row.vendor_name,
+        client_id: row.client_id,
+        client_name: row.client_name,
+        compliance_status: missingDocuments.length > 0 ? "missing" : row.status,
+        payment_status: row.payment_status,
+        missing_documents: missingDocuments,
+        earliest_expiring_date: expiring?.expiration_date ?? null,
+        earliest_expiring_type: expiring?.document_type ?? null,
+      };
+    });
+
+    return c.json({ vendors });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
 // ── Helper: Audit Log ─────────────────────────────────
 
 function logAudit(db: ReturnType<typeof getDb>, entityType: string, entityId: number, action: string, changes: Record<string, unknown> | null = null) {
@@ -783,6 +949,79 @@ function logAudit(db: ReturnType<typeof getDb>, entityType: string, entityId: nu
     $action: action,
     $changes: changes ? JSON.stringify(changes) : null,
   });
+}
+
+// ── CSV Imports ────────────────────────────────────────
+
+function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [], field = "", quoted = false;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (ch === '"') {
+      if (quoted && text[i + 1] === '"') { field += '"'; i++; }
+      else quoted = !quoted;
+    } else if (ch === ',' && !quoted) { row.push(field.trim()); field = ""; }
+    else if ((ch === '\n' || ch === '\r') && !quoted) {
+      if (ch === '\r' && text[i + 1] === '\n') i++;
+      row.push(field.trim()); field = "";
+      if (row.some(Boolean)) rows.push(row);
+      row = [];
+    } else field += ch;
+  }
+  if (field || row.length) { row.push(field.trim()); if (row.some(Boolean)) rows.push(row); }
+  return rows;
+}
+
+async function importCsv(c: any, kind: "clients" | "vendors") {
+  const form = await c.req.parseBody();
+  const uploaded = form.file;
+  if (!(uploaded instanceof File)) return c.json({ error: "CSV file is required" }, 400);
+  const rows = parseCsv(await uploaded.text());
+  if (rows.length < 1) return c.json({ imported: 0, errors: [{ row: 1, error: "CSV is empty" }] });
+  const expected = kind === "clients"
+    ? ["name", "contact_email", "contact_phone", "address"]
+    : ["name", "contact_name", "contact_email", "contact_phone"];
+  const headers = rows[0].map((h) => h.trim().toLowerCase());
+  const indexes = expected.map((h) => headers.indexOf(h));
+  if (indexes[0] < 0) return c.json({ imported: 0, errors: [{ row: 1, error: "Missing name column" }] }, 400);
+  const errors: Array<{ row: number; error: string }> = [];
+  const valid: string[][] = [];
+  for (let n = 1; n < rows.length; n++) {
+    const values = expected.map((_, i) => indexes[i] >= 0 ? (rows[n][indexes[i]] || "").trim() : "");
+    if (!values[0]) errors.push({ row: n + 1, error: "Missing name" });
+    else valid.push(values);
+  }
+  const db = getDb();
+  const tenantId = c.get("tenant_id") as number;
+  let imported = 0;
+  try {
+    const transaction = db.transaction(() => {
+      if (kind === "vendors") {
+        const clientId = Number(form.client_id);
+        if (!clientId || !db.query("SELECT id FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: clientId, $tenant_id: tenantId })) throw new Error("Client not found");
+        const insert = db.query("INSERT INTO vendors (tenant_id, client_id, name, contact_name, contact_email, contact_phone) VALUES ($tenant_id, $client_id, $name, $contact_name, $contact_email, $contact_phone)");
+        const status = db.query("INSERT INTO compliance_status (vendor_id, client_id, status, payment_status) VALUES ($vendor_id, $client_id, 'needs_review', 'hold')");
+        for (const v of valid) {
+          const result = insert.run({ $tenant_id: tenantId, $client_id: clientId, $name: v[0], $contact_name: v[1] || null, $contact_email: v[2] || null, $contact_phone: v[3] || null });
+          status.run({ $vendor_id: Number(result.lastInsertRowid), $client_id: clientId }); imported++;
+        }
+      } else {
+        const insert = db.query("INSERT INTO clients (tenant_id, name, contact_email, contact_phone, address) VALUES ($tenant_id, $name, $contact_email, $contact_phone, $address)");
+        for (const v of valid) { insert.run({ $tenant_id: tenantId, $name: v[0], $contact_email: v[1] || null, $contact_phone: v[2] || null, $address: v[3] || null }); imported++; }
+      }
+    });
+    transaction();
+  } catch (err) { return c.json({ imported: 0, errors: [{ row: 1, error: err instanceof Error ? err.message : "Import failed" }] }, 400); }
+  return c.json({ imported, errors });
+}
+
+for (const kind of ["clients", "vendors"] as const) {
+  app.get(`/api/import/${kind}-template`, (c) => {
+    const headers = kind === "clients" ? "name,contact_email,contact_phone,address" : "name,contact_name,contact_email,contact_phone";
+    return new Response(headers + "\\n", { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename=${kind}-template.csv` } });
+  });
+  app.post(`/api/import/${kind}`, (c) => importCsv(c, kind));
 }
 
 // ── Clients ────────────────────────────────────────────
@@ -1248,43 +1487,86 @@ const DOCS_DIR = path.join(import.meta.dir, "..", "data", "uploads");
 const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
+async function ingestDocumentAttachment(opts: {
+  db: ReturnType<typeof getDb>;
+  tenantId: number;
+  filename: string;
+  content: Uint8Array;
+  contentType: string;
+  senderName?: string | null;
+  senderEmail?: string | null;
+  clientId?: number | null;
+  vendorId?: number | null;
+}) {
+  const { db, tenantId } = opts;
+  if (!ALLOWED_TYPES.includes(opts.contentType)) throw new Error("Unsupported file type. Allowed: PDF, JPG, PNG");
+  if (opts.content.length > MAX_UPLOAD_SIZE) throw new Error("File too large. Maximum size is 10MB");
+  const originalFilename = path.basename(opts.filename).replace(/[\\/]/g, "_") || "attachment";
+  const clientId = opts.clientId ?? null;
+  const vendorId = opts.vendorId ?? null;
+  if (clientId !== null && !db.query("SELECT id FROM clients WHERE id=$id AND tenant_id=$tid").get({$id:clientId,$tid:tenantId})) throw new Error("Client not found");
+  if (vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND tenant_id=$tid").get({$id:vendorId,$tid:tenantId})) throw new Error("Vendor not found");
+  if (clientId !== null && vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND client_id=$cid AND tenant_id=$tid").get({$id:vendorId,$cid:clientId,$tid:tenantId})) throw new Error("Vendor does not belong to client");
+  const dir = path.join(DOCS_DIR, String(tenantId)); mkdirSync(dir, { recursive: true });
+  const filePath = path.join(dir, `${Date.now()}-${originalFilename}`);
+  await Bun.write(filePath, opts.content);
+  const relPath = `data/uploads/${tenantId}/${path.basename(filePath)}`;
+  const result = db.query(`INSERT INTO documents (vendor_id,client_id,document_type,file_path,original_filename,content_type,file_size,sender_name,sender_email,tenant_id) VALUES ($vid,$cid,'Other',$path,$name,$type,$size,$sender,$email,$tid)`).run({$vid:vendorId,$cid:clientId,$path:relPath,$name:originalFilename,$type:opts.contentType,$size:opts.content.length,$sender:opts.senderName || null,$email:opts.senderEmail || null,$tid:tenantId});
+  const documentId = Number(result.lastInsertRowid);
+  db.query("INSERT INTO ingestion_events (document_id,status) VALUES ($id,'uploaded')").run({$id:documentId});
+  logAudit(db,"document",documentId,"uploaded",{filename:originalFilename,file_size:opts.content.length,content_type:opts.contentType,tenant_id:tenantId});
+  db.query("UPDATE ingestion_events SET status='processing',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
+  extractDocumentInfo(filePath, originalFilename).then((extraction) => {
+    db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,document_type,ai_confidence_score) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$type,$confidence)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$type:extraction.document_type,$confidence:extraction.ai_confidence_score});
+    db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
+    if (extraction.document_type === "COI" && extraction.certificate_holder_name_confidence >= 0.8) { const mapped = mapCOIToEntities(db, tenantId, extraction, documentId); if (mapped) { db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId}); calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId); } }
+    else if (vendorId !== null && clientId !== null) calculateVendorCompliance(vendorId,clientId,tenantId);
+    db.query("UPDATE ingestion_events SET status='ready',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
+  }).catch((err) => { db.query("UPDATE ingestion_events SET status='error',error_message=$error,updated_at=datetime('now') WHERE document_id=$id").run({$error:String(err),$id:documentId}); });
+  return { id: documentId, original_filename: originalFilename, content_type: opts.contentType, file_size: opts.content.length };
+}
+
 // POST /api/documents/upload — persist immediately, extract asynchronously
 app.post("/api/documents/upload", async (c) => {
   try {
-    const db = getDb(); const tenantId = c.get("tenant_id") as number;
     const form = await c.req.formData(); const file = form.get("file");
     if (!file || !(file instanceof File)) return c.json({ error: "File is required" }, 400);
-    if (!ALLOWED_TYPES.includes(file.type)) return c.json({ error: "Unsupported file type. Allowed: PDF, JPG, PNG" }, 400);
-    if (file.size > MAX_UPLOAD_SIZE) return c.json({ error: "File too large. Maximum size is 10MB" }, 400);
     const clientRaw = form.get("client_id"); const vendorRaw = form.get("vendor_id");
     const clientId = clientRaw ? Number(clientRaw) : null; const vendorId = vendorRaw ? Number(vendorRaw) : null;
     if (clientRaw && !Number.isInteger(clientId)) return c.json({ error: "Invalid client_id" }, 400);
     if (vendorRaw && !Number.isInteger(vendorId)) return c.json({ error: "Invalid vendor_id" }, 400);
-    if (clientId !== null && !db.query("SELECT id FROM clients WHERE id=$id AND tenant_id=$tid").get({$id:clientId,$tid:tenantId})) return c.json({error:"Client not found"},404);
-    if (vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND tenant_id=$tid").get({$id:vendorId,$tid:tenantId})) return c.json({error:"Vendor not found"},404);
-    if (clientId !== null && vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND client_id=$cid AND tenant_id=$tid").get({$id:vendorId,$cid:clientId,$tid:tenantId})) return c.json({error:"Vendor does not belong to client"},400);
-    const originalFilename = file.name.replace(/[\\/]/g, "_");
-    const dir = path.join(DOCS_DIR, String(tenantId)); mkdirSync(dir, { recursive: true });
-    const filePath = path.join(dir, `${Date.now()}-${originalFilename}`); await Bun.write(filePath, file);
-    const relPath = `data/uploads/${tenantId}/${path.basename(filePath)}`;
-    const result = db.query(`INSERT INTO documents (vendor_id,client_id,document_type,file_path,original_filename,content_type,file_size,sender_name,sender_email,tenant_id) VALUES ($vid,$cid,'Other',$path,$name,$type,$size,$sender,$email,$tid)`).run({$vid:vendorId,$cid:clientId,$path:relPath,$name:originalFilename,$type:file.type,$size:file.size,$sender:form.get("sender_name")?.toString()||null,$email:form.get("sender_email")?.toString()||null,$tid:tenantId});
-    const documentId = Number(result.lastInsertRowid); db.query("INSERT INTO ingestion_events (document_id,status) VALUES ($id,'uploaded')").run({$id:documentId});
-    logAudit(db,"document",documentId,"uploaded",{filename:originalFilename,file_size:file.size,content_type:file.type,tenant_id:tenantId});
-    db.query("UPDATE ingestion_events SET status='processing',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
-    extractDocumentInfo(filePath, originalFilename).then((extraction) => {
-      db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,document_type,ai_confidence_score) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$type,$confidence)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$type:extraction.document_type,$confidence:extraction.ai_confidence_score});
-      db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
-      if (extraction.document_type === "COI" && extraction.certificate_holder_name_confidence >= 0.8) {
-        const mapped = mapCOIToEntities(db, tenantId, extraction, documentId);
-        if (mapped) {
-          db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId});
-          calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId);
-        }
-      } else if (vendorId !== null && clientId !== null) calculateVendorCompliance(vendorId,clientId,tenantId);
-      db.query("UPDATE ingestion_events SET status='ready',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
-    }).catch((err) => { db.query("UPDATE ingestion_events SET status='error',error_message=$error,updated_at=datetime('now') WHERE document_id=$id").run({$error:String(err),$id:documentId}); });
-    return c.json({document:{id:documentId,original_filename:originalFilename,content_type:file.type,file_size:file.size},ingestion_status:"processing"},201);
+    const document = await ingestDocumentAttachment({db:getDb(),tenantId:c.get("tenant_id") as number,filename:file.name,content:new Uint8Array(await file.arrayBuffer()),contentType:file.type,senderName:form.get("sender_name")?.toString(),senderEmail:form.get("sender_email")?.toString(),clientId,vendorId});
+    return c.json({document,ingestion_status:"processing"},201);
   } catch (err) { console.error("[upload]",err); return c.json({error:String(err)},500); }
+});
+
+// POST /api/inbox/ingest — receive attachments from an email-ingestion worker.
+app.post("/api/inbox/ingest", async (c) => {
+  try {
+    const body = await c.req.json();
+    if (!Array.isArray(body?.attachments) || body.attachments.length === 0) return c.json({error:"attachments must be a non-empty array"},400);
+    const tenantId = c.get("tenant_id") as number, db = getDb();
+    const clientId = body.client_id == null ? null : Number(body.client_id), vendorId = body.vendor_id == null ? null : Number(body.vendor_id);
+    if (clientId !== null && !Number.isInteger(clientId) || vendorId !== null && !Number.isInteger(vendorId)) return c.json({error:"Invalid client_id or vendor_id"},400);
+    const documents = [];
+    for (const a of body.attachments) {
+      if (!a || typeof a.filename !== "string" || typeof a.content_base64 !== "string" || typeof a.content_type !== "string") return c.json({error:"Each attachment requires filename, content_base64, and content_type"},400);
+      let content: Uint8Array; try { content = Uint8Array.from(atob(a.content_base64.replace(/^data:[^;]+;base64,/, "")), ch => ch.charCodeAt(0)); } catch { return c.json({error:`Invalid base64 for ${a.filename}`},400); }
+      documents.push(await ingestDocumentAttachment({db,tenantId,filename:a.filename,content,contentType:a.content_type,senderName:body.sender_name,senderEmail:body.sender_email,clientId,vendorId}));
+    }
+    return c.json({documents,ingested_count:documents.length},201);
+  } catch (err) { console.error("[inbox/ingest]",err); return c.json({error:String(err)},400); }
+});
+
+// POST /api/inbox/relay — multipart receiver for future email webhook providers.
+app.post("/api/inbox/relay", async (c) => {
+  try {
+    const form = await c.req.formData(), files = Array.from(form.values()).filter((v): v is File => v instanceof File && v.size > 0);
+    if (!files.length) return c.json({error:"At least one attachment is required"},400);
+    const clientRaw=form.get("client_id"), vendorRaw=form.get("vendor_id"), clientId=clientRaw?Number(clientRaw):null, vendorId=vendorRaw?Number(vendorRaw):null;
+    const documents=[]; for (const file of files) documents.push(await ingestDocumentAttachment({db:getDb(),tenantId:c.get("tenant_id") as number,filename:file.name,content:new Uint8Array(await file.arrayBuffer()),contentType:file.type,senderName:form.get("sender_name")?.toString() || form.get("from_name")?.toString(),senderEmail:form.get("sender_email")?.toString() || form.get("from")?.toString(),clientId,vendorId}));
+    return c.json({documents,ingested_count:documents.length},201);
+  } catch (err) { console.error("[inbox/relay]",err); return c.json({error:String(err)},400); }
 });
 // GET /api/documents — list documents with filters
 app.get("/api/documents", (c) => {
@@ -1660,7 +1942,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
   try {
     const body = await c.req.json();
     const clientId = body.client_id ? Number(body.client_id) : undefined;
-    const format = body.format || "both"; // "pdf" | "excel" | "both"
+    const format = body.format || "both"; // "pdf" | "excel" | "csv" | "both"
 
     if (!clientId || isNaN(clientId)) {
       return c.json({ error: "Valid client_id is required" }, 400);
@@ -1704,6 +1986,21 @@ app.post("/api/reports/clear-to-pay", async (c) => {
           "Content-Disposition": `attachment; filename="${pdfFilename}"`,
         },
       });
+    }
+
+    if (format === "csv") {
+      const csvFilename = `ClearToPay_${clientSlug}_${timestamp}.csv`;
+      const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
+      const rows: string[] = ["Section,Vendor,Contact,Status,Reason,Document,Expiration,Missing Documents"];
+      const addVendor = (section: string, v: any) => rows.push([section, v.vendor_name, v.contact_email || v.contact_name || "", v.payment_status, v.reason || "", "", "", ""].map(esc).join(","));
+      reportData.approved.forEach(v => addVendor("Approved", v));
+      reportData.review.forEach(v => addVendor("Review", v));
+      reportData.hold.forEach(v => addVendor("Hold", v));
+      reportData.expiring_during_week.forEach(e => rows.push(["Expiring", e.vendor_name, "", "", "", e.document_type, e.expiration_date, ""].map(esc).join(",")));
+      reportData.missing_docs.forEach(m => rows.push(["Missing", m.vendor_name, "", "", "", "", "", m.missing_types.join("; ")].map(esc).join(",")));
+      const csv = Buffer.from(rows.join("\r\n") + "\r\n", "utf8");
+      Bun.write(path.join(reportsDir, csvFilename), csv);
+      return new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${csvFilename}"` } });
     }
 
     if (format === "excel") {
@@ -1847,6 +2144,76 @@ app.get("/api/audit/download/:filename", (c) => {
         "Content-Disposition": `attachment; filename="${filename}"`,
       },
     });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Email Queue Processing ─────────────────────────────────
+
+// POST /api/emails/process-queue — claim/read queued messages for the delivery worker.
+app.post("/api/emails/process-queue", (c) => {
+  const denied = requireQueueSecret(c);
+  if (denied) return denied;
+  try {
+    const db = getDb();
+    const rows = db.query(`
+      SELECT id, from_address, from_name, reply_to, recipient_email, subject,
+             html_body, client_id, vendor_id, email_type
+      FROM outgoing_email_queue
+      WHERE status = 'queued'
+      ORDER BY id ASC
+    `).all();
+    return c.json(rows);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// POST /api/emails/mark-sent — acknowledge successful delivery of queue IDs.
+app.post("/api/emails/mark-sent", async (c) => {
+  const denied = requireQueueSecret(c);
+  if (denied) return denied;
+  try {
+    const body = await c.req.json() as { ids?: unknown };
+    if (!Array.isArray(body.ids) || body.ids.some((id) => !Number.isInteger(id) || (id as number) < 1)) {
+      return c.json({ error: "ids must be an array of positive integers" }, 400);
+    }
+    const db = getDb();
+    const update = db.query("UPDATE outgoing_email_queue SET status = 'sent', sent_at = datetime('now') WHERE id = $id");
+    const updateLogs = db.query(`
+      UPDATE email_log SET status = 'sent', sent_at = datetime('now')
+      WHERE status IN ('queued', 'error')
+        AND recipient_email = $recipient AND subject = $subject
+        AND (client_id IS $client_id OR client_id = $client_id)
+    `);
+    let updated = 0;
+    for (const rawId of body.ids as number[]) {
+      const id = Number(rawId);
+      const row = db.query("SELECT client_id, vendor_id, recipient_email, subject FROM outgoing_email_queue WHERE id = $id").get({ $id: id }) as any;
+      if (!row) continue;
+      update.run({ $id: id });
+      updateLogs.run({ $recipient: row.recipient_email, $subject: row.subject, $client_id: row.client_id });
+      updated++;
+    }
+    return c.json({ success: true, updated });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// POST /api/emails/mark-failed — record a delivery failure.
+app.post("/api/emails/mark-failed", async (c) => {
+  const denied = requireQueueSecret(c);
+  if (denied) return denied;
+  try {
+    const body = await c.req.json() as { id?: unknown; error?: unknown };
+    if (!Number.isInteger(body.id) || (body.id as number) < 1 || typeof body.error !== "string") {
+      return c.json({ error: "id and error are required" }, 400);
+    }
+    const db = getDb();
+    const result = db.query("UPDATE outgoing_email_queue SET status = 'failed', error_message = $error WHERE id = $id").run({ $id: body.id as number, $error: body.error });
+    return c.json({ success: true, updated: result.changes });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }

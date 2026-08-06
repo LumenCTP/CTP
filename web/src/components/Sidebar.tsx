@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import { openHelp } from "./HelpWidget";
 
 const navItems = [
   { to: "/app", label: "Dashboard", icon: "⌂" },
@@ -8,6 +9,7 @@ const navItems = [
   { to: "/app/reports", label: "Reports", icon: "📊" },
   { to: "/app/needs-review", label: "Needs Review", icon: "⚠" },
   { to: "/app/email-log", label: "Email Log", icon: "✉" },
+  { to: "#help", label: "Help & Support", icon: "?" },
 ];
 
 interface SidebarProps {
@@ -26,7 +28,11 @@ export default function Sidebar({ collapsed, onClose }: SidebarProps) {
       <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
         <div className="sidebar-brand">CTP</div>
         <nav className="sidebar-nav">
-          {navItems.map((item) => (
+          {navItems.map((item) => item.to === "#help" ? (
+            <button key={item.to} className="sidebar-link" onClick={() => { openHelp(); if (window.innerWidth < 768) onClose(); }}>
+              <span className="sidebar-icon">{item.icon}</span><span className="sidebar-label">{item.label}</span>
+            </button>
+          ) : (
             <NavLink
               key={item.to}
               to={item.to}

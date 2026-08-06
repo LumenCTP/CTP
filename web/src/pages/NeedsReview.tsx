@@ -215,7 +215,9 @@ export default function NeedsReview() {
               {items.map((item) => (
                 <tr key={item.id}>
                   <td className="td-name" style={{ maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                    {item.original_filename}
+                    <a className="document-name-link" href={`/app/documents/${item.id}`}>
+                      {item.original_filename}
+                    </a>
                   </td>
                   <td>{item.extracted_vendor_name ?? item.vendor_name ?? "—"}</td>
                   <td>{item.client_name ?? "—"}</td>

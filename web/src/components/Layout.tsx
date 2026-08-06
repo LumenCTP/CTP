@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
+import HelpWidget from "./HelpWidget";
 
 export default function Layout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
@@ -18,6 +19,7 @@ export default function Layout() {
           <Outlet />
         </main>
       </div>
+      <HelpWidget />
     </div>
   );
 }

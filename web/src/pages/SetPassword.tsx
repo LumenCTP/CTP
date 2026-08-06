@@ -1,3 +1,4 @@
+import { apiFetch } from "../lib/api";
 import { useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 
@@ -12,7 +13,7 @@ export default function SetPassword() {
     e.preventDefault(); setError("");
     if (password.length < 6) return setError("Password must be at least 6 characters.");
     if (password !== confirm) return setError("Passwords do not match.");
-    const res = await fetch("/api/auth/set-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, new_password: password }) });
+    const res = await apiFetch("/api/auth/set-password", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, new_password: password }) });
     const data = await res.json();
     if (!res.ok) return setError(data.error || "Could not set password.");
     setDone(true);

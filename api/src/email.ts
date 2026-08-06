@@ -27,7 +27,7 @@ export function sendEmail(
   htmlBody: string,
   clientId?: number,
   vendorId?: number,
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder",
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset",
 ): void {
   const db = getDb();
 
@@ -285,6 +285,35 @@ export function parseRecipients(recipientsStr: string | null): string[] {
     .split(",")
     .map((e) => e.trim())
     .filter((e) => e.length > 0);
+}
+
+// ── Password Reset Email Template ───────────────────────
+
+export function buildPasswordResetEmail(fullName: string, resetLink: string): string {
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #1a56db; padding: 20px; border-radius: 8px 8px 0 0;">
+    <h1 style="color: #fff; margin: 0; font-size: 20px;">Reset your ClearToPay password</h1>
+  </div>
+  <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">Hi ${fullName},</p>
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      We received a request to reset your ClearToPay password. Click the button below to choose a new one.
+      This link expires in <strong>1 hour</strong>.
+    </p>
+    <p style="margin: 24px 0; text-align: center;">
+      <a href="${resetLink}" style="display: inline-block; background: #1a56db; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-size: 14px;">Reset Password</a>
+    </p>
+    <p style="margin: 0 0 12px; font-size: 13px; color: #6b7280;">If the button doesn't work, copy and paste this link into your browser:</p>
+    <p style="margin: 0 0 16px; font-size: 12px; color: #6b7280; word-break: break-all;">${resetLink}</p>
+    <p style="margin: 0; font-size: 13px; color: #6b7280;">If you didn't request this, you can safely ignore this email — your password won't change.</p>
+  </div>
+  <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">This email was sent by ClearToPay Compliance.</p>
+</body>
+</html>`;
 }
 
 // ── Helper: Has a specific reminder been sent? ──────────

@@ -17,6 +17,11 @@ import { existsSync, mkdirSync } from "node:fs";
 // ── State ──────────────────────────────────────────────
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
+let inboxPollInterval: ReturnType<typeof setInterval> | null = null;
+
+function inboxPollTick(): void {
+  console.log("[inbox-poll] Checking for new emails...");
+}
 
 // Track last-run dates to prevent duplicate sends within the same window
 let lastWeeklyCheckDate: string | null = null;   // ISO date string (YYYY-MM-DD) of the Monday we last processed
@@ -134,6 +139,21 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
         });
       }
     }
+  }
+
+  // The delivery worker can pick these queued messages up immediately after the
+  // weekly batch is created. The endpoint is local-only by convention and still
+  // requires the shared queue secret.
+  try {
+    const port = process.env.PORT || "3001";
+    const response = await fetch(`http://127.0.0.1:${port}/api/emails/process-queue`, {
+      method: "POST",
+      headers: { "X-Queue-Secret": process.env.QUEUE_SECRET || "cleartopay-queue-secret-dev" },
+    });
+    if (!response.ok) console.error(`[scheduler] Queue processing request failed: HTTP ${response.status}`);
+    else console.log(`[scheduler] Queue processing requested (${(await response.json() as unknown[]).length} queued emails)`);
+  } catch (err) {
+    console.error("[scheduler] Queue processing request error:", err);
   }
 }
 
@@ -323,11 +343,15 @@ export function startScheduler(): void {
   tick().catch((err) => console.error("[scheduler] Initial tick error:", err));
 
   schedulerInterval = setInterval(tick, 60_000);
+  inboxPollTick();
+  inboxPollInterval = setInterval(inboxPollTick, 5 * 60_000);
 }
 
 export function stopScheduler(): void {
   if (schedulerInterval) {
     clearInterval(schedulerInterval);
+    if (inboxPollInterval) clearInterval(inboxPollInterval);
+    inboxPollInterval = null;
     schedulerInterval = null;
     console.log("[scheduler] Email scheduler stopped");
   }

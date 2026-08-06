@@ -1,3 +1,5 @@
+import { Link } from "react-router-dom";
+import { apiFetch } from "../lib/api";
 import { useEffect, useState, useCallback } from "react";
 import type {
   VendorListItem,
@@ -42,6 +44,20 @@ export default function Vendors() {
   const [form, setForm] = useState<VendorFormData>(emptyForm);
   const [saving, setSaving] = useState(false);
   const [formError, setFormError] = useState<string | null>(null);
+  const [showImport, setShowImport] = useState(false);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importClientId, setImportClientId] = useState(0);
+  const [importing, setImporting] = useState(false);
+  const [importResult, setImportResult] = useState<{ imported: number; errors: Array<{ row: number; error: string }> } | null>(null);
+
+  async function handleImport() {
+    if (!importFile || !importClientId) return;
+    setImporting(true); setImportResult(null);
+    const data = new FormData(); data.append("file", importFile); data.append("client_id", String(importClientId));
+    try { const res = await apiFetch("/api/import/vendors", { method: "POST", body: data }); const result = await res.json(); if (!res.ok) throw new Error(result.error || "Import failed"); setImportResult(result); await fetchVendors(filterClientId); }
+    catch (e) { setImportResult({ imported: 0, errors: [{ row: 0, error: e instanceof Error ? e.message : "Import failed" }] }); }
+    finally { setImporting(false); }
+  }
 
   // Delete confirmation
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -58,7 +74,7 @@ export default function Vendors() {
 
   const fetchClients = useCallback(async () => {
     try {
-      const res = await fetch("/api/clients");
+      const res = await apiFetch("/api/clients");
       if (!res.ok) throw new Error("Failed to fetch clients");
       const data: ClientWithRequiredDocs[] = await res.json();
       setClients(data);
@@ -75,7 +91,7 @@ export default function Vendors() {
       if (clientId) {
         url += `?client_id=${clientId}`;
       }
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error("Failed to fetch vendors");
       const data: VendorListItem[] = await res.json();
       setVendors(data);
@@ -105,7 +121,7 @@ export default function Vendors() {
       if (filterClientId) {
         body.client_id = filterClientId;
       }
-      const res = await fetch("/api/compliance/recalculate", {
+      const res = await apiFetch("/api/compliance/recalculate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -135,7 +151,7 @@ export default function Vendors() {
     setLoadingDetail(true);
     setComplianceDetail(null);
     try {
-      const res = await fetch(`/api/vendors/${vendor.id}/compliance-detail`);
+      const res = await apiFetch(`/api/vendors/${vendor.id}/compliance-detail`);
       if (!res.ok) {
         const errData = await res.json();
         throw new Error(errData.error || "Failed to load compliance detail");
@@ -203,7 +219,7 @@ export default function Vendors() {
         : "/api/vendors";
       const method = editingVendor ? "PUT" : "POST";
 
-      const res = await fetch(url, {
+      const res = await apiFetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -233,7 +249,7 @@ export default function Vendors() {
 
   async function handleDelete(id: number) {
     try {
-      const res = await fetch(`/api/vendors/${id}`, { method: "DELETE" });
+      const res = await apiFetch(`/api/vendors/${id}`, { method: "DELETE" });
       if (!res.ok) {
         const errData = await res.json();
         throw new Error(errData.error || "Delete failed");
@@ -282,9 +298,10 @@ export default function Vendors() {
           >
             {recalculating ? "⟳ Recalculating…" : "⟳ Recalculate Compliance"}
           </button>
-          <button className="btn btn-primary" onClick={openAddModal}>
-            + Add Vendor
+          <button className="btn btn-outline" onClick={() => { setShowImport(true); setImportResult(null); }}>
+            Import CSV
           </button>
+          <button className="btn btn-primary" onClick={openAddModal}>+ Add Vendor</button>
         </div>
       </div>
 
@@ -337,7 +354,7 @@ export default function Vendors() {
             <tbody>
               {vendors.map((vendor) => (
                 <tr key={vendor.id}>
-                  <td className="td-name">{vendor.name}</td>
+                  <td className="td-name"><Link to={`/app/vendors/${vendor.id}`}>{vendor.name}</Link></td>
                   <td>{vendor.client_name}</td>
                   <td>{vendor.contact_email || "—"}</td>
                   <td>{statusBadge(vendor.compliance_status)}</td>
@@ -546,6 +563,17 @@ export default function Vendors() {
             </div>
           </div>
         </div>
+      )}
+
+      {showImport && (
+        <div className="modal-overlay" onClick={() => setShowImport(false)}><div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
+          <div className="modal-header"><h3>Import Vendors CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
+          <div className="modal-body"><div className="form-group"><label>Client *</label><select className="form-select" value={importClientId || ""} onChange={(e) => setImportClientId(Number(e.target.value))}><option value="" disabled>Select a client…</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+            <p className="text-muted text-sm">Columns: name, contact_name, contact_email, contact_phone</p><div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
+            <a href="/api/import/vendors-template" download>Download Template</a>
+            {importResult && <div className={importResult.errors.length ? "error-message" : "success-message"} style={{ marginTop: 12 }}><strong>{importResult.imported} imported</strong>{importResult.errors.length > 0 && <ul>{importResult.errors.map((x, i) => <li key={i}>Row {x.row}: {x.error}</li>)}</ul>}</div>}
+          </div><div className="modal-footer"><button className="btn btn-outline" onClick={() => setShowImport(false)}>Close</button><button className="btn btn-primary" onClick={handleImport} disabled={!importFile || !importClientId || importing}>{importing ? "Importing…" : "Import"}</button></div>
+        </div></div>
       )}
 
       {/* ── Delete Confirmation ── */}

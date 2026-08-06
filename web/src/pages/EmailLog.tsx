@@ -1,3 +1,4 @@
+import { apiFetch } from "../lib/api";
 import { useEffect, useState, useCallback } from "react";
 
 interface EmailLogEntry {
@@ -54,7 +55,7 @@ export default function EmailLog() {
       setLoading(true);
       let url = "/api/emails/log?limit=200";
       if (clientFilter) url += `&client_id=${clientFilter}`;
-      const res = await fetch(url);
+      const res = await apiFetch(url);
       if (!res.ok) throw new Error("Failed to fetch email log");
       const data: EmailLogEntry[] = await res.json();
       setLogs(data);
@@ -67,7 +68,7 @@ export default function EmailLog() {
 
   const fetchClients = useCallback(async () => {
     try {
-      const res = await fetch("/api/clients");
+      const res = await apiFetch("/api/clients");
       if (!res.ok) return;
       const data = await res.json();
       setClients(data.map((c: { id: number; name: string }) => ({ id: c.id, name: c.name })));

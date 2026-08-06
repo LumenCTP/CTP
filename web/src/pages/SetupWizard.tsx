@@ -1,6 +1,8 @@
+import { apiFetch } from "../lib/api";
 import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../components/AuthContext";
+import { openHelp } from "../components/HelpWidget";
 
 const DAYS = [
   { value: "monday", label: "Monday" },
@@ -37,7 +39,7 @@ export default function SetupWizard() {
   // Load existing wizard state (so returning users can resume)
   useEffect(() => {
     if (!token) return;
-    fetch("/api/setup", {
+    apiFetch("/api/setup", {
       headers: { Authorization: `Bearer ${token}` },
     })
       .then((res) => (res.ok ? res.json() : null))
@@ -97,7 +99,7 @@ export default function SetupWizard() {
     setSubmitting(true);
     setError("");
     try {
-      const res = await fetch("/api/setup", {
+      const res = await apiFetch("/api/setup", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -220,6 +222,10 @@ export default function SetupWizard() {
             </div>
           </form>
         )}
+
+        <button type="button" onClick={() => openHelp(`I need help with the ${STEP_LABELS[step - 1]} step`, "onboarding")} style={{ display: "block", margin: "20px auto 0", border: 0, background: "none", color: "var(--accent, #2563eb)", cursor: "pointer", fontSize: 13 }}>
+          Stuck? Our Onboarding Officer can walk you through this.
+        </button>
 
         {step === 3 && (
           <div>

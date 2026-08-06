@@ -1,3 +1,4 @@
+import { apiFetch } from "../lib/api";
 import { useEffect, useState } from "react";
 import type { ClientWithRequiredDocs } from "@clear-to-pay/shared";
 import { ALL_DOCUMENT_TYPES } from "@clear-to-pay/shared";
@@ -57,7 +58,7 @@ export default function Reports() {
 
   // Load clients list
   useEffect(() => {
-    fetch("/api/clients")
+    apiFetch("/api/clients")
       .then((res) => {
         if (!res.ok) throw new Error("Failed to fetch clients");
         return res.json();
@@ -84,7 +85,7 @@ export default function Reports() {
       return;
     }
     setVendorsLoading(true);
-    fetch(`/api/vendors?client_id=${auditClientId}`)
+    apiFetch(`/api/vendors?client_id=${auditClientId}`)
       .then((res) => {
         if (!res.ok) throw new Error("Failed to fetch vendors");
         return res.json();
@@ -109,8 +110,8 @@ export default function Reports() {
 
     try {
       // For "pdf" and "excel" single formats, trigger file download directly
-      if (format === "pdf" || format === "excel") {
-        const res = await fetch("/api/reports/clear-to-pay", {
+      if (format === "pdf" || format === "excel" || format === "csv") {
+        const res = await apiFetch("/api/reports/clear-to-pay", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ client_id: selectedClientId, format }),
@@ -124,7 +125,7 @@ export default function Reports() {
         const blob = await res.blob();
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
-        const ext = format === "pdf" ? "pdf" : "xlsx";
+        const ext = format === "pdf" ? "pdf" : format === "csv" ? "csv" : "xlsx";
         a.href = url;
         a.download = `ClearToPay_Report.${ext}`;
         document.body.appendChild(a);
@@ -133,7 +134,7 @@ export default function Reports() {
         URL.revokeObjectURL(url);
 
         // Fetch summary via "both" to show preview
-        const bothRes = await fetch("/api/reports/clear-to-pay", {
+        const bothRes = await apiFetch("/api/reports/clear-to-pay", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ client_id: selectedClientId, format: "both" }),
@@ -144,7 +145,7 @@ export default function Reports() {
         }
       } else {
         // "both" format
-        const res = await fetch("/api/reports/clear-to-pay", {
+        const res = await apiFetch("/api/reports/clear-to-pay", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ client_id: selectedClientId, format: "both" }),
@@ -200,7 +201,7 @@ export default function Reports() {
       if (auditDateFrom) body.date_from = auditDateFrom;
       if (auditDateTo) body.date_to = auditDateTo;
 
-      const res = await fetch("/api/audit/generate", {
+      const res = await apiFetch("/api/audit/generate", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -282,6 +283,7 @@ export default function Reports() {
                     { value: "both", label: "PDF + Excel" },
                     { value: "pdf", label: "PDF Only" },
                     { value: "excel", label: "Excel Only" },
+                    { value: "csv", label: "CSV Only" },
                   ].map((opt) => (
                     <label key={opt.value} className="radio-label">
                       <input
