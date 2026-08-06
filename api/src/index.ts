@@ -1511,7 +1511,7 @@ const DOCS_DIR = path.join(import.meta.dir, "..", "data", "uploads");
 const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
-async function ingestDocumentAttachment(opts: {
+export async function ingestDocumentAttachment(opts: {
   db: ReturnType<typeof getDb>;
   tenantId: number;
   filename: string;

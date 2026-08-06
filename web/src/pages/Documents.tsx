@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useAuth } from "../components/AuthContext";
 import type {
   DocumentListItem,
   ClientWithRequiredDocs,
@@ -66,6 +67,7 @@ function formatSize(bytes: number | null): string {
 }
 
 export default function Documents() {
+  const { user } = useAuth();
   const [docs, setDocs] = useState<DocumentListItem[]>([]);
   const [clients, setClients] = useState<ClientWithRequiredDocs[]>([]);
   const [vendors, setVendors] = useState<VendorListItem[]>([]);
@@ -319,6 +321,12 @@ export default function Documents() {
           }}
         >
           <h3 style={{ margin: "0 0 18px", fontSize: "1.2rem" }}>📤 Upload Documents</h3>
+          {user?.inbox_address && (
+            <div style={{ background: "var(--blue-light, #eff6ff)", border: "1px solid var(--blue-100, #dbeafe)", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "var(--blue-700, #1d4ed8)" }}>
+              📧 Vendors can also email documents directly to{" "}
+              <strong style={{ wordBreak: "break-all" }}>{user.inbox_address}</strong>
+            </div>
+          )}
           <form onSubmit={handleUpload} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>
             {/* File picker */}
             <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>

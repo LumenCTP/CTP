@@ -242,6 +242,20 @@ export default function SetupWizard() {
                 {DAYS.find((d) => d.value === paymentWeekDay)?.label || paymentWeekDay}
               </p>
             </div>
+            {user?.inbox_address && (
+              <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px dashed var(--accent, #2563eb)" }}>
+                <p style={{ margin: "0 0 8px", fontWeight: 700 }}>📥 Vendor Document Submission</p>
+                <p style={{ margin: "0 0 6px", fontSize: 14, color: "var(--text-muted, #6b7280)" }}>
+                  Have vendors email COIs and W-9s to:
+                </p>
+                <p style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, wordBreak: "break-all" }}>
+                  {user.inbox_address}
+                </p>
+                <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted, #6b7280)" }}>
+                  Documents will be automatically processed and matched.
+                </p>
+              </div>
+            )}
             <div style={{ display: "flex", gap: 8 }}>
               <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(2)} disabled={submitting}>
                 Back

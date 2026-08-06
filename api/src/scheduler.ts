@@ -10,6 +10,7 @@ import {
   markReminderSent,
 } from "./email";
 import { calculatePaymentWeek } from "./compliance";
+import { ingestDocumentAttachment } from "./index";
 import { computeWeeklyPaymentStatus, hasPriorYearW9 } from "./mapping";
 import { QUEUE_SECRET } from "./secrets";
 import path from "node:path";
@@ -21,7 +22,55 @@ let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 let inboxPollInterval: ReturnType<typeof setInterval> | null = null;
 
 function inboxPollTick(): void {
-  console.log("[inbox-poll] Checking for new emails...");
+  try {
+    const db = getDb();
+    const rows = db.query("SELECT id, raw_email_json FROM inbox_queue WHERE processed = 0 ORDER BY id LIMIT 5").all() as Array<{ id: number; raw_email_json: string }>;
+    if (rows.length === 0) return;
+    console.log(`[inbox-poll] Processing ${rows.length} queued emails`);
+    for (const row of rows) {
+      try {
+        const email = JSON.parse(row.raw_email_json);
+        // Extract slug from to_address
+        let tenantSlug: string | null = null;
+        const toAddr = email.to_address || "";
+        const slugMatch = toAddr.match(/\+([a-z0-9-]+)@/i);
+        if (slugMatch) tenantSlug = slugMatch[1];
+
+        if (!tenantSlug) {
+          db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now'), error = 'no slug in to_address' WHERE id = ?", [row.id]);
+          continue;
+        }
+
+        const tenant = db.query("SELECT id FROM tenants WHERE inbox_slug = ?").get(tenantSlug) as { id: number } | undefined;
+        if (!tenant) {
+          db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now'), error = 'tenant not found' WHERE id = ?", [row.id]);
+          continue;
+        }
+
+        // Process attachments
+        const attachments = email.attachments || [];
+        for (const a of attachments) {
+          // Convert base64 to buffer
+          const content = Buffer.from(a.content_base64, 'base64');
+          ingestDocumentAttachment({
+            db,
+            tenantId: tenant.id,
+            filename: a.filename,
+            content: new Uint8Array(content),
+            contentType: a.content_type,
+            senderName: email.from_name,
+            senderEmail: email.from_address
+          }).catch(err => console.error("[inbox-poll] ingest error:", err));
+        }
+        db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now') WHERE id = ?", [row.id]);
+      } catch (err) {
+        console.error("[inbox-poll] row error:", err);
+        db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now'), error = ? WHERE id = ?", [String(err), row.id]);
+      }
+    }
+  } catch (err) {
+    console.error("[inbox-poll] tick error:", err);
+  }
 }
 
 // Track last-run dates to prevent duplicate sends within the same window
@@ -252,11 +301,11 @@ function checkRenewals(now: Date, todayStr: string): void {
 
   // Get all clients with renewal reminders enabled
   const configs = db.query(`
-    SELECT cec.client_id, cl.name as client_name
+    SELECT cec.client_id, cl.name as client_name, cl.tenant_id as tenant_id
     FROM client_email_config cec
     JOIN clients cl ON cl.id = cec.client_id
     WHERE cec.renewal_reminders_enabled = 1
-  `).all() as Array<{ client_id: number; client_name: string }>;
+  `).all() as Array<{ client_id: number; client_name: string; tenant_id: number | null }>;
 
   // Reminder windows: 30, 15, 7, 0 days before expiration
   const REMINDER_WINDOWS = [30, 15, 7, 0];
@@ -305,6 +354,7 @@ function checkRenewals(now: Date, todayStr: string): void {
               doc.document_type,
               doc.expiration_date,
               window,
+              config.tenant_id,
             );
             const outreach = hasPriorYearW9(db, doc.vendor_id, now.getFullYear() - 1)
               ? "Please submit an updated Certificate of Insurance (COI)."

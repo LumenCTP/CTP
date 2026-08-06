@@ -7,6 +7,22 @@ const EMAIL_FROM_ADDRESS = "cleartopay-compliance-0d8d884b@ctomail.io";
 const EMAIL_FROM_NAME = "ClearToPay Docs";
 const EMAIL_REPLY_TO = "cleartopay-compliance-0d8d884b@ctomail.io";
 
+// ── Tenant Inbox Address ──────────────────────────────────
+
+/**
+ * Builds the tenant's custom document-submission inbox address
+ * (cleartopay-compliance-0d8d884b+<slug>@ctomail.io) from the tenant's
+ * inbox_slug. Falls back to the global inbox address when the tenant has
+ * no slug (or the lookup fails).
+ */
+export function getTenantInboxAddress(tenantId?: number | null): string {
+  if (tenantId) {
+    const row = getDb().query("SELECT inbox_slug FROM tenants WHERE id = $id").get({ $id: tenantId }) as { inbox_slug: string | null } | undefined;
+    if (row?.inbox_slug) return EMAIL_FROM_ADDRESS.replace("@", `+${row.inbox_slug}@`);
+  }
+  return EMAIL_FROM_ADDRESS;
+}
+
 // ── Email Sender ─────────────────────────────────────────
 
 /**
@@ -226,7 +242,9 @@ export function buildRenewalReminderEmail(
   documentType: string,
   expirationDate: string,
   daysUntilExpiry: number,
+  tenantId?: number | null,
 ): string {
+  const inboxAddress = getTenantInboxAddress(tenantId);
   const urgencyColor = daysUntilExpiry <= 7 ? "#dc2626" : daysUntilExpiry <= 15 ? "#d97706" : "#374151";
   const urgencyText = daysUntilExpiry === 0
     ? `expires <strong>today</strong>`
@@ -266,7 +284,7 @@ export function buildRenewalReminderEmail(
     </p>
 
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
-      Documents can be emailed directly to <a href="mailto:${EMAIL_FROM_ADDRESS}" style="color: #1a56db;">${EMAIL_FROM_ADDRESS}</a>.
+      Documents can be emailed directly to <a href="mailto:${inboxAddress}" style="color: #1a56db;">${inboxAddress}</a>.
     </p>
   </div>
 
