@@ -248,6 +248,98 @@ function runMigrations(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_support_messages_status ON support_messages(status);
   `);
 
+  // ── Partner Program (referral / commission system) ────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS partners (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
+      first_name TEXT NOT NULL,
+      last_name TEXT NOT NULL,
+      company_name TEXT,
+      email TEXT NOT NULL,
+      phone TEXT,
+      address TEXT,
+      website TEXT,
+      states_served TEXT,
+      partner_type TEXT NOT NULL,
+      tax_info_status TEXT DEFAULT 'not_submitted',
+      preferred_payout_method TEXT,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','suspended','rejected','terminated')),
+      referral_code TEXT UNIQUE,
+      commission_percentage REAL DEFAULT 25.0,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_partners_user_id ON partners(user_id);
+    CREATE INDEX IF NOT EXISTS idx_partners_referral_code ON partners(referral_code);
+    CREATE INDEX IF NOT EXISTS idx_partners_status ON partners(status);
+
+    CREATE TABLE IF NOT EXISTS referrals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      partner_id INTEGER NOT NULL REFERENCES partners(id),
+      partner_code TEXT NOT NULL,
+      referred_company TEXT,
+      contact_name TEXT,
+      contact_email TEXT,
+      contact_phone TEXT,
+      referral_date TEXT DEFAULT (datetime('now')),
+      signup_date TEXT,
+      subscription_start_date TEXT,
+      subscription_plan TEXT,
+      subscription_amount REAL,
+      customer_status TEXT DEFAULT 'lead' CHECK(customer_status IN ('lead','trial','active','past_due','cancelled','refunded')),
+      tenant_id INTEGER REFERENCES tenants(id),
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      updated_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_referrals_partner_id ON referrals(partner_id);
+    CREATE INDEX IF NOT EXISTS idx_referrals_partner_code ON referrals(partner_code);
+    CREATE INDEX IF NOT EXISTS idx_referrals_tenant_id ON referrals(tenant_id);
+
+    CREATE TABLE IF NOT EXISTS commissions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      partner_id INTEGER NOT NULL REFERENCES partners(id),
+      referral_id INTEGER REFERENCES referrals(id),
+      tenant_id INTEGER REFERENCES tenants(id),
+      billing_period TEXT,
+      eligible_revenue REAL NOT NULL,
+      commission_percentage REAL NOT NULL,
+      commission_amount REAL NOT NULL,
+      earned_date TEXT DEFAULT (datetime('now')),
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','approved','scheduled','paid','reversed','disputed')),
+      payout_id INTEGER,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_commissions_partner_id ON commissions(partner_id);
+    CREATE INDEX IF NOT EXISTS idx_commissions_status ON commissions(status);
+    CREATE INDEX IF NOT EXISTS idx_commissions_payout_id ON commissions(payout_id);
+
+    CREATE TABLE IF NOT EXISTS payouts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      partner_id INTEGER NOT NULL REFERENCES partners(id),
+      amount REAL NOT NULL,
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','paid','cancelled')),
+      payment_date TEXT,
+      payment_method TEXT,
+      transaction_ref TEXT,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_payouts_partner_id ON payouts(partner_id);
+
+    CREATE TABLE IF NOT EXISTS partner_audit_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      partner_id INTEGER NOT NULL REFERENCES partners(id),
+      action TEXT NOT NULL,
+      changes TEXT,
+      reason TEXT,
+      performed_by TEXT,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_partner_audit_log_partner_id ON partner_audit_log(partner_id);
+  `);
+
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
   ensureColumn(db, "tenants", "inbox_slug TEXT", "inbox_slug");
   db.exec(`CREATE TABLE IF NOT EXISTS inbox_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, raw_email_json TEXT NOT NULL, processed BOOLEAN NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')))`) ;
@@ -289,6 +381,9 @@ function runMigrations(db: Database): void {
   // ADD COLUMN IF NOT EXISTS, so ensureColumn checks PRAGMA table_info first.
   ensureColumn(db, "users", "reset_token TEXT", "reset_token");
   ensureColumn(db, "users", "reset_token_expires TEXT", "reset_token_expires");
+
+  // Role-based access: 'user' (default), 'partner', 'admin'
+  ensureColumn(db, "users", "role TEXT DEFAULT 'user'", "role");
 
   // Extend email_log.email_type CHECK to include 'password_reset'. SQLite can't
   // ALTER a CHECK constraint, so rebuild the table (same pattern as the

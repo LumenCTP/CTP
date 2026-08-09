@@ -95,6 +95,17 @@ async function tick(): Promise<void> {
   await checkWeekly(now, todayStr);
   await checkMonthly(now, todayStr);
   checkRenewals(now, todayStr);
+  calculateCommissions();
+}
+
+// ── Commission Calculation (Partner Program) ─────────────
+
+// TODO: Wire to real Stripe events. When a Stripe payment succeeds for a tenant
+// that has an active referral (referrals.tenant_id), calculate the commission
+// for the referring partner using their commission_percentage. This stub is
+// called from the scheduler tick and currently only logs.
+function calculateCommissions(): void {
+  console.log("[scheduler] Commission check: no payments to process");
 }
 
 // ── Weekly Report Check ────────────────────────────────

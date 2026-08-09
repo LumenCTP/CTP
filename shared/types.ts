@@ -265,3 +265,120 @@ export interface Tenant {
   inbox_slug: string | null;
   subscription_status: string;
 }
+
+// ── Users & Roles ────────────────────────────────────
+
+export type UserRole = "user" | "partner" | "admin";
+
+export interface User {
+  id: number;
+  full_name: string;
+  company_name: string;
+  email: string;
+  role: UserRole;
+  tenant_id: number | null;
+  created_at: string;
+}
+
+// ── Partner Program ──────────────────────────────────
+
+export type PartnerStatus = "pending" | "approved" | "suspended" | "rejected" | "terminated";
+
+export interface Partner {
+  id: number;
+  user_id: number | null;
+  first_name: string;
+  last_name: string;
+  company_name: string | null;
+  email: string;
+  phone: string | null;
+  address: string | null;
+  website: string | null;
+  states_served: string | null;
+  partner_type: string;
+  tax_info_status: string;
+  preferred_payout_method: string | null;
+  status: PartnerStatus;
+  referral_code: string | null;
+  commission_percentage: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export type ReferralCustomerStatus = "lead" | "trial" | "active" | "past_due" | "cancelled" | "refunded";
+
+export interface Referral {
+  id: number;
+  partner_id: number;
+  partner_code: string;
+  referred_company: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  contact_phone: string | null;
+  referral_date: string;
+  signup_date: string | null;
+  subscription_start_date: string | null;
+  subscription_plan: string | null;
+  subscription_amount: number | null;
+  customer_status: ReferralCustomerStatus;
+  tenant_id: number | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export type CommissionStatus = "pending" | "approved" | "scheduled" | "paid" | "reversed" | "disputed";
+
+export interface Commission {
+  id: number;
+  partner_id: number;
+  referral_id: number | null;
+  tenant_id: number | null;
+  billing_period: string | null;
+  eligible_revenue: number;
+  commission_percentage: number;
+  commission_amount: number;
+  earned_date: string;
+  status: CommissionStatus;
+  payout_id: number | null;
+  created_at: string;
+}
+
+export interface Payout {
+  id: number;
+  partner_id: number;
+  amount: number;
+  status: "pending" | "paid" | "cancelled";
+  payment_date: string | null;
+  payment_method: string | null;
+  transaction_ref: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface PartnerDashboardStats {
+  referral_code: string | null;
+  referral_link: string | null;
+  total_referrals: number;
+  active_customers: number;
+  pending_referrals: number;
+  cancelled_customers: number;
+  current_month_earnings: number;
+  pending_commission: number;
+  approved_commission: number;
+  paid_commission: number;
+  lifetime_earnings: number;
+  next_expected_payout: number;
+}
+
+export interface PartnerListItem {
+  id: number;
+  full_name: string;
+  company_name: string | null;
+  email: string;
+  partner_type: string;
+  status: PartnerStatus;
+  referral_code: string | null;
+  total_referrals: number;
+  created_at: string;
+}
