@@ -88,7 +88,7 @@ export default function Dashboard() {
 
       {showGuide && (
         <section className="onboarding-card" aria-labelledby="onboarding-title">
-          <h3 id="onboarding-title">👋 Welcome to ClearToPay! Let's get you set up.</h3>
+          <h3 id="onboarding-title">👋 Welcome to ClearToPay Construction! Let's get you set up.</h3>
           <p className="onboarding-intro">Complete these three steps to start tracking vendor compliance.</p>
           {(() => { const raw = localStorage.getItem("ctp_user"); const u = raw ? JSON.parse(raw) : null; return u?.inbox_address ? <p style={{fontWeight:700}}>📥 Email documents to: {u.inbox_address}</p> : null; })()}
           <div className="onboarding-steps">

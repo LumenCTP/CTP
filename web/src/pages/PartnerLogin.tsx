@@ -74,7 +74,7 @@ export default function PartnerLogin() {
         <div className="auth-header">
           <div className="auth-logo">CTP</div>
           <h2>Partner Portal</h2>
-          <p className="auth-subtitle">Sign in to your ClearToPay partner account</p>
+          <p className="auth-subtitle">Sign in to your ClearToPay Construction partner account</p>
         </div>
 
         {error && <div className="auth-error">{error}</div>}

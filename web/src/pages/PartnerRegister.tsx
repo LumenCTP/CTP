@@ -115,7 +115,7 @@ export default function PartnerRegister() {
           <h2>Become a Partner</h2>
           <p className="auth-subtitle">
             Earn commissions for every construction company you refer to
-            ClearToPay Compliance
+            ClearToPay Construction
           </p>
         </div>
 

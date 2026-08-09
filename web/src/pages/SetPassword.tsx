@@ -20,7 +20,7 @@ export default function SetPassword() {
     setTimeout(() => navigate("/login", { state: { email } }), 700);
   }
   return <div className="auth-page"><div className="auth-card">
-    <div className="auth-header"><div className="auth-logo">CTP</div><h2>Set your password</h2><p className="auth-subtitle">Finish setting up your ClearToPay account</p></div>
+    <div className="auth-header"><div className="auth-logo">CTP</div><h2>Set your password</h2><p className="auth-subtitle">Finish setting up your ClearToPay Construction account</p></div>
     {error && <div className="auth-error">{error}</div>}
     {done ? <div className="auth-success">Password set. Redirecting to sign in...</div> : <form onSubmit={submit} className="auth-form">
       <div className="form-group"><label htmlFor="setup-email">Email</label><input id="setup-email" type="email" required value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" /></div>

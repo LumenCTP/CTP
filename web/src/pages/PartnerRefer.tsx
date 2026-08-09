@@ -79,8 +79,8 @@ export default function PartnerRefer() {
     <div className="dashboard">
       <h2 className="page-title">Refer a Client</h2>
       <p className="page-subtitle">
-        Tell us about a construction company that should be using ClearToPay
-        Compliance — we'll take it from there.
+        Tell us about a construction company that should be using ClearToPay Construction
+        — we'll take it from there.
       </p>
 
       {shareLink && (
