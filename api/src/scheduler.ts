@@ -10,7 +10,7 @@ import {
   markReminderSent,
 } from "./email";
 import { calculatePaymentWeek } from "./compliance";
-import { ingestDocumentAttachment } from "./index";
+import { ingestDocumentAttachment } from "./routes/documents";
 import { computeWeeklyPaymentStatus, hasPriorYearW9 } from "./mapping";
 import { QUEUE_SECRET } from "./secrets";
 import path from "node:path";

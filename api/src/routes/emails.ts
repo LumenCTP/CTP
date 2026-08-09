@@ -1,0 +1,302 @@
+import { Hono } from "hono";
+import { getDb } from "../db";
+import { requireQueueSecret } from "../middleware";
+import { sendEmail, buildWeeklyReportEmail, buildRenewalReminderEmail, parseRecipients } from "../email";
+import { gatherReportData } from "../reports";
+
+const app = new Hono();
+
+// ── Email Queue Processing ─────────────────────────────────
+
+// POST /api/emails/process-queue — claim/read queued messages for the delivery worker.
+app.post("/api/emails/process-queue", (c) => {
+  const denied = requireQueueSecret(c);
+  if (denied) return denied;
+  try {
+    const db = getDb();
+    const rows = db.query(`
+      SELECT id, from_address, from_name, reply_to, recipient_email, subject,
+             html_body, client_id, vendor_id, email_type
+      FROM outgoing_email_queue
+      WHERE status = 'queued'
+      ORDER BY id ASC
+    `).all();
+    return c.json(rows);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// POST /api/emails/mark-sent — acknowledge successful delivery of queue IDs.
+app.post("/api/emails/mark-sent", async (c) => {
+  const denied = requireQueueSecret(c);
+  if (denied) return denied;
+  try {
+    const body = await c.req.json() as { ids?: unknown };
+    if (!Array.isArray(body.ids) || body.ids.some((id) => !Number.isInteger(id) || (id as number) < 1)) {
+      return c.json({ error: "ids must be an array of positive integers" }, 400);
+    }
+    const db = getDb();
+    const update = db.query("UPDATE outgoing_email_queue SET status = 'sent', sent_at = datetime('now') WHERE id = $id");
+    const updateLogs = db.query(`
+      UPDATE email_log SET status = 'sent', sent_at = datetime('now')
+      WHERE status IN ('queued', 'error')
+        AND recipient_email = $recipient AND subject = $subject
+        AND (client_id IS $client_id OR client_id = $client_id)
+    `);
+    let updated = 0;
+    for (const rawId of body.ids as number[]) {
+      const id = Number(rawId);
+      const row = db.query("SELECT client_id, vendor_id, recipient_email, subject FROM outgoing_email_queue WHERE id = $id").get({ $id: id }) as any;
+      if (!row) continue;
+      update.run({ $id: id });
+      updateLogs.run({ $recipient: row.recipient_email, $subject: row.subject, $client_id: row.client_id });
+      updated++;
+    }
+    return c.json({ success: true, updated });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// POST /api/emails/mark-failed — record a delivery failure.
+app.post("/api/emails/mark-failed", async (c) => {
+  const denied = requireQueueSecret(c);
+  if (denied) return denied;
+  try {
+    const body = await c.req.json() as { id?: unknown; error?: unknown };
+    if (!Number.isInteger(body.id) || (body.id as number) < 1 || typeof body.error !== "string") {
+      return c.json({ error: "id and error are required" }, 400);
+    }
+    const db = getDb();
+    const result = db.query("UPDATE outgoing_email_queue SET status = 'failed', error_message = $error WHERE id = $id").run({ $id: body.id as number, $error: body.error });
+    return c.json({ success: true, updated: result.changes });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// ── Email Configuration ──────────────────────────────────
+
+// GET /api/emails/config/:client_id — get email config
+app.get("/api/emails/config/:client_id", (c) => {
+  try {
+    const db = getDb();
+    const clientId = Number(c.req.param("client_id"));
+
+    const existing = db.query("SELECT id FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: clientId, $tenant_id: c.get("tenant_id") as number });
+    if (!existing) {
+      return c.json({ error: "Client not found" }, 404);
+    }
+
+    let config = db.query(
+      "SELECT id, client_id, weekly_report_recipients, monthly_report_recipients, renewal_reminders_enabled, created_at, updated_at FROM client_email_config WHERE client_id = $client_id AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)"
+    ).get({ $client_id: clientId, $tenant_id: c.get("tenant_id") as number }) as Record<string, unknown> | undefined;
+
+    if (!config) {
+      // Return defaults — config gets created on first save
+      return c.json({
+        client_id: clientId,
+        weekly_report_recipients: null,
+        monthly_report_recipients: null,
+        renewal_reminders_enabled: 1,
+      });
+    }
+
+    return c.json(config);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// PUT /api/emails/config/:client_id — update email recipients
+app.put("/api/emails/config/:client_id", async (c) => {
+  try {
+    const db = getDb();
+    const clientId = Number(c.req.param("client_id"));
+
+    const existing = db.query("SELECT id FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: clientId, $tenant_id: c.get("tenant_id") as number });
+    if (!existing) {
+      return c.json({ error: "Client not found" }, 404);
+    }
+
+    const body = await c.req.json();
+    const { weekly_report_recipients, monthly_report_recipients, renewal_reminders_enabled } = body;
+
+    // Upsert: try insert, then update on conflict
+    db.query(`
+      INSERT INTO client_email_config (client_id, weekly_report_recipients, monthly_report_recipients, renewal_reminders_enabled, updated_at)
+      VALUES ($client_id, $weekly, $monthly, $renewal, datetime('now'))
+      ON CONFLICT(client_id) DO UPDATE SET
+        weekly_report_recipients = COALESCE($weekly, weekly_report_recipients),
+        monthly_report_recipients = COALESCE($monthly, monthly_report_recipients),
+        renewal_reminders_enabled = COALESCE($renewal, renewal_reminders_enabled),
+        updated_at = datetime('now')
+    `).run({
+      $client_id: clientId,
+      $weekly: weekly_report_recipients !== undefined ? (typeof weekly_report_recipients === "string" ? weekly_report_recipients.trim() || null : null) : null,
+      $monthly: monthly_report_recipients !== undefined ? (typeof monthly_report_recipients === "string" ? monthly_report_recipients.trim() || null : null) : null,
+      $renewal: renewal_reminders_enabled !== undefined ? (renewal_reminders_enabled ? 1 : 0) : null,
+    });
+
+    const config = db.query(
+      "SELECT id, client_id, weekly_report_recipients, monthly_report_recipients, renewal_reminders_enabled, created_at, updated_at FROM client_email_config WHERE client_id = $client_id AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)"
+    ).get({ $client_id: clientId, $tenant_id: c.get("tenant_id") as number });
+
+    return c.json(config);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// GET /api/emails/log — list recent emails, supports ?client_id=
+app.get("/api/emails/log", (c) => {
+  try {
+    const db = getDb();
+    const clientId = c.req.query("client_id");
+    const limit = Math.min(Number(c.req.query("limit")) || 100, 500);
+
+    let sql = `
+      SELECT el.id, el.client_id, el.vendor_id, el.email_type, el.recipient_email,
+             el.subject, el.sent_at, el.status, el.error_message,
+             cl.name as client_name,
+             v.name as vendor_name
+      FROM email_log el
+      JOIN clients scope_client ON scope_client.id = el.client_id AND scope_client.tenant_id = $tenant_id
+      LEFT JOIN clients cl ON cl.id = el.client_id
+      LEFT JOIN vendors v ON v.id = el.vendor_id
+    `;
+
+    const params: Record<string, unknown> = { $limit: limit, $tenant_id: c.get("tenant_id") as number };
+
+    if (clientId) {
+      sql += " WHERE el.client_id = $client_id";
+      params.$client_id = Number(clientId);
+    }
+
+    sql += " ORDER BY el.sent_at DESC LIMIT $limit";
+
+    const rows = db.query(sql).all(params);
+    return c.json(rows);
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// POST /api/emails/test-weekly/:client_id — manually send a test weekly report
+app.post("/api/emails/test-weekly/:client_id", async (c) => {
+  try {
+    const db = getDb();
+    const clientId = Number(c.req.param("client_id"));
+
+    const client = db.query("SELECT id, name FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: clientId, $tenant_id: c.get("tenant_id") as number }) as { id: number; name: string } | undefined;
+    if (!client) {
+      return c.json({ error: "Client not found" }, 404);
+    }
+
+    // Get email config to know recipients
+    const config = db.query(
+      "SELECT weekly_report_recipients FROM client_email_config WHERE client_id = $client_id AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)"
+    ).get({ $client_id: clientId }) as { weekly_report_recipients: string | null } | undefined;
+
+    if (!config?.weekly_report_recipients) {
+      return c.json({ error: "No weekly report recipients configured. Set them up first." }, 400);
+    }
+
+    const recipients = parseRecipients(config.weekly_report_recipients);
+
+    // Gather report data
+    const reportData = gatherReportData(clientId);
+
+    // Build email
+    const emailBody = buildWeeklyReportEmail(client.name, {
+      approved_count: reportData.approved.length,
+      review_count: reportData.review.length,
+      hold_count: reportData.hold.length,
+      expiring_count: reportData.expiring_during_week.length,
+      missing_count: reportData.missing_docs.length,
+      payment_week: reportData.payment_week,
+      report_date: reportData.report_date,
+    });
+
+    const subject = `[TEST] Clear-to-Pay Weekly Report — ${reportData.payment_week.monday} to ${reportData.payment_week.sunday}`;
+
+    sendEmail(recipients, subject, emailBody, clientId, undefined, "weekly_report");
+
+    return c.json({
+      success: true,
+      recipients,
+      subject,
+      summary: {
+        approved_count: reportData.approved.length,
+        review_count: reportData.review.length,
+        hold_count: reportData.hold.length,
+        expiring_count: reportData.expiring_during_week.length,
+        missing_count: reportData.missing_docs.length,
+      },
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// POST /api/emails/test-renewal/:document_id — manually send a renewal reminder
+app.post("/api/emails/test-renewal/:document_id", async (c) => {
+  try {
+    const db = getDb();
+    const docId = Number(c.req.param("document_id"));
+
+    const doc = db.query(`
+      SELECT d.id, d.vendor_id, d.client_id, d.document_type, d.sender_email,
+             de.expiration_date, v.name as vendor_name
+      FROM documents d
+      JOIN document_extractions de ON de.document_id = d.id
+      JOIN vendors v ON v.id = d.vendor_id
+      WHERE d.id = $id AND de.is_reviewed = 1 AND d.tenant_id = $tenant_id
+    `).get({ $id: docId, $tenant_id: c.get("tenant_id") }) as {
+      id: number; vendor_id: number; client_id: number; document_type: string;
+      sender_email: string | null; expiration_date: string | null; vendor_name: string;
+    } | undefined;
+
+    if (!doc) {
+      return c.json({ error: "Document not found or not reviewed" }, 404);
+    }
+
+    if (!doc.sender_email) {
+      return c.json({ error: "No sender email on this document" }, 400);
+    }
+
+    if (!doc.expiration_date) {
+      return c.json({ error: "No expiration date on this document" }, 400);
+    }
+
+    const expDate = new Date(doc.expiration_date + "T00:00:00Z");
+    const diffMs = expDate.getTime() - Date.now();
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+    const emailBody = buildRenewalReminderEmail(
+      doc.vendor_name,
+      doc.document_type,
+      doc.expiration_date,
+      Math.max(0, diffDays),
+    );
+
+    const subject = `[TEST] Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${diffDays <= 0 ? "today" : `in ${diffDays} days`}`;
+
+    sendEmail([doc.sender_email], subject, emailBody, doc.client_id, doc.vendor_id, "renewal_reminder");
+
+    return c.json({
+      success: true,
+      recipient: doc.sender_email,
+      subject,
+      vendor_name: doc.vendor_name,
+      document_type: doc.document_type,
+      expiration_date: doc.expiration_date,
+      days_until_expiry: diffDays,
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+export default app;
