@@ -24,6 +24,13 @@ import PartnerRefer from "./pages/PartnerRefer";
 import PartnerReferrals from "./pages/PartnerReferrals";
 import PartnerCommissions from "./pages/PartnerCommissions";
 import PartnerPayouts from "./pages/PartnerPayouts";
+import AdminShell from "./components/AdminShell";
+import AdminDashboard from "./pages/admin/Dashboard";
+import AdminPartners from "./pages/admin/Partners";
+import AdminReferrals from "./pages/admin/Referrals";
+import AdminCommissions from "./pages/admin/Commissions";
+import AdminPayouts from "./pages/admin/Payouts";
+import AdminAuditLog from "./pages/admin/AuditLog";
 
 function LoadingScreen() {
   return (
@@ -51,9 +58,13 @@ function ProtectedRoute() {
 }
 
 // Authenticated users with an unfinished setup wizard go to /app/setup;
-// partners go to the partner portal; everyone else goes to the dashboard (/app).
+// partners go to the partner portal; admins go to the admin dashboard;
+// everyone else goes to the dashboard (/app).
 function HomeRedirect() {
   const { user } = useAuth();
+  if (user?.role === "admin") {
+    return <Navigate to="/app/admin/dashboard" replace />;
+  }
   if (user?.role === "partner") {
     return <Navigate to={needsPartnerSetup(user) ? "/app/partner/status" : "/app/partner/dashboard"} replace />;
   }
@@ -75,6 +86,10 @@ function AppShell() {
 
   if (!user) {
     return <Navigate to="/app/login" replace />;
+  }
+
+  if (user.role === "admin") {
+    return <Navigate to="/app/admin/dashboard" replace />;
   }
 
   if (user.role === "partner") {
@@ -166,6 +181,26 @@ function PartnerRoute() {
   return <Outlet />;
 }
 
+// Guards the admin dashboard: only users with role='admin' may pass. Admins
+// have no tenant record, so no setup-wizard or tenant checks apply here.
+function AdminRoute() {
+  const { user, loading } = useAuth();
+
+  if (loading) {
+    return <LoadingScreen />;
+  }
+
+  if (!user) {
+    return <Navigate to="/app/login" replace />;
+  }
+
+  if (user.role !== "admin") {
+    return <Navigate to="/app/login" replace />;
+  }
+
+  return <Outlet />;
+}
+
 function PublicRoute() {
   const { user, loading } = useAuth();
 
@@ -225,6 +260,19 @@ export default function App() {
                 <Route path="referrals" element={<PartnerReferrals />} />
                 <Route path="commissions" element={<PartnerCommissions />} />
                 <Route path="payouts" element={<PartnerPayouts />} />
+              </Route>
+            </Route>
+
+            {/* Admin dashboard — admins only */}
+            <Route element={<AdminRoute />}>
+              <Route path="app/admin" element={<AdminShell />}>
+                <Route index element={<Navigate to="dashboard" replace />} />
+                <Route path="dashboard" element={<AdminDashboard />} />
+                <Route path="partners" element={<AdminPartners />} />
+                <Route path="referrals" element={<AdminReferrals />} />
+                <Route path="commissions" element={<AdminCommissions />} />
+                <Route path="payouts" element={<AdminPayouts />} />
+                <Route path="audit" element={<AdminAuditLog />} />
               </Route>
             </Route>
           </Route>

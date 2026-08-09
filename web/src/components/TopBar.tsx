@@ -2,9 +2,10 @@ import { useAuth } from "./AuthContext";
 
 interface TopBarProps {
   onMenuToggle: () => void;
+  badge?: string;
 }
 
-export default function TopBar({ onMenuToggle }: TopBarProps) {
+export default function TopBar({ onMenuToggle, badge }: TopBarProps) {
   const { user, logout } = useAuth();
 
   const initial = user?.full_name?.charAt(0)?.toUpperCase() || "?";
@@ -16,6 +17,7 @@ export default function TopBar({ onMenuToggle }: TopBarProps) {
         ☰
       </button>
       <h1 className="topbar-title">ClearToPay Compliance</h1>
+      {badge && <span className="topbar-badge">{badge}</span>}
       <div className="topbar-spacer" />
       <div className="topbar-user" title={displayName}>
         <span className="user-avatar">{initial}</span>

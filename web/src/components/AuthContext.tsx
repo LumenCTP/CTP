@@ -82,9 +82,11 @@ function mergeTenant(user: Record<string, unknown>, tenant: Record<string, unkno
   };
 }
 
-// True when the user must complete the setup wizard before using the app
+// True when the user must complete the setup wizard before using the app.
+// Admins have no tenant/wizard record — they always skip the setup flow.
 export function needsSetup(user: User | null): boolean {
-  return !!user && (user.wizard_status === "NOT_STARTED" || user.wizard_status === "IN_PROGRESS");
+  if (!user || user.role === "admin") return false;
+  return user.wizard_status === "NOT_STARTED" || user.wizard_status === "IN_PROGRESS";
 }
 
 // True when the user is a partner whose application has not been approved yet

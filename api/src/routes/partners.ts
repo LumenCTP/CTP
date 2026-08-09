@@ -133,7 +133,7 @@ app.get("/api/partners/:id", requireAuth, requireAdmin, (c) => {
     FROM commissions WHERE partner_id = $id
   `).get({ $id: id });
 
-  return c.json({ partner: { ...partner, total_referrals, commission_totals: commissionTotals } });
+  return c.json({ partner: { ...partner, total_referrals: totalReferrals, commission_totals: commissionTotals } });
 });
 
 app.put("/api/partners/:id/status", requireAuth, requireAdmin, async (c) => {
@@ -341,7 +341,13 @@ app.get("/api/referrals", requireAuth, requireAdmin, (c) => {
   if (start) { where.push("referral_date >= $start"); params.$start = start; }
   if (end) { where.push("referral_date <= $end"); params.$end = end; }
 
-  const sql = `SELECT * FROM referrals${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY created_at DESC, id DESC`;
+  const sql = `
+    SELECT r.*, (p.first_name || ' ' || p.last_name) as partner_name
+    FROM referrals r
+    LEFT JOIN partners p ON p.id = r.partner_id
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY r.created_at DESC, r.id DESC
+  `;
   const rows = db.query(sql).all(params);
   return c.json({ referrals: rows });
 });
@@ -445,9 +451,18 @@ app.get("/api/commissions", requireAuth, requireAdmin, (c) => {
   const status = c.req.query("status");
   const where: string[] = [];
   const params: Record<string, unknown> = {};
-  if (partnerId) { where.push("partner_id = $partner_id"); params.$partner_id = Number(partnerId); }
-  if (status) { where.push("status = $status"); params.$status = status; }
-  const sql = `SELECT * FROM commissions${where.length ? " WHERE " + where.join(" AND ") : ""} ORDER BY earned_date DESC, id DESC`;
+  if (partnerId) { where.push("c.partner_id = $partner_id"); params.$partner_id = Number(partnerId); }
+  if (status) { where.push("c.status = $status"); params.$status = status; }
+  const sql = `
+    SELECT c.*,
+           (p.first_name || ' ' || p.last_name) as partner_name,
+           r.referred_company as customer_name
+    FROM commissions c
+    LEFT JOIN partners p ON p.id = c.partner_id
+    LEFT JOIN referrals r ON r.id = c.referral_id
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY c.earned_date DESC, c.id DESC
+  `;
   return c.json({ commissions: db.query(sql).all(params) });
 });
 
@@ -515,10 +530,79 @@ app.post("/api/payouts", requireAuth, requireAdmin, async (c) => {
 app.get("/api/payouts", requireAuth, requireAdmin, (c) => {
   const db = getDb();
   const partnerId = c.req.query("partner_id");
+  const baseSql = `
+    SELECT po.*, (p.first_name || ' ' || p.last_name) as partner_name
+    FROM payouts po
+    LEFT JOIN partners p ON p.id = po.partner_id
+  `;
   const rows = partnerId
-    ? db.query("SELECT * FROM payouts WHERE partner_id = $pid ORDER BY created_at DESC, id DESC").all({ $pid: Number(partnerId) })
-    : db.query("SELECT * FROM payouts ORDER BY created_at DESC, id DESC").all();
+    ? db.query(`${baseSql} WHERE po.partner_id = $pid ORDER BY po.created_at DESC, po.id DESC`).all({ $pid: Number(partnerId) })
+    : db.query(`${baseSql} ORDER BY po.created_at DESC, po.id DESC`).all();
   return c.json({ payouts: rows });
+});
+
+// ── Admin: Dashboard + Audit Log (Phase 3) ────────────────
+
+// System-wide aggregate stats for the admin dashboard.
+app.get("/api/admin/dashboard", requireAuth, requireAdmin, (c) => {
+  const db = getDb();
+  const count = (sql: string, params: Record<string, unknown> = {}) =>
+    (db.query(`SELECT COUNT(*) as c ${sql}`).get(params) as { c: number }).c;
+
+  const totalPartners = count("FROM partners");
+  const pendingApplications = count("FROM partners WHERE status = 'pending'");
+  const activePartners = count("FROM partners WHERE status = 'approved'");
+  const totalReferrals = count("FROM referrals");
+  const activeReferredCustomers = count("FROM referrals WHERE customer_status = 'active'");
+  const referralConversionRate = totalReferrals > 0 ? Math.round((activeReferredCustomers / totalReferrals) * 1000) / 10 : 0;
+  const referredMonthlyRevenue = (db.query("SELECT COALESCE(SUM(subscription_amount), 0) as s FROM referrals WHERE customer_status = 'active'").get() as { s: number }).s;
+
+  const pendingAgg = db.query("SELECT COUNT(*) as c, COALESCE(SUM(commission_amount), 0) as s FROM commissions WHERE status = 'pending'").get() as { c: number; s: number };
+  const approvedAgg = db.query("SELECT COUNT(*) as c, COALESCE(SUM(commission_amount), 0) as s FROM commissions WHERE status IN ('approved','scheduled')").get() as { c: number; s: number };
+  const upcomingPayouts = (db.query("SELECT COALESCE(SUM(commission_amount), 0) as s FROM commissions WHERE status IN ('approved','scheduled')").get() as { s: number }).s;
+  const lifetimeCommissionsPaid = (db.query("SELECT COALESCE(SUM(commission_amount), 0) as s FROM commissions WHERE status = 'paid'").get() as { s: number }).s;
+
+  return c.json({
+    total_partners: totalPartners,
+    pending_applications: pendingApplications,
+    active_partners: activePartners,
+    total_referrals: totalReferrals,
+    active_referred_customers: activeReferredCustomers,
+    referral_conversion_rate: referralConversionRate,
+    referred_monthly_revenue: referredMonthlyRevenue,
+    pending_commissions: { count: pendingAgg.c, amount: pendingAgg.s },
+    approved_commissions: { count: approvedAgg.c, amount: approvedAgg.s },
+    upcoming_payouts: upcomingPayouts,
+    lifetime_commissions_paid: lifetimeCommissionsPaid,
+  });
+});
+
+// Admin audit log — partner_audit_log rows joined with the partner's name.
+app.get("/api/admin/audit-log", requireAuth, requireAdmin, (c) => {
+  const db = getDb();
+  const partnerId = c.req.query("partner_id");
+  const action = c.req.query("action");
+  const from = c.req.query("from");
+  const to = c.req.query("to");
+
+  const where: string[] = [];
+  const params: Record<string, unknown> = {};
+  if (partnerId && partnerId !== "all") { where.push("pal.partner_id = $partner_id"); params.$partner_id = Number(partnerId); }
+  if (action && action !== "all") { where.push("pal.action = $action"); params.$action = action; }
+  if (from) { where.push("pal.created_at >= $from"); params.$from = from; }
+  if (to) { where.push("pal.created_at <= $to"); params.$to = to; }
+
+  const sql = `
+    SELECT pal.id, pal.partner_id,
+           COALESCE(p.company_name, (p.first_name || ' ' || p.last_name)) as partner_name,
+           pal.action, pal.changes, pal.reason, pal.performed_by, pal.created_at
+    FROM partner_audit_log pal
+    LEFT JOIN partners p ON p.id = pal.partner_id
+    ${where.length ? "WHERE " + where.join(" AND ") : ""}
+    ORDER BY pal.created_at DESC, pal.id DESC
+    LIMIT 200
+  `;
+  return c.json({ entries: db.query(sql).all(params) });
 });
 
 export default app;
