@@ -1189,3 +1189,238 @@ body {
 .badge.ingestion-error { background:#fee2e2; color:#991b1b; }
 @media (max-width: 800px) { .document-detail-layout { grid-template-columns:1fr; } }
 .help-fab{position:fixed;right:22px;bottom:22px;width:52px;height:52px;border:0;border-radius:50%;background:#2563eb;color:#fff;font-size:25px;font-weight:700;z-index:1000;box-shadow:0 4px 14px #0003;cursor:pointer}.help-panel{position:fixed;right:22px;bottom:84px;width:350px;height:450px;background:var(--surface,#fff);border:1px solid var(--border,#e2e8f0);border-radius:14px;box-shadow:0 12px 35px #0003;z-index:1001;display:flex;flex-direction:column;overflow:hidden}.help-header{padding:14px 16px;background:#2563eb;color:#fff;display:flex;justify-content:space-between;align-items:center}.help-header button{background:none;border:0;color:#fff;font-size:24px;cursor:pointer}.help-messages{flex:1;overflow-y:auto;padding:14px}.help-empty{color:var(--text-muted);font-size:13px;text-align:center;margin-top:130px}.help-bubble{padding:9px 11px;border-radius:12px;margin:7px 0;max-width:85%;font-size:13px;white-space:pre-wrap}.help-bubble.client{margin-left:auto;background:#2563eb;color:#fff}.help-bubble.agent{margin-right:auto;background:#f1f5f9;color:#1e293b}.help-bubble small{display:block;margin-top:5px;color:#64748b;font-size:10px}.help-input{display:flex;gap:8px;padding:10px;border-top:1px solid var(--border,#e2e8f0)}.help-input textarea{flex:1;resize:none;border:1px solid var(--border,#d1d5db);border-radius:8px;padding:8px;font:inherit}.help-input button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:0 12px;cursor:pointer}.help-input button:disabled{opacity:.5}.onboarding-help-prompt{display:block;margin:16px auto 0;border:0;background:none;color:#2563eb;cursor:pointer;font-size:13px}
+
+/* ── Partner Portal ─────────────────────────────────── */
+
+/* Wider auth card for the partner application form */
+.auth-card-wide {
+  max-width: 560px;
+}
+
+/* Two-column form rows (partner forms) */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 14px;
+}
+
+@media (max-width: 640px) {
+  .form-row {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}
+
+/* Referral code card (dashboard) */
+.referral-code-card {
+  background: var(--gray-900);
+  color: #fff;
+  border-radius: 10px;
+  padding: 18px 24px;
+  margin-bottom: 24px;
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+}
+
+.referral-code-info {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.referral-code-label {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--gray-400);
+}
+
+.referral-code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: #fff;
+  background: rgba(26, 86, 219, 0.35);
+  border-radius: 8px;
+  padding: 4px 14px;
+}
+
+.referral-code-actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+}
+
+.referral-code-actions .copy-btn,
+.referral-code-actions .btn-outline {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.25);
+}
+
+.referral-code-actions .btn-outline:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.18);
+  border-color: rgba(255, 255, 255, 0.4);
+}
+
+.referral-code-link {
+  width: 100%;
+  font-size: 0.85rem;
+  color: var(--gray-400);
+  margin: 0;
+}
+
+.referral-link-text {
+  color: #93c5fd;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  word-break: break-all;
+}
+
+/* Status cards (dashboard / summaries) */
+.partner-status-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.partner-status-card {
+  background: #fff;
+  border-radius: 10px;
+  padding: 16px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.06), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+
+.partner-status-label {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--gray-500);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.partner-status-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.partner-summary-grid {
+  margin-bottom: 20px;
+}
+
+@media (max-width: 1024px) {
+  .partner-status-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+}
+
+@media (max-width: 640px) {
+  .partner-status-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Referral share link (refer page) */
+.referral-share-card {
+  background: #fff;
+  border: 1px dashed var(--gray-300);
+  border-radius: 10px;
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.referral-share-label {
+  font-size: 0.9rem;
+  color: var(--gray-600);
+}
+
+.referral-share-link {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  background: var(--gray-100);
+  border-radius: 6px;
+  padding: 6px 10px;
+  color: var(--blue);
+  font-size: 0.85rem;
+  word-break: break-all;
+}
+
+/* Partner status badges (referrals / commissions / payouts) */
+.badge-lead,
+.badge-pending {
+  background: var(--amber-light);
+  color: var(--amber);
+}
+
+.badge-trial,
+.badge-scheduled {
+  background: var(--blue-light);
+  color: var(--blue);
+}
+
+.badge-active,
+.badge-approved,
+.badge-paid {
+  background: var(--green-light);
+  color: var(--green);
+}
+
+.badge-past_due {
+  background: #ffedd5;
+  color: #ea580c;
+}
+
+.badge-cancelled,
+.badge-refunded,
+.badge-reversed,
+.badge-disputed {
+  background: var(--red-light);
+  color: var(--red);
+}
+
+/* Partner status page banner */
+.partner-status-banner {
+  border-radius: 10px;
+  padding: 20px 24px;
+  text-align: center;
+  margin-bottom: 8px;
+}
+
+.partner-status-banner strong {
+  display: block;
+  font-size: 1.05rem;
+  margin-bottom: 6px;
+}
+
+.partner-status-banner p {
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.partner-status-pending {
+  background: var(--amber-light);
+  color: var(--amber);
+}
+
+.partner-status-rejected,
+.partner-status-terminated {
+  background: var(--red-light);
+  color: var(--red);
+}
+
+.partner-status-suspended {
+  background: var(--red-light);
+  color: var(--red);
+}

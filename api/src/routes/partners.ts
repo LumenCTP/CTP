@@ -190,11 +190,16 @@ app.put("/api/partners/:id/commission", requireAuth, requireAdmin, async (c) => 
 
 // ── Partner Portal ───────────────────────────────────────
 
-app.get("/api/partner/me", requireAuth, requirePartner, (c) => {
+// Partner's own profile. Unlike requirePartner-protected endpoints (which 403
+// until the partner is approved), this returns the record for ANY status so the
+// frontend can distinguish pending / rejected / suspended from approved. It is
+// still auth-gated and only ever returns the authenticated user's own row.
+app.get("/api/partner/me", requireAuth, (c) => {
   const db = getDb();
-  const partnerId = c.get("partner_id") as number;
-  const partner = db.query("SELECT * FROM partners WHERE id = $id").get({ $id: partnerId });
-  const totalReferrals = (db.query("SELECT COUNT(*) as c FROM referrals WHERE partner_id = $id").get({ $id: partnerId }) as { c: number }).c;
+  const user = c.get("user") as { user_id: number };
+  const partner = db.query("SELECT * FROM partners WHERE user_id = $uid").get({ $uid: user.user_id }) as Record<string, unknown> | undefined;
+  if (!partner) return c.json({ error: "Partner account required" }, 403);
+  const totalReferrals = (db.query("SELECT COUNT(*) as c FROM referrals WHERE partner_id = $id").get({ $id: partner.id }) as { c: number }).c;
   return c.json({ partner: { ...partner, total_referrals: totalReferrals } });
 });
 
@@ -286,8 +291,20 @@ app.get("/api/partner/commissions", requireAuth, requirePartner, (c) => {
   const status = c.req.query("status");
   const partnerId = c.get("partner_id") as number;
   const rows = status
-    ? db.query("SELECT * FROM commissions WHERE partner_id = $pid AND status = $status ORDER BY earned_date DESC, id DESC").all({ $pid: partnerId, $status: status })
-    : db.query("SELECT * FROM commissions WHERE partner_id = $pid ORDER BY earned_date DESC, id DESC").all({ $pid: partnerId });
+    ? db.query(`
+        SELECT c.*, r.referred_company as customer_name
+        FROM commissions c
+        LEFT JOIN referrals r ON r.id = c.referral_id
+        WHERE c.partner_id = $pid AND c.status = $status
+        ORDER BY c.earned_date DESC, c.id DESC
+      `).all({ $pid: partnerId, $status: status })
+    : db.query(`
+        SELECT c.*, r.referred_company as customer_name
+        FROM commissions c
+        LEFT JOIN referrals r ON r.id = c.referral_id
+        WHERE c.partner_id = $pid
+        ORDER BY c.earned_date DESC, c.id DESC
+      `).all({ $pid: partnerId });
   return c.json({ commissions: rows });
 });
 

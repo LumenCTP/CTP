@@ -1,5 +1,4 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
-import { useNavigate } from "react-router-dom";
 
 interface User {
   id: number;
@@ -8,11 +7,16 @@ interface User {
   inbox_slug?: string | null;
   inbox_address?: string | null;
   email: string;
+  role?: string | null;
   tenant_id?: number | null;
   tenant_name?: string | null;
   subscription_status?: string | null;
   payment_week_start_day?: string | null;
   wizard_status?: string | null;
+  // Partner-specific fields (populated from /api/partner/me when role === "partner")
+  partner_id?: number | null;
+  partner_status?: string | null;
+  referral_code?: string | null;
 }
 
 interface AuthContextType {
@@ -83,22 +87,58 @@ export function needsSetup(user: User | null): boolean {
   return !!user && (user.wizard_status === "NOT_STARTED" || user.wizard_status === "IN_PROGRESS");
 }
 
+// True when the user is a partner whose application has not been approved yet
+// (pending, rejected, or suspended). Approved partners can use the portal.
+export function needsPartnerSetup(user: User | null): boolean {
+  return !!user && user.role === "partner" && !!user.partner_status && user.partner_status !== "approved";
+}
+
+// Fetch partner-specific data from /api/partner/me and attach it to the user
+// object. Non-approved partners still get their partner row back (status
+// pending/rejected/suspended); only a user with no partner record 403s.
+async function withPartnerData(token: string, user: User): Promise<User> {
+  if (user.role !== "partner") return user;
+  try {
+    const res = await fetch("/api/partner/me", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { partner?: Record<string, unknown> };
+      const p = data.partner || {};
+      return {
+        ...user,
+        partner_id: (p.id as number) ?? null,
+        partner_status: (p.status as string) ?? null,
+        referral_code: (p.referral_code as string) ?? null,
+      };
+    }
+    // No partner record (or error) — treat as not yet approved.
+    return { ...user, partner_id: null, partner_status: "pending", referral_code: null };
+  } catch {
+    return { ...user, partner_status: user.partner_status ?? "pending" };
+  }
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(getStoredUser);
   const [token, setToken] = useState<string | null>(getStoredToken);
   const [loading, setLoading] = useState(true);
 
+  // Load the full session (base user + partner data when applicable).
+  const loadSession = useCallback(async (storedToken: string): Promise<User | null> => {
+    const res = await fetch("/api/auth/me", {
+      headers: { Authorization: `Bearer ${storedToken}` },
+    });
+    if (!res.ok) throw new Error("Invalid token");
+    const userData = (await res.json()) as User;
+    return withPartnerData(storedToken, userData);
+  }, []);
+
   // Verify token on mount
   useEffect(() => {
     const storedToken = getStoredToken();
     if (storedToken) {
-      fetch("/api/auth/me", {
-        headers: { Authorization: `Bearer ${storedToken}` },
-      })
-        .then((res) => {
-          if (!res.ok) throw new Error("Invalid token");
-          return res.json();
-        })
+      loadSession(storedToken)
         .then((userData) => {
           setUser(userData);
           setToken(storedToken);
@@ -113,7 +153,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     } else {
       setLoading(false);
     }
-  }, []);
+  }, [loadSession]);
 
   const login = useCallback(async (email: string, password: string): Promise<string | null> => {
     const res = await fetch("/api/auth/login", {
@@ -158,23 +198,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     fetch("/api/auth/logout", { method: "POST" }).catch(() => {});
   }, []);
 
-  // Re-fetch /api/auth/me and update the cached user (used after setup wizard completes)
+  // Re-fetch /api/auth/me (plus partner data for partners) and update the
+  // cached user (used after setup wizard completes and after partner login).
   const refreshUser = useCallback(async (): Promise<boolean> => {
     const storedToken = getStoredToken();
     if (!storedToken) return false;
     try {
-      const res = await fetch("/api/auth/me", {
-        headers: { Authorization: `Bearer ${storedToken}` },
-      });
-      if (!res.ok) throw new Error("Invalid token");
-      const userData = await res.json();
+      const userData = await loadSession(storedToken);
       setUser(userData);
       storeAuth(storedToken, userData);
       return true;
     } catch {
       return false;
     }
-  }, []);
+  }, [loadSession]);
 
   return (
     <AuthContext.Provider value={{ user, token, loading, login, register, logout, refreshUser }}>
