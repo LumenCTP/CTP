@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { applyDefaultRequiredDocs } from "./db";
 
 export function normalize(s: string | null): string | null {
   if (s === null) return null;
@@ -17,7 +18,10 @@ export function matchOrCreateClient(db: Database, tenantId: number, holderName: 
   const found = db.query("SELECT id FROM clients WHERE tenant_id=$tid AND normalized_key=$key").get({ $tid: tenantId, $key: key }) as { id: number } | null;
   if (found) return found.id;
   const result = db.query("INSERT INTO clients (name,address,normalized_key,tenant_id) VALUES ($name,$address,$key,$tid)").run({ $name: holderName, $address: holderAddress, $key: key, $tid: tenantId });
-  return Number(result.lastInsertRowid);
+  const clientId = Number(result.lastInsertRowid);
+  // Auto-discovered clients start with the standard default requirement set.
+  applyDefaultRequiredDocs(db, clientId);
+  return clientId;
 }
 
 export function matchOrCreateVendor(db: Database, clientId: number, vendorName: string | null, vendorAddress: string | null): number | null {

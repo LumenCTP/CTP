@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { getDb } from "../db";
+import { getDb, applyDefaultRequiredDocs } from "../db";
 import { logAudit } from "../middleware";
 
 const app = new Hono();
@@ -25,11 +25,11 @@ app.get("/api/clients", (c) => {
     // Fetch required document types for each client
     const result = clients.map((client) => {
       const docs = db.query(
-        "SELECT document_type FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
-      ).all({ $client_id: client.id }) as Array<{ document_type: string }>;
+        "SELECT document_type, coverage_requirement FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
+      ).all({ $client_id: client.id }) as Array<{ document_type: string; coverage_requirement: string | null }>;
       return {
         ...client,
-        required_documents: docs.map((d) => d.document_type),
+        required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })),
       };
     });
 
@@ -58,12 +58,12 @@ app.get("/api/clients/:id", (c) => {
     }
 
     const docs = db.query(
-      "SELECT document_type FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
-    ).all({ $client_id: id }) as Array<{ document_type: string }>;
+      "SELECT document_type, coverage_requirement FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
+    ).all({ $client_id: id }) as Array<{ document_type: string; coverage_requirement: string | null }>;
 
     return c.json({
       ...client,
-      required_documents: docs.map((d) => d.document_type),
+      required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })),
     });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
@@ -95,10 +95,16 @@ app.post("/api/clients", async (c) => {
     const newId = Number(result.lastInsertRowid);
 
     logAudit(db, "client", newId, "created", { name: name.trim(), contact_email, contact_phone, address });
+    // New clients start with the standard default requirement set (never overwrites
+    // anything — the client is brand new).
+    applyDefaultRequiredDocs(db, newId);
 
     const client = db.query("SELECT id, name, contact_email, contact_phone, address, created_at, updated_at FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: newId, $tenant_id: c.get("tenant_id") as number }) as any;
+    const docs = db.query(
+      "SELECT document_type, coverage_requirement FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
+    ).all({ $client_id: newId }) as Array<{ document_type: string; coverage_requirement: string | null }>;
 
-    return c.json({ ...client, required_documents: [] }, 201);
+    return c.json({ ...client, required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })) }, 201);
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }
@@ -140,10 +146,10 @@ app.put("/api/clients/:id", async (c) => {
     const client = db.query("SELECT id, name, contact_email, contact_phone, address, created_at, updated_at FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: id, $tenant_id: c.get("tenant_id") as number }) as any;
 
     const docs = db.query(
-      "SELECT document_type FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
-    ).all({ $client_id: id }) as Array<{ document_type: string }>;
+      "SELECT document_type, coverage_requirement FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
+    ).all({ $client_id: id }) as Array<{ document_type: string; coverage_requirement: string | null }>;
 
-    return c.json({ ...client, required_documents: docs.map((d) => d.document_type) });
+    return c.json({ ...client, required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })) });
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }
@@ -182,7 +188,7 @@ app.get("/api/clients/:id/documents-required", (c) => {
     }
 
     const docs = db.query(
-      "SELECT id, client_id, document_type, created_at FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
+      "SELECT id, client_id, document_type, coverage_requirement, created_at FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
     ).all({ $client_id: id });
 
     return c.json(docs);
@@ -192,6 +198,8 @@ app.get("/api/clients/:id/documents-required", (c) => {
 });
 
 // POST /api/clients/:id/documents-required — set required document types
+// Accepts document_types as either an array of strings (legacy: type only) or an
+// array of { document_type, coverage_requirement } objects.
 app.post("/api/clients/:id/documents-required", async (c) => {
   try {
     const db = getDb();
@@ -203,7 +211,7 @@ app.post("/api/clients/:id/documents-required", async (c) => {
     }
 
     const body = await c.req.json();
-    const { document_types } = body as { document_types: string[] };
+    const { document_types } = body as { document_types: Array<string | { document_type?: unknown; coverage_requirement?: unknown }> };
 
     if (!Array.isArray(document_types)) {
       return c.json({ error: "document_types must be an array" }, 400);
@@ -212,21 +220,25 @@ app.post("/api/clients/:id/documents-required", async (c) => {
     // Remove existing entries
     db.query("DELETE FROM client_required_documents WHERE client_id = $client_id").run({ $client_id: id });
 
-    // Insert new entries
+    // Insert new entries (normalize string entries to { document_type, coverage_requirement: null })
     const insertStmt = db.query(
-      "INSERT INTO client_required_documents (client_id, document_type) VALUES ($client_id, $document_type)"
+      "INSERT INTO client_required_documents (client_id, document_type, coverage_requirement) VALUES ($client_id, $document_type, $coverage_requirement)"
     );
 
-    for (const dt of document_types) {
-      if (typeof dt === "string" && dt.trim().length > 0) {
-        insertStmt.run({ $client_id: id, $document_type: dt.trim() });
-      }
+    for (const entry of document_types) {
+      const docType = typeof entry === "string" ? entry.trim() : (typeof entry?.document_type === "string" ? (entry.document_type as string).trim() : "");
+      if (docType.length === 0) continue;
+      const coverage =
+        typeof entry === "object" && entry !== null && typeof (entry as { coverage_requirement?: unknown }).coverage_requirement === "string"
+          ? ((entry as { coverage_requirement: string }).coverage_requirement.trim() || null)
+          : null;
+      insertStmt.run({ $client_id: id, $document_type: docType, $coverage_requirement: coverage });
     }
 
     logAudit(db, "client", id, "set_required_documents", { document_types });
 
     const docs = db.query(
-      "SELECT id, client_id, document_type, created_at FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
+      "SELECT id, client_id, document_type, coverage_requirement, created_at FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
     ).all({ $client_id: id });
 
     return c.json(docs);

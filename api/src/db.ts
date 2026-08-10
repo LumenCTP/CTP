@@ -1,5 +1,9 @@
 import { Database } from "bun:sqlite";
 import path from "node:path";
+// NOTE: relative import — the API process (bun run) has no node_modules symlink
+// for the "@clear-to-pay/shared" workspace package (only the web app does), so
+// package-name imports only work for type-only usage (stripped at runtime).
+import { DEFAULT_REQUIRED_DOCUMENTS } from "../../shared/types";
 
 const DB_DIR = path.join(import.meta.dir, "..", "data");
 const DB_PATH = path.join(DB_DIR, "cleartopay.db");
@@ -430,6 +434,22 @@ function runMigrations(db: Database): void {
     }
   }
 
+  // Required-docs coverage amounts: client_required_documents.coverage_requirement
+  // (TEXT, nullable) — the coverage amount a client needs for each document type.
+  ensureColumn(db, "client_required_documents", "coverage_requirement TEXT", "coverage_requirement");
+  // Wizard resume marker: the tenant's own client row the wizard attaches its
+  // Compliance Requirements step to (null until that step is saved).
+  ensureColumn(db, "setup_wizard", "compliance_client_id INTEGER", "compliance_client_id");
+  // Backfill the owner-set default requirement list into clients that have zero
+  // configured rows (existing config is never overwritten).
+  const zeroConfigClients = db.query(
+    "SELECT c.id FROM clients c WHERE NOT EXISTS (SELECT 1 FROM client_required_documents r WHERE r.client_id = c.id)"
+  ).all() as Array<{ id: number }>;
+  let backfilled = 0;
+  for (const client of zeroConfigClients) {
+    backfilled += applyDefaultRequiredDocs(db, client.id);
+  }
+  if (backfilled > 0) console.log(`[db] Backfilled default required documents for ${zeroConfigClients.length} client(s) (${backfilled} rows)`);
   console.log("[db] Migrations complete — all tables ready");
 }
 
@@ -439,4 +459,20 @@ function ensureColumn(db: Database, table: string, columnDef: string, columnName
     db.exec(`ALTER TABLE ${table} ADD COLUMN ${columnDef}`);
     console.log(`[db] Added column "${columnName}" to ${table}`);
   }
+}
+// Insert the standard default required-documents set for a client, but ONLY when
+// the client has zero configured rows — never overwrite existing customization.
+// Returns the number of rows inserted (0 when the client already had config).
+export function applyDefaultRequiredDocs(db: Database, clientId: number): number {
+  const existing = db.query(
+    "SELECT COUNT(*) AS c FROM client_required_documents WHERE client_id = $id"
+  ).get({ $id: clientId }) as { c: number };
+  if (existing.c > 0) return 0;
+  const insert = db.query(
+    "INSERT INTO client_required_documents (client_id, document_type, coverage_requirement) VALUES ($cid, $dt, $cov)"
+  );
+  for (const d of DEFAULT_REQUIRED_DOCUMENTS) {
+    insert.run({ $cid: clientId, $dt: d.document_type, $cov: d.coverage_requirement });
+  }
+  return DEFAULT_REQUIRED_DOCUMENTS.length;
 }

@@ -24,12 +24,33 @@ export interface Client {
 export interface ClientRequiredDocument {
   id: number;
   client_id: number;
-  document_type: DocumentType;
+  document_type: string;
+  coverage_requirement: string | null;
   created_at: string;
+}
+// A required document entry for a client: the document type (standard DocumentType
+// or a custom name) plus the coverage amount the client needs (e.g. for GL).
+export interface RequiredDocument {
+  document_type: string;
+  coverage_requirement: string | null;
 }
 
 export interface ClientWithRequiredDocs extends Client {
-  required_documents: DocumentType[];
+  required_documents: RequiredDocument[];
+}
+// Standard default requirement set shown to every new client (owner-set).
+// Pre-checked in the setup wizard and applied to new clients / backfilled
+// into clients that have zero configured requirements.
+export const DEFAULT_REQUIRED_DOCUMENTS: RequiredDocument[] = [
+  { document_type: "COI", coverage_requirement: null },
+  { document_type: "W-9", coverage_requirement: null },
+  { document_type: "General Liability", coverage_requirement: "$1,000,000 per occurrence / $2,000,000 aggregate" },
+  { document_type: "Workers Comp", coverage_requirement: "Statutory" },
+  { document_type: "Commercial Auto", coverage_requirement: "$1,000,000 combined single limit" },
+  { document_type: "Umbrella", coverage_requirement: "$1,000,000" },
+];
+export function defaultCoverageFor(docType: string): string | null {
+  return DEFAULT_REQUIRED_DOCUMENTS.find((d) => d.document_type === docType)?.coverage_requirement ?? null;
 }
 
 // ── Vendor ────────────────────────────────────────────

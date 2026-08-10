@@ -33,6 +33,7 @@ app.get("/api/setup", requireAuth, requireTenant, (c) => {
             company_name: wizard.company_name,
             company_address: wizard.company_address,
             payment_week_start_day: wizard.payment_week_start_day,
+            compliance_client_id: wizard.compliance_client_id ?? null,
             completed_at: wizard.completed_at,
           }
         : null,
@@ -57,6 +58,15 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
     if (!PAYMENT_WEEK_DAYS.includes(payment_week_start_day)) {
       return c.json({ error: `payment_week_start_day must be one of: ${PAYMENT_WEEK_DAYS.join(", ")}` }, 400);
     }
+    // Optional: the tenant's own client row that the Compliance Requirements step
+    // attached its required docs to (used by the wizard resume logic).
+    let compliance_client_id: number | null = null;
+    if (body.compliance_client_id != null) {
+      const cid = Number(body.compliance_client_id);
+      const owned = db.query("SELECT id FROM clients WHERE id = $id AND tenant_id = $tid").get({ $id: cid, $tid: tenantId });
+      if (!owned) return c.json({ error: "compliance_client_id does not belong to this tenant" }, 400);
+      compliance_client_id = cid;
+    }
 
     let wizard = findWizard(db, tenantId);
     if (!wizard) {
@@ -70,6 +80,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
       SET company_name = COALESCE($company_name, company_name),
           company_address = COALESCE($company_address, company_address),
           payment_week_start_day = $day,
+          compliance_client_id = COALESCE($compliance_client_id, compliance_client_id),
           current_step = 'confirmation',
           updated_at = datetime('now')
       WHERE tenant_id = $tid
@@ -77,6 +88,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
       $company_name: company_name || null,
       $company_address: company_address || null,
       $day: payment_week_start_day,
+      $compliance_client_id: compliance_client_id,
       $tid: tenantId,
     });
 
@@ -136,6 +148,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
         company_name: wizard.company_name,
         company_address: wizard.company_address,
         payment_week_start_day: wizard.payment_week_start_day,
+        compliance_client_id: wizard.compliance_client_id ?? null,
         completed_at: wizard.completed_at,
       },
     });

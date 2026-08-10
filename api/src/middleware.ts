@@ -136,6 +136,7 @@ export interface WizardRow {
   company_name: string | null;
   company_address: string | null;
   payment_week_start_day: string;
+  compliance_client_id: number | null;
   completed_at: string | null;
   created_at: string;
   updated_at: string;

@@ -1,5 +1,5 @@
 import { Hono } from "hono";
-import { getDb } from "../db";
+import { getDb, applyDefaultRequiredDocs } from "../db";
 
 const app = new Hono();
 
@@ -60,7 +60,7 @@ async function importCsv(c: any, kind: "clients" | "vendors") {
         }
       } else {
         const insert = db.query("INSERT INTO clients (tenant_id, name, contact_email, contact_phone, address) VALUES ($tenant_id, $name, $contact_email, $contact_phone, $address)");
-        for (const v of valid) { insert.run({ $tenant_id: tenantId, $name: v[0], $contact_email: v[1] || null, $contact_phone: v[2] || null, $address: v[3] || null }); imported++; }
+        for (const v of valid) { const r = insert.run({ $tenant_id: tenantId, $name: v[0], $contact_email: v[1] || null, $contact_phone: v[2] || null, $address: v[3] || null }); applyDefaultRequiredDocs(db, Number(r.lastInsertRowid)); imported++; }
       }
     });
     transaction();
