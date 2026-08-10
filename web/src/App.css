@@ -101,6 +101,7 @@ body {
   align-items: center;
   gap: 12px;
   padding: 10px 24px;
+  min-height: 44px;
   color: var(--gray-300);
   text-decoration: none;
   font-size: 0.9rem;
@@ -354,6 +355,10 @@ body {
   .menu-toggle {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
+    width: 44px;
+    height: 44px;
+    padding: 0;
   }
 
   .main-area {
@@ -388,6 +393,18 @@ body {
   }
 
   .menu-toggle {
+    display: none;
+  }
+}
+
+/* Narrow phones: keep the top bar to icon + user controls so it never
+   overflows the viewport (wordmark + Admin badge are the wide parts). */
+@media (max-width: 480px) {
+  .topbar-brand .logo-wordmark {
+    display: none;
+  }
+
+  .topbar .topbar-badge {
     display: none;
   }
 }

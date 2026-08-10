@@ -371,7 +371,7 @@ export default function SetupWizard() {
             {DEFAULT_REQUIRED_DOCUMENTS.map((std) => {
               const checked = hasDoc(std.document_type);
               return (
-                <div key={std.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <div key={std.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                   <label style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 190, fontSize: 14 }}>
                     <input
                       type="checkbox"
@@ -395,7 +395,7 @@ export default function SetupWizard() {
             {reqDocs
               .filter((r) => !STANDARD_DOC_TYPES.includes(r.document_type))
               .map((r) => (
-                <div key={r.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <div key={r.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                   <span style={{ minWidth: 190, fontSize: 14, fontWeight: 600 }}>{r.document_type}</span>
                   <input
                     type="text"
@@ -415,17 +415,17 @@ export default function SetupWizard() {
                 </div>
               ))}
             {/* Add custom requirement */}
-            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border, #e2e8f0)" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border, #e2e8f0)", flexWrap: "wrap" }}>
               <input
                 type="text"
-                style={{ ...inputStyle, flex: 1, minWidth: 150 }}
+                style={{ ...inputStyle, flex: 1, minWidth: "min(150px, 100%)" }}
                 placeholder="Custom requirement (e.g. Builder's Risk)"
                 value={customType}
                 onChange={(e) => setCustomType(e.target.value)}
               />
               <input
                 type="text"
-                style={{ ...inputStyle, flex: 1, minWidth: 150 }}
+                style={{ ...inputStyle, flex: 1, minWidth: "min(150px, 100%)" }}
                 placeholder="Coverage amount (optional)"
                 value={customCoverage}
                 onChange={(e) => setCustomCoverage(e.target.value)}

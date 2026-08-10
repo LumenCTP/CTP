@@ -441,7 +441,7 @@ export default function Clients() {
               {ALL_DOCUMENT_TYPES.map((docType) => {
                 const checked = draftHas(docType);
                 return (
-                  <div key={docType} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <div key={docType} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                     <label className="checkbox-label" style={{ minWidth: 170, marginBottom: 0 }}>
                       <input
                         type="checkbox"
@@ -466,7 +466,7 @@ export default function Clients() {
               {docsDraft
                 .filter((d) => !ALL_DOCUMENT_TYPES.includes(d.document_type as DocumentType) && !STANDARD_DOC_TYPES.includes(d.document_type))
                 .map((d) => (
-                  <div key={d.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <div key={d.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                     <span style={{ minWidth: 170, fontSize: 14, fontWeight: 600 }}>{d.document_type}</span>
                     <input
                       type="text"
@@ -487,11 +487,11 @@ export default function Clients() {
                   </div>
                 ))}
               {/* Add custom requirement */}
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border, #e2e8f0)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border, #e2e8f0)", flexWrap: "wrap" }}>
                 <input
                   type="text"
                   className="form-input"
-                  style={{ flex: 1, minWidth: 130 }}
+                  style={{ flex: 1, minWidth: "min(130px, 100%)" }}
                   placeholder="Custom requirement (e.g. Builder's Risk)"
                   value={customDocType}
                   onChange={(e) => setCustomDocType(e.target.value)}
@@ -499,7 +499,7 @@ export default function Clients() {
                 <input
                   type="text"
                   className="form-input"
-                  style={{ flex: 1, minWidth: 130 }}
+                  style={{ flex: 1, minWidth: "min(130px, 100%)" }}
                   placeholder="Coverage amount (optional)"
                   value={customDocCoverage}
                   onChange={(e) => setCustomDocCoverage(e.target.value)}

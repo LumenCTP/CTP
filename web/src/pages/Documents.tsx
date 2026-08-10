@@ -86,6 +86,7 @@ export default function Documents() {
   const [uploadSuccess, setUploadSuccess] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<string>("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const cameraInputRef = useRef<HTMLInputElement>(null);
   const dropRef = useRef<HTMLDivElement>(null);
 
   // Expanded row
@@ -191,17 +192,44 @@ export default function Documents() {
     setDragOver(false);
     const files = e.dataTransfer.files;
     if (files.length > 0) {
-      setSelectedFile(files[0]);
-      setUploadError(null);
+      handleFilePicked(files[0]);
     }
+  }
+
+  // ── File pick (shared by Choose File, Take Photo, drag-drop) ──
+
+  function handleFilePicked(file: File | null) {
+    if (!file) return;
+    // iPhone HEIC guard — iOS Safari normally delivers JPEG for capture, but if a
+    // HEIC/HEIF file sneaks through, reject with a clear message (no backend support).
+    const isHeic =
+      file.type === "image/heic" ||
+      file.type === "image/heif" ||
+      file.type === "image/heic-sequence" ||
+      file.type === "image/heif-sequence" ||
+      /\.heic$/i.test(file.name) ||
+      /\.heif$/i.test(file.name);
+    if (isHeic) {
+      setUploadError(
+        "iPhone photos must be taken with the camera button — HEIC not supported. Use the 📷 Take Photo button, or convert to JPG/PNG and choose the file."
+      );
+      setSelectedFile(null);
+      return;
+    }
+    setSelectedFile(file);
+    setUploadError(null);
   }
 
   function handleFileSelect(e: React.ChangeEvent<HTMLInputElement>) {
     const files = e.target.files;
     if (files && files.length > 0) {
-      setSelectedFile(files[0]);
-      setUploadError(null);
+      handleFilePicked(files[0]);
     }
+  }
+
+  // Clear the input value on click so re-picking the same file/photo fires onChange.
+  function handleInputClick(e: React.MouseEvent<HTMLInputElement>) {
+    e.currentTarget.value = "";
   }
 
   // ── Upload ─────────────────────────────────────
@@ -335,19 +363,42 @@ export default function Documents() {
                 type="file"
                 accept=".pdf,.png,.jpg,.jpeg,application/pdf,image/png,image/jpeg"
                 onChange={handleFileSelect}
+                onClick={handleInputClick}
                 style={{ display: "none" }}
                 id="doc-file-input"
+              />
+              <input
+                ref={cameraInputRef}
+                type="file"
+                accept="image/*"
+                capture="environment"
+                onChange={handleFileSelect}
+                onClick={handleInputClick}
+                style={{ display: "none" }}
+                id="doc-camera-input"
               />
               <button
                 type="button"
                 className="btn btn-primary"
+                onClick={() => cameraInputRef.current?.click()}
+              >
+                📷 Take Photo
+              </button>
+              <button
+                type="button"
+                className="btn btn-outline"
                 onClick={() => fileInputRef.current?.click()}
               >
                 Choose File
               </button>
-              <span className="text-muted text-sm" aria-live="polite">
+              <span className="text-muted text-sm" aria-live="polite" style={{ wordBreak: "break-all" }}>
                 {selectedFile ? selectedFile.name : "No file selected"}
               </span>
+            </div>
+
+            {/* Photo tips */}
+            <div style={{ background: "var(--gray-50, #f9fafb)", border: "1px dashed var(--gray-300, #d1d5db)", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "var(--gray-600, #4b5563)", lineHeight: 1.5 }}>
+              📸 <strong>Photo tips:</strong> good lighting, flat and straight angle, all text readable and in frame. Clear photos help AI extract policy numbers and dates accurately.
             </div>
 
             {/* Client and vendor selectors */}
