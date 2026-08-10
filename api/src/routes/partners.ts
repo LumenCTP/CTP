@@ -628,13 +628,13 @@ app.get("/api/admin/accounts", requireAuth, requireAdmin, (c) => {
 
 // 12-month revenue forecast from the current tenant book — admin only.
 // ACTIVE tenants contribute MRR: plan 'monthly' → $149/mo, 'annual' →
-// $129.99/mo (monthly equivalent of $1,559.88/yr), NULL/unknown plan →
+// $100/mo (monthly equivalent of $1,200/yr), NULL/unknown plan →
 // $149/mo default. TRIAL and CANCELLED tenants are counted in the summary
 // but contribute $0. The projection is a flat MRR over 12 months.
 app.get("/api/admin/cashflow", requireAuth, requireAdmin, (c) => {
   const db = getDb();
   const MONTHLY_RATE = 149;
-  const ANNUAL_MONTHLY_EQUIVALENT = 129.99;
+  const ANNUAL_MONTHLY_EQUIVALENT = 100;
   const rows = db.query("SELECT subscription_status, subscription_plan FROM tenants").all() as {
     subscription_status: string | null;
     subscription_plan: string | null;
