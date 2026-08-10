@@ -626,29 +626,58 @@ app.get("/api/admin/accounts", requireAuth, requireAdmin, (c) => {
   return c.json({ accounts: rows });
 });
 
-// 12-month revenue forecast from the current tenant book — admin only.
+// 12-month cash flow forecast from the current tenant book — admin only.
 // ACTIVE tenants contribute MRR: plan 'monthly' → $149/mo, 'annual' →
 // $100/mo (monthly equivalent of $1,200/yr), NULL/unknown plan →
 // $149/mo default. TRIAL and CANCELLED tenants are counted in the summary
 // but contribute $0. The projection is a flat MRR over 12 months.
+// Partner payouts are projected only for ACTIVE tenants that are linked to
+// an APPROVED partner referral: monthly payout = tenant MRR × (partner
+// commission_percentage / 100), defaulting to 25% when the percentage is
+// NULL. A referred tenant whose partner is not approved creates no
+// projected obligation. partner_payouts_outstanding / partner_payouts_paid
+// are straight SUM()s of real rows (no projection).
 app.get("/api/admin/cashflow", requireAuth, requireAdmin, (c) => {
   const db = getDb();
   const MONTHLY_RATE = 149;
   const ANNUAL_MONTHLY_EQUIVALENT = 100;
-  const rows = db.query("SELECT subscription_status, subscription_plan FROM tenants").all() as {
+  const DEFAULT_COMMISSION_PERCENT = 25.0;
+  const rows = db.query("SELECT id, subscription_status, subscription_plan FROM tenants").all() as {
+    id: number;
     subscription_status: string | null;
     subscription_plan: string | null;
   }[];
+  // Approved-partner referral per tenant (tenant_id → commission rate).
+  // A tenant with no row here has no real payout obligation.
+  const refRows = db.query(`
+    SELECT r.tenant_id, COALESCE(p.commission_percentage, $default) AS commission_percentage
+    FROM referrals r
+    JOIN partners p ON p.id = r.partner_id
+    WHERE r.tenant_id IS NOT NULL AND p.status = 'approved'
+  `).all({ $default: DEFAULT_COMMISSION_PERCENT }) as {
+    tenant_id: number;
+    commission_percentage: number;
+  }[];
+  const commissionRateByTenant = new Map<number, number>();
+  for (const rr of refRows) {
+    commissionRateByTenant.set(Number(rr.tenant_id), Number(rr.commission_percentage));
+  }
   let active = 0;
   let trial = 0;
   let cancelled = 0;
   let mrr = 0;
+  let monthlyPayout = 0;
   for (const r of rows) {
     const status = (r.subscription_status || "").toUpperCase();
     if (status === "ACTIVE") {
       active++;
       const plan = (r.subscription_plan || "").toLowerCase();
-      mrr += plan === "annual" ? ANNUAL_MONTHLY_EQUIVALENT : MONTHLY_RATE;
+      const rev = plan === "annual" ? ANNUAL_MONTHLY_EQUIVALENT : MONTHLY_RATE;
+      mrr += rev;
+      const rate = commissionRateByTenant.get(Number(r.id));
+      if (rate !== undefined) {
+        monthlyPayout += (rev * rate) / 100;
+      }
     } else if (status === "TRIAL" || status === "TRIALING") {
       trial++;
     } else if (status === "CANCELLED" || status === "CANCELED") {
@@ -656,17 +685,32 @@ app.get("/api/admin/cashflow", requireAuth, requireAdmin, (c) => {
     }
   }
   mrr = Math.round(mrr * 100) / 100;
+  monthlyPayout = Math.round(monthlyPayout * 100) / 100;
   const projected12mo = Math.round(mrr * 12 * 100) / 100;
+  const projectedPayouts12mo = Math.round(monthlyPayout * 12 * 100) / 100;
+  const netProjected12mo = Math.round((projected12mo - projectedPayouts12mo) * 100) / 100;
+  // Real committed / paid partner money — no projection, no assumptions.
+  const outstandingRow = db.query(
+    "SELECT COALESCE(SUM(commission_amount), 0) AS total FROM commissions WHERE status IN ('pending','approved','scheduled')"
+  ).get() as { total: number };
+  const paidRow = db.query(
+    "SELECT COALESCE(SUM(amount), 0) AS total FROM payouts WHERE status = 'paid'"
+  ).get() as { total: number };
+  const payoutsOutstanding = Math.round(Number(outstandingRow.total) * 100) / 100;
+  const payoutsPaid = Math.round(Number(paidRow.total) * 100) / 100;
   // 12 months starting from the current month (server local time).
   const now = new Date();
-  const months: { month: string; revenue: number; cumulative: number }[] = [];
+  const months: { month: string; revenue: number; payouts: number; net: number; cumulative: number }[] = [];
   let cumulative = 0;
   for (let i = 0; i < 12; i++) {
     const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
-    cumulative = Math.round((cumulative + mrr) * 100) / 100;
+    const net = Math.round((mrr - monthlyPayout) * 100) / 100;
+    cumulative = Math.round((cumulative + net) * 100) / 100;
     months.push({
       month: d.toLocaleString("en-US", { month: "short", year: "numeric" }),
       revenue: mrr,
+      payouts: monthlyPayout,
+      net,
       cumulative,
     });
   }
@@ -677,11 +721,17 @@ app.get("/api/admin/cashflow", requireAuth, requireAdmin, (c) => {
       cancelled_accounts: cancelled,
       mrr,
       projected_12mo: projected12mo,
+      partner_payouts_outstanding: payoutsOutstanding,
+      partner_payouts_paid: payoutsPaid,
+      projected_payouts_12mo: projectedPayouts12mo,
+      net_projected_12mo: netProjected12mo,
     },
     months,
     assumptions: {
       monthly_rate: MONTHLY_RATE,
       annual_monthly_equivalent: ANNUAL_MONTHLY_EQUIVALENT,
+      payout_note:
+        "Partner payouts projected only for active referred tenants at the partner's commission rate; flat over 12 months.",
     },
   });
 });
