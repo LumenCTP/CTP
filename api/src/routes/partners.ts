@@ -626,4 +626,64 @@ app.get("/api/admin/accounts", requireAuth, requireAdmin, (c) => {
   return c.json({ accounts: rows });
 });
 
+// 12-month revenue forecast from the current tenant book — admin only.
+// ACTIVE tenants contribute MRR: plan 'monthly' → $149/mo, 'annual' →
+// $129.99/mo (monthly equivalent of $1,559.88/yr), NULL/unknown plan →
+// $149/mo default. TRIAL and CANCELLED tenants are counted in the summary
+// but contribute $0. The projection is a flat MRR over 12 months.
+app.get("/api/admin/cashflow", requireAuth, requireAdmin, (c) => {
+  const db = getDb();
+  const MONTHLY_RATE = 149;
+  const ANNUAL_MONTHLY_EQUIVALENT = 129.99;
+  const rows = db.query("SELECT subscription_status, subscription_plan FROM tenants").all() as {
+    subscription_status: string | null;
+    subscription_plan: string | null;
+  }[];
+  let active = 0;
+  let trial = 0;
+  let cancelled = 0;
+  let mrr = 0;
+  for (const r of rows) {
+    const status = (r.subscription_status || "").toUpperCase();
+    if (status === "ACTIVE") {
+      active++;
+      const plan = (r.subscription_plan || "").toLowerCase();
+      mrr += plan === "annual" ? ANNUAL_MONTHLY_EQUIVALENT : MONTHLY_RATE;
+    } else if (status === "TRIAL" || status === "TRIALING") {
+      trial++;
+    } else if (status === "CANCELLED" || status === "CANCELED") {
+      cancelled++;
+    }
+  }
+  mrr = Math.round(mrr * 100) / 100;
+  const projected12mo = Math.round(mrr * 12 * 100) / 100;
+  // 12 months starting from the current month (server local time).
+  const now = new Date();
+  const months: { month: string; revenue: number; cumulative: number }[] = [];
+  let cumulative = 0;
+  for (let i = 0; i < 12; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() + i, 1);
+    cumulative = Math.round((cumulative + mrr) * 100) / 100;
+    months.push({
+      month: d.toLocaleString("en-US", { month: "short", year: "numeric" }),
+      revenue: mrr,
+      cumulative,
+    });
+  }
+  return c.json({
+    summary: {
+      active_accounts: active,
+      trial_accounts: trial,
+      cancelled_accounts: cancelled,
+      mrr,
+      projected_12mo: projected12mo,
+    },
+    months,
+    assumptions: {
+      monthly_rate: MONTHLY_RATE,
+      annual_monthly_equivalent: ANNUAL_MONTHLY_EQUIVALENT,
+    },
+  });
+});
+
 export default app;
