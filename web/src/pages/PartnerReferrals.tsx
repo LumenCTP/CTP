@@ -63,7 +63,7 @@ export default function PartnerReferrals() {
   return (
     <div className="dashboard">
       <h2 className="page-title">My Referrals</h2>
-      <p className="page-subtitle">Everyone you've referred to ClearToPay Compliance.</p>
+      <p className="page-subtitle">Everyone you've referred to ClearToPay Construction.</p>
 
       {loading && <div className="loading">Loading referrals…</div>}
       {error && <div className="error-message">Error: {error}</div>}

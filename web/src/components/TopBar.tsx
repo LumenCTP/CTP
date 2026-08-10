@@ -16,7 +16,7 @@ export default function TopBar({ onMenuToggle, badge }: TopBarProps) {
       <button className="menu-toggle" onClick={onMenuToggle} aria-label="Toggle menu">
         ☰
       </button>
-      <h1 className="topbar-title">ClearToPay Compliance</h1>
+      <h1 className="topbar-title">ClearToPay Construction</h1>
       {badge && <span className="topbar-badge">{badge}</span>}
       <div className="topbar-spacer" />
       <div className="topbar-user" title={displayName}>
