@@ -13,6 +13,11 @@ export default function Register() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
+  // Optional partner referral code captured from ?ref= in the URL
+  // (e.g. cleartopay-dev.ctonew.app/app/register?ref=CODE). Passed through to
+  // /api/auth/register so signups are attributed to the referring partner.
+  const referralCode = new URLSearchParams(window.location.search).get("ref") || undefined;
+
   if (loading) {
     return (
       <div className="auth-page">
@@ -53,7 +58,7 @@ export default function Register() {
     }
 
     setSubmitting(true);
-    const err = await register(fullName.trim(), companyName.trim(), email.trim(), password);
+    const err = await register(fullName.trim(), companyName.trim(), email.trim(), password, referralCode);
     setSubmitting(false);
 
     if (err) {

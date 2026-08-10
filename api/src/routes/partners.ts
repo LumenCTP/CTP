@@ -7,7 +7,7 @@ const app = new Hono();
 // ── Partner Program ──────────────────────────────────────
 
 // Partner-specific audit log (extends audit_logs with a reason field)
-function logPartnerAudit(db: ReturnType<typeof getDb>, partnerId: number, action: string, changes: Record<string, unknown> | null = null, reason: string | null = null, performedBy: string = "admin") {
+export function logPartnerAudit(db: ReturnType<typeof getDb>, partnerId: number, action: string, changes: Record<string, unknown> | null = null, reason: string | null = null, performedBy: string = "admin") {
   db.query(`
     INSERT INTO partner_audit_log (partner_id, action, changes, reason, performed_by)
     VALUES ($pid, $action, $changes, $reason, $by)
@@ -320,7 +320,7 @@ app.get("/api/referrals/track", (c) => {
   const code = (c.req.query("code") || "").trim().toUpperCase();
   if (!code) return c.json({ error: "code is required" }, 400);
   const db = getDb();
-  const partner = db.query("SELECT id, first_name, last_name, company_name, status FROM partners WHERE referral_code = $code").get({ $code: code }) as { id: number; first_name: string; last_name: string; company_name: string | null; status: string } | undefined;
+  const partner = db.query("SELECT id, first_name, last_name, company_name, status FROM partners WHERE referral_code = $code COLLATE NOCASE").get({ $code: code }) as { id: number; first_name: string; last_name: string; company_name: string | null; status: string } | undefined;
   if (!partner || partner.status !== "approved") return c.json({ error: "Invalid referral code" }, 404);
   return c.json({ partner: { id: partner.id, name: `${partner.first_name} ${partner.last_name}`, company_name: partner.company_name, referral_code: code } });
 });

@@ -9,6 +9,7 @@ import {
   logAudit,
 } from "./middleware";
 import { sendEmail, buildPasswordResetEmail } from "./email";
+import { logPartnerAudit } from "./routes/partners";
 
 const app = new Hono();
 
@@ -17,7 +18,7 @@ const app = new Hono();
 app.post("/api/auth/register", async (c) => {
   try {
     const body = await c.req.json();
-    const { full_name, company_name, email, password } = body;
+    const { full_name, company_name, email, password, referral_code } = body;
 
     if (!full_name || typeof full_name !== "string" || full_name.trim().length === 0) {
       return c.json({ error: "Full name is required" }, 400);
@@ -73,6 +74,49 @@ app.post("/api/auth/register", async (c) => {
     });
     const wizard = findWizard(db, tenant.id);
 
+    // ── Referral attribution ─────────────────────────────
+    // If a referral_code was supplied and matches an APPROVED partner, record a
+    // referral linked to this tenant. A bad/unknown/non-approved code must never
+    // block registration — it is silently ignored (only logged).
+    let referredPartner: { id: number; name: string } | null = null;
+    if (referral_code && typeof referral_code === "string" && referral_code.trim().length > 0) {
+      const code = referral_code.trim().toUpperCase();
+      try {
+        const partner = db.query(
+          "SELECT id, first_name, last_name, status FROM partners WHERE referral_code = $code COLLATE NOCASE"
+        ).get({ $code: code }) as { id: number; first_name: string; last_name: string; status: string } | undefined;
+
+        if (!partner || partner.status !== "approved") {
+          console.log(`[referral] Signup for ${email.trim().toLowerCase()} used invalid/non-approved referral code "${code}" — ignoring`);
+        } else {
+          // Idempotency: never create a duplicate referral for the same tenant.
+          const existing = db.query("SELECT id FROM referrals WHERE tenant_id = $tid").get({ $tid: tenant.id });
+          if (existing) {
+            console.log(`[referral] Referral already exists for tenant ${tenant.id} — skipping attribution`);
+          } else {
+            const refResult = db.query(`
+              INSERT INTO referrals (partner_id, partner_code, referred_company, contact_name, contact_email, signup_date, subscription_plan, subscription_amount, customer_status, tenant_id, notes)
+              VALUES ($pid, $code, $company, $contact_name, $email, datetime('now'), NULL, NULL, 'trial', $tid, 'auto-attributed via signup referral code')
+            `).run({
+              $pid: partner.id,
+              $code: code,
+              $company: company_name.trim(),
+              $contact_name: full_name.trim(),
+              $email: email.trim().toLowerCase(),
+              $tid: tenant.id,
+            });
+            const referralId = Number(refResult.lastInsertRowid);
+            logPartnerAudit(db, partner.id, "referral_auto_attributed", { referral_id: referralId, tenant_id: tenant.id, code }, null, email.trim().toLowerCase());
+            console.log(`[referral] Auto-attributed signup ${email.trim().toLowerCase()} to partner ${partner.id} (${code}) → referral #${referralId}, tenant ${tenant.id}`);
+            referredPartner = { id: partner.id, name: `${partner.first_name} ${partner.last_name}` };
+          }
+        }
+      } catch (refErr) {
+        // Never let a referral error break registration.
+        console.log(`[referral] Attribution error for ${email.trim().toLowerCase()}, ignoring: ${String(refErr)}`);
+      }
+    }
+
     return c.json({
       token,
       user: {
@@ -88,6 +132,7 @@ app.post("/api/auth/register", async (c) => {
         payment_week_start_day: tenant.payment_week_start_day,
         wizard_status: wizard?.status || "NOT_STARTED",
       },
+      referred_partner: referredPartner,
     }, 201);
   } catch (err) {
     return c.json({ error: String(err) }, 500);
