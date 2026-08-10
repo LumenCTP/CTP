@@ -1,7 +1,9 @@
 import { apiFetch } from "../lib/api";
 import { useEffect, useState, useCallback } from "react";
-import type { ClientWithRequiredDocs, DocumentType } from "@clear-to-pay/shared";
-import { ALL_DOCUMENT_TYPES } from "@clear-to-pay/shared";
+import type { ClientWithRequiredDocs, DocumentType, RequiredDocument } from "@clear-to-pay/shared";
+import { ALL_DOCUMENT_TYPES, DEFAULT_REQUIRED_DOCUMENTS, defaultCoverageFor } from "@clear-to-pay/shared";
+
+const STANDARD_DOC_TYPES = DEFAULT_REQUIRED_DOCUMENTS.map((d) => d.document_type);
 
 interface ClientFormData {
   name: string;
@@ -47,7 +49,11 @@ export default function Clients() {
 
   // Required docs panel
   const [docsClientId, setDocsClientId] = useState<number | null>(null);
-  const [docsSaving, setDocsSaving] = useState<Record<string, boolean>>({});
+  const [docsDraft, setDocsDraft] = useState<RequiredDocument[]>([]);
+  const [docsSaving, setDocsSaving] = useState(false);
+  const [docsFeedback, setDocsFeedback] = useState<string | null>(null);
+  const [customDocType, setCustomDocType] = useState("");
+  const [customDocCoverage, setCustomDocCoverage] = useState("");
 
   // Email settings panel
   const [emailClientId, setEmailClientId] = useState<number | null>(null);
@@ -165,26 +171,68 @@ export default function Clients() {
   // ── Required Docs ──
 
   function toggleDocsPanel(clientId: number) {
-    setDocsClientId((prev) => (prev === clientId ? null : clientId));
+    if (docsClientId === clientId) {
+      setDocsClientId(null);
+      return;
+    }
+    const client = clients.find((c) => c.id === clientId);
+    setDocsClientId(clientId);
+    setDocsDraft(client ? client.required_documents.map((d) => ({ ...d })) : []);
+    setDocsFeedback(null);
+    setCustomDocType("");
+    setCustomDocCoverage("");
   }
 
-  async function toggleDocumentType(clientId: number, docType: DocumentType) {
-    const client = clients.find((c) => c.id === clientId);
-    if (!client) return;
+  function draftHas(docType: string): boolean {
+    return docsDraft.some((d) => d.document_type === docType);
+  }
+  function draftCoverage(docType: string): string {
+    return docsDraft.find((d) => d.document_type === docType)?.coverage_requirement ?? "";
+  }
+  function toggleDraftDoc(docType: string) {
+    setDocsDraft((prev) =>
+      prev.some((d) => d.document_type === docType)
+        ? prev.filter((d) => d.document_type !== docType)
+        : [...prev, { document_type: docType, coverage_requirement: defaultCoverageFor(docType) }]
+    );
+  }
+  function setDraftCoverage(docType: string, value: string) {
+    setDocsDraft((prev) => {
+      const existing = prev.find((d) => d.document_type === docType);
+      if (existing) {
+        return prev.map((d) => (d.document_type === docType ? { ...d, coverage_requirement: value.trim() || null } : d));
+      }
+      return [...prev, { document_type: docType, coverage_requirement: value.trim() || null }];
+    });
+  }
+  function addCustomDoc() {
+    const type = customDocType.trim();
+    if (!type) {
+      setDocsFeedback("Enter a document type name first.");
+      return;
+    }
+    if (draftHas(type)) {
+      setDocsFeedback("That requirement is already in the list.");
+      return;
+    }
+    setDocsDraft((prev) => [...prev, { document_type: type, coverage_requirement: customDocCoverage.trim() || null }]);
+    setCustomDocType("");
+    setCustomDocCoverage("");
+    setDocsFeedback(null);
+  }
+  function removeDraftDoc(docType: string) {
+    setDocsDraft((prev) => prev.filter((d) => d.document_type !== docType));
+  }
 
-    const hasDoc = client.required_documents.includes(docType);
-    const newDocTypes = hasDoc
-      ? client.required_documents.filter((d) => d !== docType)
-      : [...client.required_documents, docType];
-
-    const key = `${clientId}-${docType}`;
-    setDocsSaving((prev) => ({ ...prev, [key]: true }));
-
+  async function saveDocsDraft() {
+    if (!docsClientId) return;
+    setDocsSaving(true);
+    setDocsFeedback(null);
     try {
-      const res = await apiFetch(`/api/clients/${clientId}/documents-required`, {
+      const res = await apiFetch(`/api/clients/${docsClientId}/documents-required`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ document_types: newDocTypes }),
+        body: JSON.stringify({ document_types: docsDraft }),
       });
 
       if (!res.ok) {
@@ -193,10 +241,11 @@ export default function Clients() {
       }
 
       await fetchClients();
+      setDocsFeedback("Saved.");
     } catch (err) {
-      alert(err instanceof Error ? err.message : "Update failed");
+      setDocsFeedback(err instanceof Error ? err.message : "Update failed");
     } finally {
-      setDocsSaving((prev) => ({ ...prev, [key]: false }));
+      setDocsSaving(false);
     }
   }
 
@@ -327,9 +376,10 @@ export default function Clients() {
                   <td>
                     <div className="docs-tags">
                       {client.required_documents.length > 0
-                        ? client.required_documents.map((dt) => (
-                            <span key={dt} className="doc-tag">
-                              {dt}
+                        ? client.required_documents.map((d) => (
+                            <span key={d.document_type} className="doc-tag" title={d.coverage_requirement ?? undefined}>
+                              {d.document_type}
+                              {d.coverage_requirement ? ` — ${d.coverage_requirement}` : ""}
                             </span>
                           ))
                         : <span className="text-muted">None</span>}
@@ -383,22 +433,94 @@ export default function Clients() {
               </button>
             </div>
             <div className="docs-panel-body">
+              <p className="text-muted text-sm" style={{ margin: "0 0 12px" }}>
+                Check each document vendors must provide and enter the coverage amount
+                each policy must meet (optional).
+              </p>
+              {/* Standard requirement rows */}
               {ALL_DOCUMENT_TYPES.map((docType) => {
-                const checked = client.required_documents.includes(docType);
-                const key = `${client.id}-${docType}`;
+                const checked = draftHas(docType);
                 return (
-                  <label key={docType} className="checkbox-label">
+                  <div key={docType} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <label className="checkbox-label" style={{ minWidth: 170, marginBottom: 0 }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleDraftDoc(docType)}
+                      />
+                      <span>{docType}</span>
+                    </label>
                     <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={docsSaving[key]}
-                      onChange={() => toggleDocumentType(client.id, docType)}
+                      type="text"
+                      className="form-input"
+                      style={{ flex: 1, opacity: checked ? 1 : 0.5 }}
+                      placeholder={checked ? "Coverage amount (optional)" : "Select to add"}
+                      value={draftCoverage(docType)}
+                      disabled={!checked}
+                      onChange={(e) => setDraftCoverage(docType, e.target.value)}
                     />
-                    <span>{docType}</span>
-                    {docsSaving[key] && <span className="saving-indicator">…</span>}
-                  </label>
+                  </div>
                 );
               })}
+              {/* Custom requirement rows */}
+              {docsDraft
+                .filter((d) => !ALL_DOCUMENT_TYPES.includes(d.document_type as DocumentType) && !STANDARD_DOC_TYPES.includes(d.document_type))
+                .map((d) => (
+                  <div key={d.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                    <span style={{ minWidth: 170, fontSize: 14, fontWeight: 600 }}>{d.document_type}</span>
+                    <input
+                      type="text"
+                      className="form-input"
+                      style={{ flex: 1 }}
+                      placeholder="Coverage amount (optional)"
+                      value={d.coverage_requirement ?? ""}
+                      onChange={(e) => setDraftCoverage(d.document_type, e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-outline"
+                      onClick={() => removeDraftDoc(d.document_type)}
+                      title={`Remove ${d.document_type}`}
+                    >
+                      ✕
+                    </button>
+                  </div>
+                ))}
+              {/* Add custom requirement */}
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border, #e2e8f0)" }}>
+                <input
+                  type="text"
+                  className="form-input"
+                  style={{ flex: 1, minWidth: 130 }}
+                  placeholder="Custom requirement (e.g. Builder's Risk)"
+                  value={customDocType}
+                  onChange={(e) => setCustomDocType(e.target.value)}
+                />
+                <input
+                  type="text"
+                  className="form-input"
+                  style={{ flex: 1, minWidth: 130 }}
+                  placeholder="Coverage amount (optional)"
+                  value={customDocCoverage}
+                  onChange={(e) => setCustomDocCoverage(e.target.value)}
+                />
+                <button type="button" className="btn btn-sm btn-outline" onClick={addCustomDoc}>
+                  + Add
+                </button>
+              </div>
+              {docsFeedback && (
+                <p style={{ fontSize: 13, margin: "10px 0 0", color: docsFeedback === "Saved." ? "#059669" : "var(--text-muted)" }}>
+                  {docsFeedback}
+                </p>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 14 }}>
+                <button type="button" className="btn btn-outline" onClick={() => toggleDocsPanel(client.id)} disabled={docsSaving}>
+                  Cancel
+                </button>
+                <button type="button" className="btn btn-primary" onClick={saveDocsDraft} disabled={docsSaving}>
+                  {docsSaving ? "Saving…" : "Save Requirements"}
+                </button>
+              </div>
             </div>
           </div>
         );

@@ -1,9 +1,10 @@
 import { apiFetch } from "../lib/api";
-import { useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent, type CSSProperties } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../components/AuthContext";
 import { openHelp } from "../components/HelpWidget";
 import Logo from "../components/Logo";
+import { DEFAULT_REQUIRED_DOCUMENTS, defaultCoverageFor, type RequiredDocument } from "@clear-to-pay/shared";
 
 const DAYS = [
   { value: "monday", label: "Monday" },
@@ -21,9 +22,12 @@ interface WizardData {
   company_name?: string | null;
   company_address?: string | null;
   payment_week_start_day?: string | null;
+  compliance_client_id?: number | null;
 }
 
-const STEP_LABELS = ["Company Info", "Payment Week", "Confirmation"];
+const STEP_LABELS = ["Company Info", "Payment Week", "Compliance Requirements", "Confirmation"];
+
+const STANDARD_DOC_TYPES = DEFAULT_REQUIRED_DOCUMENTS.map((d) => d.document_type);
 
 export default function SetupWizard() {
   const { user, loading, token, refreshUser } = useAuth();
@@ -33,7 +37,16 @@ export default function SetupWizard() {
   const [companyName, setCompanyName] = useState(user?.company_name || "");
   const [companyAddress, setCompanyAddress] = useState("");
   const [paymentWeekDay, setPaymentWeekDay] = useState("monday");
+  // Selected required documents (standard + custom), each with a coverage amount.
+  const [reqDocs, setReqDocs] = useState<RequiredDocument[]>(
+    DEFAULT_REQUIRED_DOCUMENTS.map((d) => ({ ...d }))
+  );
+  const [complianceClientId, setComplianceClientId] = useState<number | null>(null);
+  // Custom requirement draft row
+  const [customType, setCustomType] = useState("");
+  const [customCoverage, setCustomCoverage] = useState("");
   const [loadingWizard, setLoadingWizard] = useState(true);
+  const [savingDocs, setSavingDocs] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -50,15 +63,32 @@ export default function SetupWizard() {
           if (w.company_name) setCompanyName(w.company_name);
           if (w.company_address) setCompanyAddress(w.company_address);
           if (w.payment_week_start_day) setPaymentWeekDay(w.payment_week_start_day);
+          if (w.compliance_client_id) setComplianceClientId(w.compliance_client_id);
           // Resume at the furthest completed step
           if (w.status === "IN_PROGRESS") {
-            if (w.company_name || w.company_address) setStep(2);
+            if (w.compliance_client_id) setStep(4);
+            else if (w.company_name || w.company_address) setStep(2);
           }
         }
       })
       .catch(() => {})
       .finally(() => setLoadingWizard(false));
   }, [token]);
+
+  // When resuming with a saved compliance client, load its configured requirements
+  useEffect(() => {
+    if (!token || !complianceClientId) return;
+    apiFetch(`/api/clients/${complianceClientId}/documents-required`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((rows) => {
+        if (Array.isArray(rows)) {
+          setReqDocs(rows.map((r) => ({ document_type: r.document_type, coverage_requirement: r.coverage_requirement ?? null })));
+        }
+      })
+      .catch(() => {});
+  }, [token, complianceClientId]);
 
   if (loading || loadingWizard) {
     return (
@@ -76,6 +106,106 @@ export default function SetupWizard() {
 
   if (user.wizard_status === "COMPLETED") {
     return <Navigate to="/app" replace />;
+  }
+
+  // ── Step 3 helpers ────────────────────────────────────
+  function hasDoc(docType: string): boolean {
+    return reqDocs.some((r) => r.document_type === docType);
+  }
+  function coverageFor(docType: string): string {
+    return reqDocs.find((r) => r.document_type === docType)?.coverage_requirement ?? "";
+  }
+  function toggleDoc(docType: string) {
+    setReqDocs((prev) =>
+      hasDoc(docType)
+        ? prev.filter((r) => r.document_type !== docType)
+        : [...prev, { document_type: docType, coverage_requirement: defaultCoverageFor(docType) }]
+    );
+  }
+  function setCoverage(docType: string, value: string) {
+    setReqDocs((prev) => {
+      const existing = prev.find((r) => r.document_type === docType);
+      if (existing) {
+        return prev.map((r) => (r.document_type === docType ? { ...r, coverage_requirement: value.trim() || null } : r));
+      }
+      return [...prev, { document_type: docType, coverage_requirement: value.trim() || null }];
+    });
+  }
+  function addCustomRequirement() {
+    const type = customType.trim();
+    if (!type) return;
+    if (hasDoc(type)) {
+      setError("That requirement is already in your list.");
+      return;
+    }
+    setReqDocs((prev) => [...prev, { document_type: type, coverage_requirement: customCoverage.trim() || null }]);
+    setCustomType("");
+    setCustomCoverage("");
+    setError("");
+  }
+  function removeRequirement(docType: string) {
+    setReqDocs((prev) => prev.filter((r) => r.document_type !== docType));
+  }
+
+  // Ensure the tenant has a client row to attach required docs to (the tenant's
+  // own company), then save the requirement list to it.
+  async function ensureComplianceClient(): Promise<number | null> {
+    if (complianceClientId) return complianceClientId;
+    try {
+      const listRes = await apiFetch("/api/clients", { headers: { Authorization: `Bearer ${token}` } });
+      const clients = listRes.ok ? await listRes.json() : [];
+      const match = Array.isArray(clients) ? clients.find((c) => c.name === companyName.trim()) : undefined;
+      if (match) {
+        setComplianceClientId(match.id);
+        return match.id;
+      }
+    } catch { /* fall through to create */ }
+    const res = await apiFetch("/api/clients", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ name: companyName.trim(), address: companyAddress.trim() }),
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to create client record");
+    setComplianceClientId(data.id);
+    return data.id as number;
+  }
+
+  async function saveComplianceStep() {
+    setSavingDocs(true);
+    setError("");
+    try {
+      const clientId = await ensureComplianceClient();
+      if (!clientId) throw new Error("Could not resolve a client record for your company.");
+      const docsRes = await apiFetch(`/api/clients/${clientId}/documents-required`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({ document_types: reqDocs }),
+      });
+      if (!docsRes.ok) {
+        const d = await docsRes.json();
+        throw new Error(d.error || "Failed to save compliance requirements");
+      }
+      const setupRes = await apiFetch("/api/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          company_name: companyName.trim(),
+          company_address: companyAddress.trim(),
+          payment_week_start_day: paymentWeekDay,
+          compliance_client_id: clientId,
+        }),
+      });
+      if (!setupRes.ok) {
+        const d = await setupRes.json();
+        throw new Error(d.error || "Failed to save setup progress");
+      }
+      setStep(4);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save compliance requirements. Please try again.");
+    } finally {
+      setSavingDocs(false);
+    }
   }
 
   function nextStep(e: FormEvent) {
@@ -110,6 +240,7 @@ export default function SetupWizard() {
           company_name: companyName.trim(),
           company_address: companyAddress.trim(),
           payment_week_start_day: paymentWeekDay,
+          compliance_client_id: complianceClientId,
         }),
       });
       const data = await res.json();
@@ -127,9 +258,14 @@ export default function SetupWizard() {
     }
   }
 
+  const inputStyle: CSSProperties = {
+    width: "100%", padding: "8px 10px", borderRadius: 8,
+    border: "1px solid var(--border, #d1d5db)", fontSize: 13,
+  };
+
   return (
     <div className="auth-page">
-      <div className="auth-card" style={{ maxWidth: 560, width: "100%" }}>
+      <div className="auth-card" style={{ maxWidth: 620, width: "100%" }}>
         <div className="auth-header">
           <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>Set Up Your Workspace</h2>
@@ -224,11 +360,99 @@ export default function SetupWizard() {
           </form>
         )}
 
+        {step === 3 && (
+          <div>
+            <p style={{ fontSize: 13, color: "var(--text-muted)", margin: "0 0 12px" }}>
+              These are the compliance documents vendors must provide — and the coverage
+              amounts each policy must meet. Adjust the list and amounts to match your
+              requirements.
+            </p>
+            {/* Standard requirement rows */}
+            {DEFAULT_REQUIRED_DOCUMENTS.map((std) => {
+              const checked = hasDoc(std.document_type);
+              return (
+                <div key={std.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 8, minWidth: 190, fontSize: 14 }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleDoc(std.document_type)}
+                    />
+                    <span>{std.document_type}</span>
+                  </label>
+                  <input
+                    type="text"
+                    style={{ ...inputStyle, flex: 1, opacity: checked ? 1 : 0.5 }}
+                    placeholder={checked ? "Coverage amount (optional)" : "Select to add"}
+                    value={coverageFor(std.document_type)}
+                    disabled={!checked}
+                    onChange={(e) => setCoverage(std.document_type, e.target.value)}
+                  />
+                </div>
+              );
+            })}
+            {/* Custom requirement rows */}
+            {reqDocs
+              .filter((r) => !STANDARD_DOC_TYPES.includes(r.document_type))
+              .map((r) => (
+                <div key={r.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <span style={{ minWidth: 190, fontSize: 14, fontWeight: 600 }}>{r.document_type}</span>
+                  <input
+                    type="text"
+                    style={{ ...inputStyle, flex: 1 }}
+                    placeholder="Coverage amount (optional)"
+                    value={r.coverage_requirement ?? ""}
+                    onChange={(e) => setCoverage(r.document_type, e.target.value)}
+                  />
+                  <button
+                    type="button"
+                    className="btn btn-sm btn-outline"
+                    onClick={() => removeRequirement(r.document_type)}
+                    title={`Remove ${r.document_type}`}
+                  >
+                    ✕
+                  </button>
+                </div>
+              ))}
+            {/* Add custom requirement */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginTop: 14, paddingTop: 12, borderTop: "1px dashed var(--border, #e2e8f0)" }}>
+              <input
+                type="text"
+                style={{ ...inputStyle, flex: 1, minWidth: 150 }}
+                placeholder="Custom requirement (e.g. Builder's Risk)"
+                value={customType}
+                onChange={(e) => setCustomType(e.target.value)}
+              />
+              <input
+                type="text"
+                style={{ ...inputStyle, flex: 1, minWidth: 150 }}
+                placeholder="Coverage amount (optional)"
+                value={customCoverage}
+                onChange={(e) => setCustomCoverage(e.target.value)}
+              />
+              <button type="button" className="btn btn-sm btn-outline" onClick={addCustomRequirement}>
+                + Add
+              </button>
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", margin: "8px 0 0" }}>
+              Changes are saved when you click “Save &amp; Continue” — you can return to this step anytime.
+            </p>
+            <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(2)} disabled={savingDocs}>
+                Back
+              </button>
+              <button type="button" className="auth-btn" style={{ flex: 2 }} onClick={saveComplianceStep} disabled={savingDocs}>
+                {savingDocs ? "Saving..." : "Save & Continue"}
+              </button>
+            </div>
+          </div>
+        )}
+
         <button type="button" onClick={() => openHelp(`I need help with the ${STEP_LABELS[step - 1]} step`, "onboarding")} style={{ display: "block", margin: "20px auto 0", border: 0, background: "none", color: "var(--accent, #2563eb)", cursor: "pointer", fontSize: 13 }}>
           Stuck? Our Onboarding Officer can walk you through this.
         </button>
 
-        {step === 3 && (
+        {step === 4 && (
           <div>
             <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px solid var(--border, #e2e8f0)" }}>
               <p style={{ margin: "0 0 8px", fontWeight: 700 }}>Review your details</p>
@@ -238,10 +462,22 @@ export default function SetupWizard() {
               <p style={{ margin: "0 0 4px", fontSize: 14 }}>
                 <strong>Address:</strong> {companyAddress.trim() || "—"}
               </p>
-              <p style={{ margin: 0, fontSize: 14 }}>
+              <p style={{ margin: "0 0 4px", fontSize: 14 }}>
                 <strong>Payment week starts:</strong>{" "}
                 {DAYS.find((d) => d.value === paymentWeekDay)?.label || paymentWeekDay}
               </p>
+              <p style={{ margin: "6px 0 0", fontSize: 14 }}>
+                <strong>Required compliance documents:</strong>
+              </p>
+              <ul style={{ margin: "4px 0 0", paddingLeft: 18, fontSize: 13 }}>
+                {reqDocs.length === 0 && <li style={{ color: "var(--text-muted)" }}>No requirements configured</li>}
+                {reqDocs.map((r) => (
+                  <li key={r.document_type}>
+                    {r.document_type}
+                    {r.coverage_requirement ? ` — ${r.coverage_requirement}` : ""}
+                  </li>
+                ))}
+              </ul>
             </div>
             {user?.inbox_address && (
               <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px dashed var(--accent, #2563eb)" }}>
@@ -258,7 +494,7 @@ export default function SetupWizard() {
               </div>
             )}
             <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(2)} disabled={submitting}>
+              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(3)} disabled={submitting}>
                 Back
               </button>
               <button type="button" className="auth-btn" style={{ flex: 2 }} onClick={completeSetup} disabled={submitting}>
