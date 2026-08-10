@@ -46,9 +46,16 @@ export async function ingestDocumentAttachment(opts: {
   logAudit(db,"document",documentId,"uploaded",{filename:originalFilename,file_size:opts.content.length,content_type:opts.contentType,tenant_id:tenantId});
   db.query("UPDATE ingestion_events SET status='processing',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
   extractDocumentInfo(filePath, originalFilename).then((extraction) => {
-    db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,document_type,ai_confidence_score) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$type,$confidence)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$type:extraction.document_type,$confidence:extraction.ai_confidence_score});
+    // is_reviewed intentionally stays at its default 0 (Needs Review) for every
+    // new extraction — including high-confidence AI ones — until a human reviews
+    // it. The honest filename fallback therefore lands in Needs Review too, and
+    // no fabricated/filename-only data can ever drive compliance statuses.
+    db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,document_type,ai_confidence_score,extraction_method) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$type,$confidence,$method)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$type:extraction.document_type,$confidence:extraction.ai_confidence_score,$method:extraction.extraction_method});
     db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
-    if (extraction.document_type === "COI" && extraction.certificate_holder_name_confidence >= 0.8) { const mapped = mapCOIToEntities(db, tenantId, extraction, documentId); if (mapped) { db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId}); calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId); } }
+    // Auto-create client/vendor rows ONLY from real AI extraction with high
+    // holder confidence. The honest fallback sets confidence 0 and
+    // extraction_method 'filename', so it can never trigger this path.
+    if (extraction.document_type === "COI" && extraction.extraction_method === "ai" && extraction.certificate_holder_name_confidence >= 0.8) { const mapped = mapCOIToEntities(db, tenantId, extraction, documentId); if (mapped) { db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId}); calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId); } }
     else if (vendorId !== null && clientId !== null) calculateVendorCompliance(vendorId,clientId,tenantId);
     db.query("UPDATE ingestion_events SET status='ready',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
   }).catch((err) => { db.query("UPDATE ingestion_events SET status='error',error_message=$error,updated_at=datetime('now') WHERE document_id=$id").run({$error:String(err),$id:documentId}); });
@@ -138,6 +145,7 @@ app.get("/api/documents", (c) => {
         de.certificate_holder_name_confidence,
         de.insured_address,
         de.w9_form_date,
+        de.extraction_method,
         de.document_type AS extracted_document_type
       FROM documents d
       LEFT JOIN clients c ON d.client_id = c.id
@@ -202,6 +210,7 @@ app.get("/api/documents/:id", (c) => {
         de.certificate_holder_name_confidence,
         de.insured_address,
         de.w9_form_date,
+        de.extraction_method,
         de.document_type AS extracted_document_type
       FROM documents d
       LEFT JOIN clients c ON d.client_id = c.id
@@ -219,7 +228,7 @@ app.get("/api/documents/:id", (c) => {
     const extractions = db.query(`
       SELECT id, document_id, vendor_name, insurance_carrier, policy_number,
              effective_date, expiration_date, certificate_holder, document_type,
-             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, is_reviewed, extracted_at
+             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, is_reviewed, extraction_method, extracted_at
       FROM document_extractions
       WHERE document_id = $document_id
       ORDER BY extracted_at DESC
@@ -392,6 +401,7 @@ app.get("/api/needs-review", (c) => {
         de.certificate_holder_name_confidence,
         de.insured_address,
         de.w9_form_date,
+        de.extraction_method,
         de.document_type AS extracted_document_type,
         de.id AS extraction_id,
         de.vendor_name AS extracted_vendor_name

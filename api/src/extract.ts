@@ -1,28 +1,39 @@
 /**
  * AI Document Extraction Engine
  *
- * Real AI-powered extraction for image documents (PNG/JPG):
- *   - Reads the file as base64
- *   - Sends it to a vision-capable LLM via an OpenAI-compatible
- *     chat-completions endpoint using plain `fetch()` (no new packages)
- *   - Parses the structured JSON response into `ExtractionResult`
+ * Real AI-powered extraction for document files:
+ *   - Images (PNG/JPG): the file is read as base64 and sent to a vision-capable
+ *     LLM via an OpenAI-compatible chat-completions endpoint using plain
+ *     `fetch()`.
+ *   - PDFs: the first 1-2 pages are rendered to PNG (see pdf-render.ts) and
+ *     each page image is sent through the exact same vision path; results are
+ *     merged into one ExtractionResult.
  *
  * The endpoint is configured via env vars (see `AI_CONFIG` below):
  *   AI_EXTRACTION_ENDPOINT  — required for AI mode; base URL or full
  *                             `/chat/completions` URL of an OpenAI-compatible
- *                             vision model. If unset, extraction falls back
- *                             to filename heuristics.
+ *                             vision model.
  *   AI_EXTRACTION_MODEL     — model name (default "gpt-4o-mini")
  *   AI_EXTRACTION_API_KEY   — Bearer token (optional; some local endpoints
  *                             don't need one)
  *
- * Fallback: if the env var is unset, the file is a PDF, or the AI call
- * fails/times out/returns unparseable data, we fall back to the original
- * filename-based heuristics (kept below) so ingestion never breaks.
+ * HONEST FALLBACK (extraction_method === 'filename'):
+ * When AI is not configured, fails, times out, returns unusable data, or a PDF
+ * cannot be rendered, we return ONLY what can be safely derived from the
+ * filename: the document type (keyword match) and a best-effort vendor name.
+ * EVERY other field is null, confidences are 0, and the caller leaves
+ * is_reviewed = 0 so the document lands in the Needs Review queue.
  *
- * The function signature and ExtractionResult type are the contract —
- * keep them stable.
+ * We NEVER invent carriers, policy numbers, effective/expiration dates,
+ * certificate holders, addresses, or confidence scores. A document marked
+ * "needs review" is always preferable to fabricated compliance data — the
+ * product's core promise is knowing who is actually safe to pay.
+ *
+ * The function signature and ExtractionResult type are the contract — keep
+ * them stable.
  */
+
+import { renderPdfPagesToPngs } from "./pdf-render";
 
 export interface ExtractionResult {
   vendor_name: string | null;
@@ -37,10 +48,19 @@ export interface ExtractionResult {
   form_date: string | null;
   document_type: string | null;
   ai_confidence_score: number;
+  /**
+   * How this extraction was produced:
+   *  - "ai"        — real vision-model extraction (image or rendered PDF page)
+   *  - "filename"  — honest filename-only fallback (no fabricated fields)
+   */
+  extraction_method: "ai" | "filename";
 }
 
 /** AI call timeout (ms). */
 const AI_EXTRACTION_TIMEOUT_MS = 30_000;
+
+/** Max PDF pages rendered and sent to the vision model (cost control). */
+const MAX_PDF_PAGES = 2;
 
 /**
  * Canonical document types used across the rest of the system
@@ -64,23 +84,44 @@ const IMAGE_EXTENSIONS = new Set(["png", "jpg", "jpeg"]);
  * Extracts compliance-related fields from a document.
  *
  * Strategy:
- *  1. Image files (PNG/JPG) → real AI vision extraction when
- *     `AI_EXTRACTION_ENDPOINT` is configured; otherwise heuristics.
- *  2. PDFs (and everything else) → filename heuristics for now
- *     (PDF parsing requires libraries we can't install).
- * Never throws: any AI failure falls back to heuristics.
+ *  1. PDFs → render first 1-2 pages to PNG, run real AI vision extraction on
+ *     each page, merge the results. If rendering or AI fails → honest fallback.
+ *  2. Images (PNG/JPG) → real AI vision extraction when
+ *     `AI_EXTRACTION_ENDPOINT` is configured; otherwise honest fallback.
+ *  3. Everything else → honest filename fallback.
+ * Never throws and never fabricates data.
  */
 export async function extractDocumentInfo(
   filePath: string,
-  fileName: string
+  fileName: string,
 ): Promise<ExtractionResult> {
   const ext = getExtension(fileName);
+  if (ext === "pdf") {
+    const pages = await renderPdfPagesToPngs(filePath, MAX_PDF_PAGES);
+    if (pages.length > 0) {
+      const results: ExtractionResult[] = [];
+      for (const png of pages) {
+        const r = await tryVisionOnImage(png, "image/png", fileName);
+        if (r) results.push(r);
+      }
+      const merged = mergeResults(results);
+      if (merged) {
+        console.log(
+          `[extract] AI extraction ok for PDF ${fileName} (${pages.length} page(s), ` +
+            `type=${merged.document_type}, confidence=${merged.ai_confidence_score}, vendor=${merged.vendor_name})`,
+        );
+        return merged;
+      }
+    }
+    console.warn(`[extract] PDF ${fileName} — no usable AI result, using honest filename fallback`);
+    return honestFallback(fileName);
+  }
   if (IMAGE_EXTENSIONS.has(ext)) {
     const aiResult = await tryAIExtraction(filePath, fileName);
     if (aiResult) return aiResult;
   }
-  // PDFs, non-images, or images where AI was unavailable/failed
-  return heuristicExtraction(fileName);
+  // Non-images, or images where AI was unavailable/failed
+  return honestFallback(fileName);
 }
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -88,34 +129,57 @@ export async function extractDocumentInfo(
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Attempts real AI extraction. Returns null (never throws) when:
- *  - AI_EXTRACTION_ENDPOINT is not set
- *  - the file can't be read
- *  - the endpoint call fails, times out, returns non-200
- *  - the response can't be parsed into a usable ExtractionResult
+ * Attempts real AI extraction on an image file. Returns null (never throws)
+ * when AI is not configured, the file can't be read, the endpoint call fails,
+ * times out, returns non-200, or the response can't be parsed.
  */
 async function tryAIExtraction(
   filePath: string,
-  fileName: string
+  fileName: string,
 ): Promise<ExtractionResult | null> {
-  const endpoint = process.env.AI_EXTRACTION_ENDPOINT;
-  if (!endpoint) return null; // AI not configured → heuristics fallback
-
-  // Accept either a full URL ending in /chat/completions or a base URL.
-  const url = /\/chat\/completions\/?$/.test(endpoint)
-    ? endpoint
-    : `${endpoint.replace(/\/+$/, "")}/chat/completions`;
+  if (!process.env.AI_EXTRACTION_ENDPOINT) return null; // AI not configured
 
   let base64: string;
   try {
     const buffer = await Bun.file(filePath).arrayBuffer();
     base64 = Buffer.from(buffer).toString("base64");
   } catch (err) {
-    console.warn(`[extract] AI: cannot read ${filePath} — falling back to heuristics (${err})`);
+    console.warn(`[extract] AI: cannot read ${filePath} — honest fallback (${err})`);
     return null;
   }
 
   const mime = getExtension(fileName) === "png" ? "image/png" : "image/jpeg";
+  return callVisionAI(base64, mime, fileName);
+}
+
+/**
+ * Attempts real AI extraction on an in-memory image (e.g. a rendered PDF page).
+ * Returns null (never throws) under the same conditions as tryAIExtraction.
+ */
+async function tryVisionOnImage(
+  imageBytes: Uint8Array | Buffer,
+  mime: string,
+  fileName: string,
+): Promise<ExtractionResult | null> {
+  if (!process.env.AI_EXTRACTION_ENDPOINT) return null; // AI not configured
+  const base64 = Buffer.from(imageBytes).toString("base64");
+  return callVisionAI(base64, mime, fileName);
+}
+
+/** Shared vision-model call for any base64 image payload. */
+async function callVisionAI(
+  base64: string,
+  mime: string,
+  fileName: string,
+): Promise<ExtractionResult | null> {
+  const endpoint = process.env.AI_EXTRACTION_ENDPOINT;
+  if (!endpoint) return null;
+
+  // Accept either a full URL ending in /chat/completions or a base URL.
+  const url = /\/chat\/completions\/?$/.test(endpoint)
+    ? endpoint
+    : `${endpoint.replace(/\/+$/, "")}/chat/completions`;
+
   const dataUrl = `data:${mime};base64,${base64}`;
 
   const body = {
@@ -131,6 +195,7 @@ async function tryAIExtraction(
           "You analyze compliance documents: Certificates of Insurance (COI), W-9 tax forms, " +
           "and insurance certificates (general liability, workers compensation, commercial auto, umbrella). " +
           "Extract the requested fields from the document image. " +
+          "If a field is not visible or illegible, return null for it — never guess or invent values. " +
           'Return ONLY valid JSON with no commentary and no markdown, matching this schema exactly: ' +
           JSON.stringify({
             document_type:
@@ -183,7 +248,7 @@ async function tryAIExtraction(
     if (!res.ok) {
       const errText = (await res.text()).slice(0, 300);
       console.warn(
-        `[extract] AI: endpoint returned ${res.status} — falling back to heuristics (${errText})`
+        `[extract] AI: endpoint returned ${res.status} — honest fallback (${errText})`
       );
       return null;
     }
@@ -192,7 +257,7 @@ async function tryAIExtraction(
     const parsed = parseModelJson(content);
     const result = parsed ? normalizeExtraction(parsed, fileName) : null;
     if (!result) {
-      console.warn("[extract] AI: response JSON was not usable — falling back to heuristics");
+      console.warn("[extract] AI: response JSON was not usable — honest fallback");
       return null;
     }
     console.log(
@@ -202,12 +267,42 @@ async function tryAIExtraction(
     return result;
   } catch (err) {
     console.warn(
-      `[extract] AI: call failed (${err instanceof Error ? err.message : err}) — falling back to heuristics`
+      `[extract] AI: call failed (${err instanceof Error ? err.message : err}) — honest fallback`
     );
     return null;
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * Merges per-page extraction results into a single document result.
+ * Fields from earlier pages win; null fields are filled from later pages.
+ * Confidence is the maximum across pages (best evidence for the document).
+ */
+function mergeResults(results: ExtractionResult[]): ExtractionResult | null {
+  if (results.length === 0) return null;
+  if (results.length === 1) return results[0];
+  const merged: ExtractionResult = { ...results[0] };
+  for (const r of results.slice(1)) {
+    for (const key of Object.keys(merged) as (keyof ExtractionResult)[]) {
+      if (key === "extraction_method") continue;
+      const val = merged[key] as unknown;
+      if (val === null || val === undefined) {
+        const other = r[key] as unknown;
+        if (other !== null && other !== undefined) {
+          (merged as any)[key] = other;
+        }
+      }
+    }
+    // Overall confidence: strongest page wins.
+    merged.ai_confidence_score = Math.max(merged.ai_confidence_score, r.ai_confidence_score);
+    // Holder confidence follows whichever page actually supplied the holder.
+    if (!merged.certificate_holder && r.certificate_holder) {
+      merged.certificate_holder_name_confidence = r.certificate_holder_name_confidence;
+    }
+  }
+  return merged;
 }
 
 /** Pulls the assistant text out of an OpenAI-compatible response. */
@@ -362,26 +457,27 @@ function normalizeExtraction(raw: any, fileName: string): ExtractionResult | nul
     form_date: normalizeDate(raw.form_date),
     document_type: documentType,
     ai_confidence_score: confidence,
+    extraction_method: "ai",
   };
   return result;
 }
 
 // ─────────────────────────────────────────────────────────────────────────
-// Fallback: filename heuristics (original implementation, preserved)
+// Honest fallback: filename-only heuristics (NO fabricated data)
 // ─────────────────────────────────────────────────────────────────────────
 
 /**
- * Mock extraction based on filename keywords. Used when AI is
- * unavailable or the file is not an image (e.g. PDFs).
+ * Returns ONLY what can be safely derived from the filename:
+ *   - document_type, guessed from filename keywords (never a blind default)
+ *   - vendor_name, guessed from the filename
+ * Everything else is null and both confidences are 0. The caller leaves
+ * is_reviewed = 0, so the document shows up in the Needs Review queue and
+ * never drives compliance statuses with invented values.
  */
-async function heuristicExtraction(fileName: string): Promise<ExtractionResult> {
-  // ── Simulate processing delay ──
-  await new Promise((r) => setTimeout(r, 200 + Math.random() * 600));
-
+function honestFallback(fileName: string): ExtractionResult {
   const nameLower = fileName.toLowerCase();
-  const baseName = fileName.replace(/\.[^.]+$/, "");
 
-  // ── Determine document type from filename ──
+  // ── Determine document type from filename keywords only ──
   let documentType: string | null = null;
   if (/coi|certificate\s*of\s*insurance/i.test(nameLower)) {
     documentType = "COI";
@@ -397,96 +493,29 @@ async function heuristicExtraction(fileName: string): Promise<ExtractionResult> 
     documentType = "Umbrella";
   } else if (/business\s*lic|bl/i.test(nameLower)) {
     documentType = "Business License";
-  } else if (/\.pdf$/i.test(nameLower)) {
-    documentType = "COI"; // default guess for PDFs
   } else {
+    // Unknown — do NOT guess "COI" for PDFs. An honest "Other" (→ needs review)
+    // is better than mislabeling a W-9 or a license as a certificate of insurance.
     documentType = "Other";
   }
 
   // ── Extract vendor name from filename ──
-  const vendorName = guessVendorName(baseName);
-
-  // ── Generate plausible carrier/policy ──
-  const carriers = [
-    "Travelers Insurance",
-    "Liberty Mutual",
-    "State Farm",
-    "The Hartford",
-    "Chubb",
-    "Zurich",
-    "Nationwide",
-    "Progressive Commercial",
-    "Berkshire Hathaway",
-    "CNA Insurance",
-  ];
-
-  const carrier =
-    documentType !== "W-9"
-      ? carriers[Math.floor(Math.random() * carriers.length)]
-      : null;
-
-  const policyNumber =
-    documentType !== "W-9"
-      ? `${carrier?.split(" ").map((w) => w[0]).join("")}-${new Date().getFullYear()}-${String(Math.floor(Math.random() * 90000) + 1000).padStart(5, "0")}`
-      : null;
-
-  // ── Generate dates ──
-  const now = new Date();
-  const effDate = new Date(now);
-  effDate.setMonth(effDate.getMonth() - Math.floor(Math.random() * 6));
-  const effectiveDate = effDate.toISOString().slice(0, 10);
-
-  const expDate = new Date(effDate);
-  expDate.setFullYear(expDate.getFullYear() + 1);
-  expDate.setMonth(expDate.getMonth() + Math.floor(Math.random() * 3));
-  const expirationDate = expDate.toISOString().slice(0, 10);
-
-  // ── Generate certificate holder ──
-  const holders = [
-    "Summit Construction Inc.",
-    "Metro Development Group",
-    "Broadway Builders LLC",
-    "Pinnacle Contractors",
-    "Harbor Development Corp.",
-  ];
-  const certificateHolder = holders[Math.floor(Math.random() * holders.length)];
-  const addresses = ["100 Main Street, Denver CO 80202", "250 Market Ave, Austin TX 78701", "42 Oak Road, Phoenix AZ 85001"];
-  const certificateHolderAddress = addresses[Math.floor(Math.random() * addresses.length)];
-  const insuredAddress = addresses[Math.floor(Math.random() * addresses.length)];
-  const certificateHolderNameConfidence = documentType === "COI" ? (Math.random() < 0.7 ? 0.8 + Math.random() * 0.19 : 0.5 + Math.random() * 0.29) : 0;
-  const formDate = documentType === "W-9" ? `${String(now.getMonth() + 1).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}/${now.getFullYear()}` : null;
-
-  // ── Confidence score: weighted to produce some low-confidence results ──
-  // ~30% chance of being in Needs Review (below 70)
-  const roll = Math.random();
-  let aiConfidenceScore: number;
-  if (roll < 0.15) {
-    // 15% chance: very low confidence (40-58)
-    aiConfidenceScore = Math.floor(Math.random() * 19) + 40;
-  } else if (roll < 0.30) {
-    // 15% chance: borderline (60-69)
-    aiConfidenceScore = Math.floor(Math.random() * 10) + 60;
-  } else if (roll < 0.60) {
-    // 30% chance: moderate (70-84)
-    aiConfidenceScore = Math.floor(Math.random() * 15) + 70;
-  } else {
-    // 40% chance: high confidence (85-98)
-    aiConfidenceScore = Math.floor(Math.random() * 14) + 85;
-  }
+  const vendorName = guessVendorName(fileName.replace(/\.[^.]+$/, ""));
 
   return {
     vendor_name: vendorName,
-    insurance_carrier: carrier,
-    policy_number: policyNumber,
-    effective_date: effectiveDate,
-    expiration_date: expirationDate,
-    certificate_holder: certificateHolder,
-    certificate_holder_address: certificateHolderAddress,
-    certificate_holder_name_confidence: certificateHolderNameConfidence,
-    insured_address: insuredAddress,
-    form_date: formDate,
+    insurance_carrier: null,
+    policy_number: null,
+    effective_date: null,
+    expiration_date: null,
+    certificate_holder: null,
+    certificate_holder_address: null,
+    certificate_holder_name_confidence: 0,
+    insured_address: null,
+    form_date: null,
     document_type: documentType,
-    ai_confidence_score: aiConfidenceScore,
+    ai_confidence_score: 0,
+    extraction_method: "filename",
   };
 }
 

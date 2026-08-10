@@ -8,9 +8,11 @@
     "seed": "bun run src/seed.ts"
   },
   "dependencies": {
+    "@napi-rs/canvas": "^1.0.5",
     "@types/pdfkit": "^0.17.6",
     "exceljs": "^4.4.0",
     "hono": "^4.7.5",
+    "pdfjs-dist": "^6.2.108",
     "pdfkit": "^0.19.1"
   }
 }

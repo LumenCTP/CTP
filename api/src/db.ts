@@ -377,6 +377,45 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "document_extractions", "certificate_holder_name_confidence REAL NOT NULL DEFAULT 0.0", "certificate_holder_name_confidence");
   ensureColumn(db, "document_extractions", "insured_address TEXT", "insured_address");
   ensureColumn(db, "document_extractions", "w9_form_date TEXT", "w9_form_date");
+  // Extraction provenance: 'ai' (real vision-model extraction) vs 'filename'
+  // (honest filename-only fallback). Never fabricate fields on the fallback.
+  ensureColumn(db, "document_extractions", "extraction_method TEXT DEFAULT 'filename'", "extraction_method");
+  // ── Remediation for the heuristic-fabrication bug ─────────────────────
+  // The deleted random-value fallback is the ONLY thing that ever wrote an
+  // ai_confidence_score > 1.0 (real AI stores 0.0–1.0, and the manual-edit
+  // endpoint never touches ai_confidence_score). Seed fixtures live under
+  // data/documents/, so restricting to data/uploads/ isolates uploaded docs.
+  // 1) Tag legacy real-AI rows (original score 0.0–1.0) as 'ai' FIRST, while
+  //    their original scores are still intact. Rows with score exactly 0 are
+  //    excluded: the remediation below zeroes scores, so this keeps the
+  //    migration idempotent across restarts.
+  db.exec(`
+    UPDATE document_extractions
+    SET extraction_method = 'ai'
+    WHERE extraction_method = 'filename'
+      AND ai_confidence_score > 0.0
+      AND ai_confidence_score <= 1.0
+  `);
+  // 2) Then clear every invented field from the heuristic-fabricated rows and
+  //    send them back to Needs Review so no compliance status keeps depending
+  //    on fake dates.
+  db.exec(`
+    UPDATE document_extractions
+    SET extraction_method = 'filename',
+        is_reviewed = 0,
+        insurance_carrier = NULL,
+        policy_number = NULL,
+        effective_date = NULL,
+        expiration_date = NULL,
+        certificate_holder = NULL,
+        certificate_holder_address = NULL,
+        insured_address = NULL,
+        w9_form_date = NULL,
+        certificate_holder_name_confidence = 0,
+        ai_confidence_score = 0
+    WHERE ai_confidence_score > 1.0
+      AND document_id IN (SELECT id FROM documents WHERE file_path LIKE 'data/uploads/%')
+  `);
   ensureColumn(db, "vendors", "address TEXT", "address");
   ensureColumn(db, "vendors", "normalized_key TEXT", "normalized_key");
   ensureColumn(db, "clients", "normalized_key TEXT", "normalized_key");
