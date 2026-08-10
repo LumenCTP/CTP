@@ -48,6 +48,10 @@ const STATUS_CLASSES: Record<string, string> = {
   paid: "badge-paid",
   reversed: "badge-reversed",
   disputed: "badge-disputed",
+  // tenant setup wizard statuses
+  not_started: "badge-rejected",
+  in_progress: "badge-pending",
+  completed: "badge-approved",
 };
 
 export function Badge({ status }: { status: string | null | undefined }) {

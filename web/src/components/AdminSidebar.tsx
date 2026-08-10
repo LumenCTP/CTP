@@ -9,6 +9,7 @@ const adminNavItems = [
   { to: "/app/admin/commissions", label: "Commissions", icon: "💰" },
   { to: "/app/admin/payouts", label: "Payouts", icon: "🏦" },
   { to: "/app/admin/audit", label: "Audit Log", icon: "🕮" },
+  { to: "/app/admin/accounts", label: "Accounts", icon: "🏢" },
 ];
 
 interface AdminSidebarProps {
