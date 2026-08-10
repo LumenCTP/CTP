@@ -608,12 +608,14 @@ app.get("/api/admin/audit-log", requireAuth, requireAdmin, (c) => {
 // All tenant accounts (construction companies that signed up) — admin only.
 // wizard_status lives on setup_wizard (tenants has no such column), so we
 // LEFT JOIN and alias it to keep the response shape: { id, name,
-// subscription_status, payment_week_start_day, wizard_status, created_at,
-// user_count, vendor_count }.
+// subscription_status, subscription_plan, subscription_period_start,
+// payment_week_start_day, wizard_status, created_at, user_count,
+// vendor_count }.
 app.get("/api/admin/accounts", requireAuth, requireAdmin, (c) => {
   const db = getDb();
   const rows = db.query(`
-    SELECT t.id, t.name, t.subscription_status, t.payment_week_start_day,
+    SELECT t.id, t.name, t.subscription_status, t.subscription_plan,
+           t.subscription_period_start, t.payment_week_start_day,
            COALESCE(sw.status, 'NOT_STARTED') as wizard_status, t.created_at,
       (SELECT COUNT(*) FROM users u WHERE u.tenant_id = t.id) as user_count,
       (SELECT COUNT(*) FROM vendors v WHERE v.tenant_id = t.id) as vendor_count

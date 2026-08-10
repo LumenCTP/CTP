@@ -6,6 +6,8 @@ interface Account {
   id: number;
   name: string;
   subscription_status: string | null;
+  subscription_plan: string | null;
+  subscription_period_start: string | null;
   payment_week_start_day: string | null;
   wizard_status: string | null;
   created_at: string;
@@ -26,6 +28,11 @@ const STATUS_LABELS: Record<string, string> = {
 };
 
 const ACTIVE_STATUSES = new Set(["active", "trial", "trialing", "ACTIVE", "TRIAL"]);
+
+const PLAN_LABELS: Record<string, string> = {
+  monthly: "Monthly",
+  annual: "Annual",
+};
 
 export default function AdminAccounts() {
   const [accounts, setAccounts] = useState<Account[]>([]);
@@ -120,6 +127,8 @@ export default function AdminAccounts() {
               <tr>
                 <th>Company Name</th>
                 <th>Payment Status</th>
+                <th>Plan</th>
+                <th>Subscribed</th>
                 <th>Setup</th>
                 <th>Vendors</th>
                 <th>Users</th>
@@ -128,7 +137,7 @@ export default function AdminAccounts() {
             </thead>
             <tbody>
               {filteredAccounts.length === 0 ? (
-                <tr><td colSpan={6} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No accounts match this filter.</td></tr>
+                <tr><td colSpan={8} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No accounts match this filter.</td></tr>
               ) : filteredAccounts.map((a) => (
                 <tr key={a.id}>
                   <td className="td-name">{a.name}</td>
@@ -140,6 +149,16 @@ export default function AdminAccounts() {
                       </span>
                     )}
                   </td>
+                  <td>
+                    {a.subscription_plan ? (
+                      <span className={`badge ${a.subscription_plan.toLowerCase() === "annual" ? "badge-active" : "badge-trial"}`}>
+                        {PLAN_LABELS[a.subscription_plan.toLowerCase()] ?? a.subscription_plan}
+                      </span>
+                    ) : (
+                      <span style={{ color: "var(--gray-500)" }}>—</span>
+                    )}
+                  </td>
+                  <td style={{ whiteSpace: "nowrap" }}>{fmtDateTime(a.subscription_period_start)}</td>
                   <td><Badge status={a.wizard_status} /></td>
                   <td>{a.vendor_count}</td>
                   <td>{a.user_count}</td>
