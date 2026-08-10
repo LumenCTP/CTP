@@ -1012,6 +1012,21 @@ body {
   margin-bottom: 24px;
 }
 
+/* Slot for the brand Logo above auth headings (was .auth-logo's margin-bottom) */
+.auth-logo-slot {
+  margin-bottom: 12px;
+}
+
+/* Brand wordmark ("CTP Construction") — default dark for light surfaces */
+.logo-wordmark {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--gray-800);
+}
+.logo-wordmark-light {
+  color: #fff;
+}
+
 .auth-logo {
   width: 48px;
   height: 48px;
@@ -1442,7 +1457,7 @@ body {
 /* Admin sidebar — subtle distinct accent (indigo) + Admin tag in brand */
 .admin-sidebar .sidebar-brand {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
 .sidebar-brand-tag {

@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate } from "react-router-dom";
 import { useAuth, needsSetup } from "../components/AuthContext";
+import Logo from "../components/Logo";
 
 export default function Register() {
   const { user, loading, register } = useAuth();
@@ -64,7 +65,7 @@ export default function Register() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-header">
-          <div className="auth-logo">CTP</div>
+          <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>Create Your Account</h2>
           <p className="auth-subtitle">Get started with ClearToPay Construction</p>
         </div>

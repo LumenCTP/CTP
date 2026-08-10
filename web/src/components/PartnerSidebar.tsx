@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import Logo from "./Logo";
 
 const partnerNavItems = [
   { to: "/app/partner/dashboard", label: "Dashboard", icon: "⌂" },
@@ -22,7 +23,7 @@ export default function PartnerSidebar({ collapsed, onClose }: PartnerSidebarPro
       )}
 
       <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
-        <div className="sidebar-brand">CTP</div>
+        <div className="sidebar-brand"><Logo size={32} textClassName="logo-wordmark-light" /></div>
         <nav className="sidebar-nav">
           {partnerNavItems.map((item) => (
             <NavLink

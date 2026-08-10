@@ -1,4 +1,5 @@
 import { NavLink } from "react-router-dom";
+import Logo from "./Logo";
 
 // Admin-only navigation — this sidebar is only ever rendered inside AdminShell,
 // which is guarded by AdminRoute (role === "admin").
@@ -28,7 +29,7 @@ export default function AdminSidebar({ collapsed, onClose }: AdminSidebarProps) 
 
       <aside className={`sidebar admin-sidebar ${collapsed ? "collapsed" : ""}`}>
         <div className="sidebar-brand">
-          CTP<span className="sidebar-brand-tag">Admin</span>
+          <Logo size={32} showText={false} /><span className="sidebar-brand-tag">Admin</span>
         </div>
         <nav className="sidebar-nav">
           {adminNavItems.map((item) => (

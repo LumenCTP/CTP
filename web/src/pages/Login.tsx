@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
 import { useAuth, needsSetup } from "../components/AuthContext";
+import Logo from "../components/Logo";
 import { apiFetch } from "../lib/api";
 
 export default function Login() {
@@ -86,7 +87,7 @@ export default function Login() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-header">
-          <div className="auth-logo">CTP</div>
+          <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>ClearToPay Construction</h2>
           <p className="auth-subtitle">{showForgot ? "Reset your password" : "Sign in to your account"}</p>
         </div>

@@ -3,6 +3,7 @@ import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom
 import { AuthProvider, useAuth, needsSetup, needsPartnerSetup, type User } from "./components/AuthContext";
 import Layout from "./components/Layout";
 import PartnerShell from "./components/PartnerShell";
+import Logo from "./components/Logo";
 import Dashboard from "./pages/Dashboard";
 import Clients from "./pages/Clients";
 import Vendors from "./pages/Vendors";
@@ -135,7 +136,7 @@ function PartnerStatusPage() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-header">
-          <div className="auth-logo">CTP</div>
+          <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>Partner Portal</h2>
         </div>
         <div className={`partner-status-banner partner-status-${status}`}>

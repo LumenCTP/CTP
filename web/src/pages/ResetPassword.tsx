@@ -1,4 +1,5 @@
 import { apiFetch } from "../lib/api";
+import Logo from "../components/Logo";
 import { useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 
@@ -29,7 +30,7 @@ export default function ResetPassword() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-header">
-          <div className="auth-logo">CTP</div>
+          <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>Reset your password</h2>
           <p className="auth-subtitle">Choose a new password for your ClearToPay account</p>
         </div>

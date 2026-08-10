@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { openHelp } from "./HelpWidget";
+import Logo from "./Logo";
 
 const navItems = [
   { to: "/app", label: "Dashboard", icon: "⌂" },
@@ -26,7 +27,7 @@ export default function Sidebar({ collapsed, onClose }: SidebarProps) {
       )}
 
       <aside className={`sidebar ${collapsed ? "collapsed" : ""}`}>
-        <div className="sidebar-brand">CTP</div>
+        <div className="sidebar-brand"><Logo size={32} textClassName="logo-wordmark-light" /></div>
         <nav className="sidebar-nav">
           {navItems.map((item) => item.to === "#help" ? (
             <button key={item.to} className="sidebar-link" onClick={() => { openHelp(); if (window.innerWidth < 768) onClose(); }}>

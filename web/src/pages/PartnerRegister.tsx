@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
+import Logo from "../components/Logo";
 
 const PARTNER_TYPES = [
   "Insurance Agent",
@@ -89,7 +90,7 @@ export default function PartnerRegister() {
       <div className="auth-page">
         <div className="auth-card">
           <div className="auth-header">
-            <div className="auth-logo">CTP</div>
+            <div className="auth-logo-slot"><Logo size={48} /></div>
             <h2>Application Submitted!</h2>
             <p className="auth-subtitle">You'll receive an email when approved.</p>
           </div>
@@ -111,7 +112,7 @@ export default function PartnerRegister() {
     <div className="auth-page">
       <div className="auth-card auth-card-wide">
         <div className="auth-header">
-          <div className="auth-logo">CTP</div>
+          <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>Become a Partner</h2>
           <p className="auth-subtitle">
             Earn commissions for every construction company you refer to

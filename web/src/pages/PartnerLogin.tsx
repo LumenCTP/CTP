@@ -1,6 +1,7 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useNavigate } from "react-router-dom";
 import { useAuth, needsPartnerSetup } from "../components/AuthContext";
+import Logo from "../components/Logo";
 
 export default function PartnerLogin() {
   const { user, loading, login, logout, refreshUser } = useAuth();
@@ -72,7 +73,7 @@ export default function PartnerLogin() {
     <div className="auth-page">
       <div className="auth-card">
         <div className="auth-header">
-          <div className="auth-logo">CTP</div>
+          <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>Partner Portal</h2>
           <p className="auth-subtitle">Sign in to your ClearToPay partner account</p>
         </div>

@@ -3,6 +3,7 @@ import { useEffect, useState, type FormEvent } from "react";
 import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../components/AuthContext";
 import { openHelp } from "../components/HelpWidget";
+import Logo from "../components/Logo";
 
 const DAYS = [
   { value: "monday", label: "Monday" },
@@ -130,7 +131,7 @@ export default function SetupWizard() {
     <div className="auth-page">
       <div className="auth-card" style={{ maxWidth: 560, width: "100%" }}>
         <div className="auth-header">
-          <div className="auth-logo">CTP</div>
+          <div className="auth-logo-slot"><Logo size={48} /></div>
           <h2>Set Up Your Workspace</h2>
           <p className="auth-subtitle">
             A few details to configure your Clear-to-Pay monitoring
