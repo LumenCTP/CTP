@@ -127,7 +127,7 @@ export default function Reports() {
         const a = document.createElement("a");
         const ext = format === "pdf" ? "pdf" : format === "csv" ? "csv" : "xlsx";
         a.href = url;
-        a.download = `ClearToPayConstruction_Report.${ext}`;
+        a.download = `ClearToPay_Report.${ext}`;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
@@ -163,7 +163,7 @@ export default function Reports() {
         if (data.pdf_url) {
           const a = document.createElement("a");
           a.href = data.pdf_url;
-          a.download = `ClearToPayConstruction_Report.pdf`;
+          a.download = `ClearToPay_Report.pdf`;
           document.body.appendChild(a);
           a.click();
           document.body.removeChild(a);
@@ -173,7 +173,7 @@ export default function Reports() {
           setTimeout(() => {
             const a = document.createElement("a");
             a.href = excelUrl;
-            a.download = `ClearToPayConstruction_Report.xlsx`;
+            a.download = `ClearToPay_Report.xlsx`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);

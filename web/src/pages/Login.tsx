@@ -87,7 +87,7 @@ export default function Login() {
       <div className="auth-card">
         <div className="auth-header">
           <div className="auth-logo">CTP</div>
-          <h2>ClearToPay Construction</h2>
+          <h2>ClearToPay Compliance</h2>
           <p className="auth-subtitle">{showForgot ? "Reset your password" : "Sign in to your account"}</p>
         </div>
 

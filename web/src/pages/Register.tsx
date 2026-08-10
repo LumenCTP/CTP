@@ -66,7 +66,7 @@ export default function Register() {
         <div className="auth-header">
           <div className="auth-logo">CTP</div>
           <h2>Create Your Account</h2>
-          <p className="auth-subtitle">Get started with ClearToPay Construction</p>
+          <p className="auth-subtitle">Get started with ClearToPay Compliance</p>
         </div>
 
         {error && <div className="auth-error">{error}</div>}

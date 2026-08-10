@@ -31,7 +31,7 @@ export default function ResetPassword() {
         <div className="auth-header">
           <div className="auth-logo">CTP</div>
           <h2>Reset your password</h2>
-          <p className="auth-subtitle">Choose a new password for your ClearToPay Construction account</p>
+          <p className="auth-subtitle">Choose a new password for your ClearToPay account</p>
         </div>
 
         {!token && !done && (
