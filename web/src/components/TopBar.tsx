@@ -1,3 +1,4 @@
+import Logo from "./Logo";
 import { useAuth } from "./AuthContext";
 
 interface TopBarProps {
@@ -16,7 +17,9 @@ export default function TopBar({ onMenuToggle, badge }: TopBarProps) {
       <button className="menu-toggle" onClick={onMenuToggle} aria-label="Toggle menu">
         ☰
       </button>
-      <h1 className="topbar-title">ClearToPay Construction</h1>
+      <div className="topbar-brand">
+        <Logo size={32} />
+      </div>
       {badge && <span className="topbar-badge">{badge}</span>}
       <div className="topbar-spacer" />
       <div className="topbar-user" title={displayName}>
