@@ -42,21 +42,6 @@ export function mapCOIToEntities(db: Database, tenantId: number, extraction: { c
   return vendorId ? { clientId, vendorId } : null;
 }
 
-export function computeWeeklyPaymentStatus(db: Database, tenantId: number): Array<{ vendorId: number; clientId: number; paymentStatus: "approved" | "review" | "hold" }> {
-  const vendors = db.query("SELECT id, client_id FROM vendors WHERE tenant_id=$tid").all({ $tid: tenantId }) as Array<{ id: number; client_id: number }>;
-  const today = new Date(); today.setHours(0, 0, 0, 0);
-  const boundary = new Date(today); boundary.setDate(boundary.getDate() + 7);
-  return vendors.map(v => {
-    const coi = db.query(`SELECT de.expiration_date FROM documents d JOIN document_extractions de ON de.document_id=d.id WHERE d.vendor_id=$vid AND d.client_id=$cid AND d.tenant_id=$tid AND d.document_type='COI' AND de.certificate_holder_name_confidence >= 0.8 ORDER BY d.created_at DESC, d.id DESC LIMIT 1`).get({ $vid: v.id, $cid: v.client_id, $tid: tenantId }) as { expiration_date: string | null } | null;
-    let paymentStatus: "approved" | "review" | "hold" = "hold";
-    if (coi?.expiration_date) {
-      const exp = new Date(`${coi.expiration_date}T00:00:00`);
-      if (!Number.isNaN(exp.getTime())) paymentStatus = exp < today ? "hold" : exp < boundary ? "review" : "approved";
-    }
-    return { vendorId: v.id, clientId: v.client_id, paymentStatus };
-  });
-}
-
 export function parseW9FormDate(s: string | null): Date | null {
   if (!s || !/^\d{2}\/\d{2}\/\d{4}$/.test(s)) return null;
   const [m, d, y] = s.split("/").map(Number);

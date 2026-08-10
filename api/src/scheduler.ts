@@ -9,9 +9,9 @@ import {
   hasReminderBeenSent,
   markReminderSent,
 } from "./email";
-import { calculatePaymentWeek } from "./compliance";
+import { calculatePaymentWeek, calculateAllCompliance, calculateClientCompliance } from "./compliance";
 import { ingestDocumentAttachment } from "./routes/documents";
-import { computeWeeklyPaymentStatus, hasPriorYearW9 } from "./mapping";
+import { hasPriorYearW9 } from "./mapping";
 import { QUEUE_SECRET } from "./secrets";
 import path from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
@@ -180,9 +180,6 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
 
       sendEmail(recipients, subject, emailBody, config.client_id, undefined, "weekly_report");
       console.log(`[scheduler] Weekly report sent for client ${config.client_id}`);
-      for (const result of computeWeeklyPaymentStatus(db, (db.query("SELECT tenant_id FROM clients WHERE id=$id").get({$id: config.client_id}) as {tenant_id:number}).tenant_id)) {
-        db.query("INSERT INTO compliance_status (vendor_id,client_id,payment_status,status,calculated_at) VALUES ($vid,$cid,$payment,$status,datetime('now')) ON CONFLICT(vendor_id) DO UPDATE SET client_id=excluded.client_id,payment_status=excluded.payment_status,calculated_at=datetime('now')").run({$vid:result.vendorId,$cid:result.clientId,$payment:result.paymentStatus,$status:result.paymentStatus === "approved" ? "compliant" : result.paymentStatus === "review" ? "expiring_soon" : "expired"});
-      }
     } catch (err) {
       console.error(`[scheduler] Error generating weekly report for client ${config.client_id}:`, err);
       // Log error to email_log
@@ -199,6 +196,22 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
           $error_message: String(err),
         });
       }
+    }
+  }
+
+  // Whole-book refresh: recalculate accurate compliance for EVERY active tenant,
+  // not just clients with weekly report recipients configured. Clients without
+  // recipients never get a scheduled refresh otherwise. Each tenant is wrapped
+  // in try/catch so a single failure cannot kill the job.
+  const activeTenants = db.query(
+    "SELECT id FROM tenants WHERE UPPER(subscription_status) = 'ACTIVE'"
+  ).all() as Array<{ id: number }>;
+  for (const tenant of activeTenants) {
+    try {
+      const summary = calculateAllCompliance(tenant.id);
+      console.log(`[scheduler] Weekly compliance refresh for tenant ${tenant.id}: ${summary.vendor_count} vendors (approved=${summary.approved}, review=${summary.review}, hold=${summary.hold})`);
+    } catch (err) {
+      console.error(`[scheduler] Error refreshing compliance for tenant ${tenant.id}:`, err);
     }
   }
 
@@ -235,7 +248,7 @@ async function checkMonthly(now: Date, todayStr: string): Promise<void> {
   const db = getDb();
 
   const configs = db.query(`
-    SELECT cec.client_id, cec.monthly_report_recipients, cl.name as client_name
+    SELECT cec.client_id, cec.monthly_report_recipients, cl.name as client_name, cl.tenant_id as tenant_id
     FROM client_email_config cec
     JOIN clients cl ON cl.id = cec.client_id
     WHERE cec.monthly_report_recipients IS NOT NULL
@@ -244,6 +257,7 @@ async function checkMonthly(now: Date, todayStr: string): Promise<void> {
     client_id: number;
     monthly_report_recipients: string;
     client_name: string;
+    tenant_id: number | null;
   }>;
 
   const monthNames = ["January", "February", "March", "April", "May", "June",
@@ -253,6 +267,9 @@ async function checkMonthly(now: Date, todayStr: string): Promise<void> {
     try {
       console.log(`[scheduler] Generating monthly report for client ${config.client_id} (${config.client_name})`);
 
+      // Recalculate accurate compliance first so the counts below are never
+      // based on stale (or COI-only) cached values.
+      if (config.tenant_id) calculateClientCompliance(config.client_id, config.tenant_id);
       // Get compliance summary for this client
       const vendors = db.query(`
         SELECT v.id, cs.payment_status
