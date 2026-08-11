@@ -1,16 +1,28 @@
 import { Hono } from "hono";
 import path from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
 import { getDb } from "../db";
 import { gatherReportData, generatePdfReport, generateExcelReport } from "../reports";
+import { storageGetStream, storagePut } from "../storage";
 
 const app = new Hono();
 
-// Reports are written to (and downloadable only from) a tenant-scoped
-// subdirectory, so a tenant can never download another tenant's files even if
-// it knows the filename. Generation and download must agree on this layout.
-function reportsDirFor(tenantId: number): string {
-  return path.join(import.meta.dir, "..", "..", "data", "reports", `tenant-${tenantId}`);
+// Reports are written to (and downloadable only from) a tenant-scoped key
+// prefix, so a tenant can never download another tenant's files even if it
+// knows the filename. The storage layer maps this 1:1 to the local layout
+// data/reports/tenant-<id>/ in fallback mode. Generation and download must
+// agree on this layout.
+
+// Guard: only plain filenames (no slashes, no "." / "..") may be used — the
+// tenant prefix is applied server-side, so a malicious filename cannot escape
+// the tenant's own key space.
+function assertPlainFilename(filename: string): boolean {
+  return (
+    filename.length > 0 &&
+    filename !== "." &&
+    filename !== ".." &&
+    !filename.includes("/") &&
+    !filename.includes("\\")
+  );
 }
 
 // ── Reports ─────────────────────────────────────────────
@@ -41,14 +53,11 @@ app.post("/api/reports/clear-to-pay", async (c) => {
 
     const timestamp = Date.now();
     const clientSlug = client.name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
-    const reportsDir = reportsDirFor(c.get("tenant_id") as number);
-    if (!existsSync(reportsDir)) {
-      mkdirSync(reportsDir, { recursive: true });
-    }
+    const tenantId = c.get("tenant_id") as number;
+    const reportKey = (filename: string) => `reports/tenant-${tenantId}/${filename}`;
 
     if (format === "pdf") {
       const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
-      const pdfPath = path.join(reportsDir, pdfFilename);
 
       const doc = generatePdfReport(reportData);
       const buffers: Buffer[] = [];
@@ -56,7 +65,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
         buffers.push(Buffer.from(chunk));
       }
       const pdfBuffer = Buffer.concat(buffers);
-      Bun.write(pdfPath, pdfBuffer);
+      await storagePut(reportKey(pdfFilename), pdfBuffer, "application/pdf");
 
       return new Response(pdfBuffer, {
         headers: {
@@ -77,16 +86,16 @@ app.post("/api/reports/clear-to-pay", async (c) => {
       reportData.expiring_during_week.forEach(e => rows.push(["Expiring", e.vendor_name, "", "", "", e.document_type, e.expiration_date, ""].map(esc).join(",")));
       reportData.missing_docs.forEach(m => rows.push(["Missing", m.vendor_name, "", "", "", "", "", m.missing_types.join("; ")].map(esc).join(",")));
       const csv = Buffer.from(rows.join("\r\n") + "\r\n", "utf8");
-      Bun.write(path.join(reportsDir, csvFilename), csv);
+      await storagePut(reportKey(csvFilename), csv, "text/csv; charset=utf-8");
       return new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${csvFilename}"` } });
     }
 
     if (format === "excel") {
       const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
-      const xlsxPath = path.join(reportsDir, xlsxFilename);
 
       const xlsxBuffer = await generateExcelReport(reportData);
-      Bun.write(xlsxPath, xlsxBuffer);
+      await storagePut(reportKey(xlsxFilename), xlsxBuffer,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 
       return new Response(xlsxBuffer, {
         headers: {
@@ -100,19 +109,18 @@ app.post("/api/reports/clear-to-pay", async (c) => {
     // "both" — generate both, but we can only return one. Return a summary JSON
     // with download URLs for both files.
     const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
-    const pdfPath = path.join(reportsDir, pdfFilename);
 
     const doc = generatePdfReport(reportData);
     const pdfBuffers: Buffer[] = [];
     for await (const chunk of doc) {
       pdfBuffers.push(Buffer.from(chunk));
     }
-    Bun.write(pdfPath, Buffer.concat(pdfBuffers));
+    await storagePut(reportKey(pdfFilename), Buffer.concat(pdfBuffers), "application/pdf");
 
     const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
-    const xlsxPath = path.join(reportsDir, xlsxFilename);
     const xlsxBuffer = await generateExcelReport(reportData);
-    Bun.write(xlsxPath, xlsxBuffer);
+    await storagePut(reportKey(xlsxFilename), xlsxBuffer,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 
     // Return summary with download URLs
     return c.json({
@@ -136,20 +144,19 @@ app.post("/api/reports/clear-to-pay", async (c) => {
 });
 
 // GET /api/reports/download/:filename — download a generated report file
-app.get("/api/reports/download/:filename", (c) => {
+app.get("/api/reports/download/:filename", async (c) => {
   try {
     const filename = decodeURIComponent(c.req.param("filename"));
-    // Only ever look inside the requesting tenant's own reports directory —
-    // a tenant can never fetch another tenant's files, even with a valid name.
-    const reportsDir = reportsDirFor(c.get("tenant_id") as number);
-    const filePath = path.join(reportsDir, filename);
-
-    // Security: prevent directory traversal / escape from the tenant dir
-    if (!filePath.startsWith(reportsDir)) {
+    // Only ever address the requesting tenant's own reports key space — a
+    // tenant can never fetch another tenant's files, even with a valid name.
+    if (!assertPlainFilename(filename)) {
       return c.json({ error: "Access denied" }, 403);
     }
+    const tenantId = c.get("tenant_id") as number;
+    const key = `reports/tenant-${tenantId}/${filename}`;
 
-    if (!existsSync(filePath)) {
+    const obj = await storageGetStream(key);
+    if (!obj) {
       return c.json({ error: "Report file not found" }, 404);
     }
 
@@ -159,9 +166,10 @@ app.get("/api/reports/download/:filename", (c) => {
     else if (ext === ".xlsx")
       contentType =
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+    else if (ext === ".csv") contentType = "text/csv; charset=utf-8";
+    if (obj.contentType) contentType = obj.contentType;
 
-    const file = Bun.file(filePath);
-    return new Response(file, {
+    return new Response(obj.stream, {
       headers: {
         "Content-Type": contentType,
         "Content-Disposition": `attachment; filename="${filename}"`,

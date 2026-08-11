@@ -14,8 +14,7 @@ import { calculateCommissions, runPartnerPayouts } from "./commissions";
 import { ingestDocumentAttachment } from "./routes/documents";
 import { hasPriorYearW9 } from "./mapping";
 import { QUEUE_SECRET } from "./secrets";
-import path from "node:path";
-import { existsSync, mkdirSync } from "node:fs";
+import { storagePut } from "./storage";
 
 // ── State ──────────────────────────────────────────────
 
@@ -79,14 +78,6 @@ let lastWeeklyCheckDate: string | null = null;   // ISO date string (YYYY-MM-DD)
 let lastMonthlyCheckDate: string | null = null;   // ISO date string of the 1st we last processed
 let lastDailyRenewalDate: string | null = null;   // ISO date string of the last day we ran renewal checks
 
-const REPORTS_DIR = path.join(import.meta.dir, "..", "data", "reports");
-
-function ensureReportsDir() {
-  if (!existsSync(REPORTS_DIR)) {
-    mkdirSync(REPORTS_DIR, { recursive: true });
-  }
-}
-
 // ── Scheduler Tick ─────────────────────────────────────
 
 async function tick(): Promise<void> {
@@ -133,7 +124,6 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
   lastWeeklyCheckDate = monday;
 
   const db = getDb();
-  ensureReportsDir();
 
   // Get all clients with weekly recipients configured
   const configs = db.query(`
@@ -157,26 +147,25 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
       const timestamp = Date.now();
       const clientSlug = config.client_name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
 
-      // Reports are written into the tenant's own subdir so the download route
-      // (routes/reports.ts) can serve strictly tenant-scoped files.
-      const tenantDir = path.join(REPORTS_DIR, `tenant-${config.tenant_id ?? "unknown"}`);
-      mkdirSync(tenantDir, { recursive: true });
+      // Reports are written into the tenant's own key prefix so the download
+      // route (routes/reports.ts) can serve strictly tenant-scoped files. The
+      // storage layer maps this to data/reports/tenant-<id>/ in fallback mode.
+      const tenantPrefix = `reports/tenant-${config.tenant_id ?? "unknown"}`;
 
       // Generate PDF
       const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
-      const pdfPath = path.join(tenantDir, pdfFilename);
       const pdfDoc = generatePdfReport(reportData);
       const pdfBuffers: Buffer[] = [];
       for await (const chunk of pdfDoc) {
         pdfBuffers.push(Buffer.from(chunk));
       }
-      Bun.write(pdfPath, Buffer.concat(pdfBuffers));
+      await storagePut(`${tenantPrefix}/${pdfFilename}`, Buffer.concat(pdfBuffers), "application/pdf");
 
       // Generate Excel
       const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
-      const xlsxPath = path.join(tenantDir, xlsxFilename);
       const xlsxBuffer = await generateExcelReport(reportData);
-      Bun.write(xlsxPath, xlsxBuffer);
+      await storagePut(`${tenantPrefix}/${xlsxFilename}`, xlsxBuffer,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 
       // Build email body
       const emailBody = buildWeeklyReportEmail(config.client_name, {

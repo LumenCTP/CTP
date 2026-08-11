@@ -33,6 +33,23 @@ export async function renderPdfPagesToPngs(
   filePath: string,
   maxPages: number,
 ): Promise<Buffer[]> {
+  let data: ArrayBuffer;
+  try {
+    data = await Bun.file(filePath).arrayBuffer();
+  } catch {
+    return [];
+  }
+  return renderPdfPagesFromBuffer(new Uint8Array(data), maxPages);
+}
+
+/**
+ * Same as renderPdfPagesToPngs but takes the PDF bytes directly — used when
+ * the file lives in object storage (R2) rather than on local disk.
+ */
+export async function renderPdfPagesFromBuffer(
+  pdfBytes: Uint8Array | Buffer,
+  maxPages: number,
+): Promise<Buffer[]> {
   let pdfjsLib: any;
   let createCanvas: ((w: number, h: number) => any) | undefined;
   try {
@@ -51,7 +68,7 @@ export async function renderPdfPagesToPngs(
   let pdf: any;
   try {
     pdfjsLib.GlobalWorkerOptions.workerSrc = WORKER_SRC;
-    const data = await Bun.file(filePath).arrayBuffer();
+    const data = pdfBytes instanceof Uint8Array ? pdfBytes : new Uint8Array(pdfBytes);
     const doc = await pdfjsLib
       .getDocument({
         data: new Uint8Array(data),

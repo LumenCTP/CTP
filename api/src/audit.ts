@@ -1,7 +1,6 @@
 import { getDb } from "./db";
 import { calculateVendorCompliance, type VendorComplianceResult } from "./compliance";
-import path from "node:path";
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { storageGet, storageKeyFromFilePath, storagePut } from "./storage";
 
 // ── Types ───────────────────────────────────────────────
 
@@ -38,22 +37,6 @@ interface DocRow {
   vendor_contact_name: string | null;
   vendor_contact_email: string | null;
   client_name: string;
-}
-
-const AUDITS_ROOT = path.join(import.meta.dir, "..", "data", "audits");
-const API_BASE = path.join(import.meta.dir, "..");
-
-// Each tenant's ZIPs live in their own subdirectory so the download route can
-// serve strictly from the requester's own dir (see routes/audit.ts).
-function auditsDirFor(tenantId: number): string {
-  return path.join(AUDITS_ROOT, `tenant-${tenantId}`);
-}
-
-function ensureAuditsDir(tenantId: number) {
-  const dir = auditsDirFor(tenantId);
-  if (!existsSync(dir)) {
-    mkdirSync(dir, { recursive: true });
-  }
 }
 
 // ── Document Search ─────────────────────────────────────
@@ -365,7 +348,7 @@ function dateToDosDateTime(d: Date): { time: number; date: number } {
 
 // ── Main Audit Generation ───────────────────────────────
 
-export function generateAuditPackage(req: AuditRequest, tenantId: number): AuditResult {
+export async function generateAuditPackage(req: AuditRequest, tenantId: number): Promise<AuditResult> {
   const db = getDb();
 
   // Verify client exists (tenant-scoped)
@@ -467,26 +450,28 @@ export function generateAuditPackage(req: AuditRequest, tenantId: number): Audit
 
     // Add document files — dedupe by document id (done above) AND by physical
     // file, so a file referenced by multiple rows is only counted/embedded once.
+    // Files are read through the storage abstraction (R2 when configured,
+    // local disk otherwise) keyed off the DB file_path.
     const seenFiles = new Set<string>();
     const docEntries: ZipEntry[] = [];
     let vendorUniqueDocCount = 0;
     for (const doc of orderedDocs) {
-      // file_path is relative to api/ (e.g., "data/documents/1_apex_coi_2026.pdf")
-      const fullPath = path.join(API_BASE, doc.file_path);
-      if (seenFiles.has(fullPath)) continue;
-      seenFiles.add(fullPath);
+      // file_path is relative to api/ (e.g., "data/uploads/49/x.pdf")
+      const storageKey = storageKeyFromFilePath(doc.file_path);
+      if (seenFiles.has(storageKey)) continue;
+      seenFiles.add(storageKey);
       totalDocCount++;
       vendorUniqueDocCount++;
 
-      if (existsSync(fullPath)) {
+      const obj = await storageGet(storageKey);
+      if (obj) {
         try {
-          const fileData = readFileSync(fullPath);
           docEntries.push({
             name: `${vendorDir}/${doc.original_filename}`,
-            data: fileData,
+            data: obj.data,
           });
         } catch (err) {
-          console.error(`[audit] Could not read file: ${fullPath}`, err);
+          console.error(`[audit] Could not read file: ${storageKey}`, err);
           // Include a note about the missing file
           docEntries.push({
             name: `${vendorDir}/${doc.original_filename}.error.txt`,
@@ -618,13 +603,12 @@ export function generateAuditPackage(req: AuditRequest, tenantId: number): Audit
     data: Buffer.from(JSON.stringify(summaryJson, null, 2), "utf-8"),
   });
 
-  // Generate ZIP — tenant-scoped write path (data/audits/tenant-<id>)
-  ensureAuditsDir(tenantId);
+  // Generate ZIP — stored under the tenant's own key prefix
+  // (audits/tenant-<id>/, local: data/audits/tenant-<id>/)
   const zipBuffer = createZipBuffer(zipEntries);
 
   const zipFilename = `audit_${clientSlug}_${Date.now()}.zip`;
-  const zipPath = path.join(auditsDirFor(tenantId), zipFilename);
-  Bun.write(zipPath, zipBuffer);
+  await storagePut(`audits/tenant-${tenantId}/${zipFilename}`, zipBuffer, "application/zip");
 
   return {
     download_url: `/api/audit/download/${encodeURIComponent(zipFilename)}`,

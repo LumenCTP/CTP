@@ -1,17 +1,16 @@
 import { Hono } from "hono";
 import path from "node:path";
-import { mkdirSync, existsSync } from "node:fs";
 import { getDb } from "../db";
 import { QUEUE_SECRET } from "../secrets";
 import { logAudit, requireQueueSecret } from "../middleware";
-import { extractDocumentInfo } from "../extract";
+import { extractDocumentInfoFromBytes } from "../extract";
 import { mapCOIToEntities } from "../mapping";
 import { calculateVendorCompliance } from "../compliance";
+import { storageGetStream, storageKeyFromFilePath, storagePut } from "../storage";
 
 const app = new Hono();
 
 // ── Documents ──────────────────────────────────────────
-const DOCS_DIR = path.join(import.meta.dir, "..", "..", "data", "uploads");
 const ALLOWED_TYPES = ["application/pdf", "image/jpeg", "image/png"];
 const MAX_UPLOAD_SIZE = 10 * 1024 * 1024;
 
@@ -36,16 +35,24 @@ export async function ingestDocumentAttachment(opts: {
   if (clientId !== null && !db.query("SELECT id FROM clients WHERE id=$id AND tenant_id=$tid").get({$id:clientId,$tid:tenantId})) throw new Error("Client not found");
   if (vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND tenant_id=$tid").get({$id:vendorId,$tid:tenantId})) throw new Error("Vendor not found");
   if (clientId !== null && vendorId !== null && !db.query("SELECT id FROM vendors WHERE id=$id AND client_id=$cid AND tenant_id=$tid").get({$id:vendorId,$cid:clientId,$tid:tenantId})) throw new Error("Vendor does not belong to client");
-  const dir = path.join(DOCS_DIR, String(tenantId)); mkdirSync(dir, { recursive: true });
-  const filePath = path.join(dir, `${Date.now()}-${originalFilename}`);
-  await Bun.write(filePath, opts.content);
-  const relPath = `data/uploads/${tenantId}/${path.basename(filePath)}`;
+  // Persist to object storage (R2) when configured, otherwise the existing
+  // local-disk layout (api/data/uploads/<tenantId>/...) — the storage key is
+  // documents/<tenantId>/<basename> in both modes.
+  const storedFilename = `${Date.now()}-${originalFilename}`;
+  const storageKey = `documents/${tenantId}/${storedFilename}`;
+  await storagePut(storageKey, opts.content, opts.contentType);
+  // DB file_path stays in the historical layout so existing audit-trail
+  // filters (file_path LIKE 'data/uploads/%') and local-mode resolution work
+  // unchanged. storageKeyFromFilePath() maps it back to the storage key.
+  const relPath = `data/uploads/${tenantId}/${storedFilename}`;
   const result = db.query(`INSERT INTO documents (vendor_id,client_id,document_type,file_path,original_filename,content_type,file_size,sender_name,sender_email,tenant_id) VALUES ($vid,$cid,'Other',$path,$name,$type,$size,$sender,$email,$tid)`).run({$vid:vendorId,$cid:clientId,$path:relPath,$name:originalFilename,$type:opts.contentType,$size:opts.content.length,$sender:opts.senderName || null,$email:opts.senderEmail || null,$tid:tenantId});
   const documentId = Number(result.lastInsertRowid);
   db.query("INSERT INTO ingestion_events (document_id,status) VALUES ($id,'uploaded')").run({$id:documentId});
   logAudit(db,"document",documentId,"uploaded",{filename:originalFilename,file_size:opts.content.length,content_type:opts.contentType,tenant_id:tenantId});
   db.query("UPDATE ingestion_events SET status='processing',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
-  extractDocumentInfo(filePath, originalFilename).then((extraction) => {
+  // Extraction runs on the in-memory bytes so it works whether the file is on
+  // local disk (fallback mode) or only in R2.
+  extractDocumentInfoFromBytes(opts.content, originalFilename).then((extraction) => {
     // is_reviewed intentionally stays at its default 0 (Needs Review) for every
     // new extraction — including high-confidence AI ones — until a human reviews
     // it. The honest filename fallback therefore lands in Needs Review too, and
@@ -245,28 +252,32 @@ app.get("/api/documents/:id", (c) => {
 });
 
 // GET /api/documents/:id/file — serve the document file
-app.get("/api/documents/:id/file", (c) => {
+app.get("/api/documents/:id/file", async (c) => {
   try {
     const db = getDb();
     const id = Number(c.req.param("id"));
 
+    // Tenant scope is enforced here (id + tenant_id) — the auth middleware
+    // already required a valid token, so 401/403 semantics are unchanged.
     const doc = db.query(
-      "SELECT file_path, original_filename FROM documents WHERE id = $id AND tenant_id = $tenant_id"
-    ).get({ $id: id, $tenant_id: c.get("tenant_id") as number }) as { file_path: string; original_filename: string } | undefined;
+      "SELECT file_path, original_filename, content_type FROM documents WHERE id = $id AND tenant_id = $tenant_id"
+    ).get({ $id: id, $tenant_id: c.get("tenant_id") as number }) as { file_path: string; original_filename: string; content_type: string | null } | undefined;
 
     if (!doc) {
       return c.json({ error: "Document not found" }, 404);
     }
 
-    const fullPath = path.join(import.meta.dir, "..", "..", doc.file_path);
-
-    if (!existsSync(fullPath)) {
-      return c.json({ error: "File not found on disk" }, 404);
+    const key = storageKeyFromFilePath(doc.file_path);
+    const obj = await storageGetStream(key);
+    if (!obj) {
+      return c.json({ error: "File not found" }, 404);
     }
 
-    const file = Bun.file(fullPath);
-    return new Response(file, {
+    const contentType =
+      doc.content_type || obj.contentType || "application/octet-stream";
+    return new Response(obj.stream, {
       headers: {
+        "Content-Type": contentType,
         "Content-Disposition": `inline; filename="${doc.original_filename}"`,
       },
     });

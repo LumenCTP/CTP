@@ -1,14 +1,22 @@
 import { Hono } from "hono";
-import path from "node:path";
-import { existsSync } from "node:fs";
 import { generateAuditPackage } from "../audit";
+import { storageGetStream } from "../storage";
 
 const app = new Hono();
 
-// Audit ZIPs are written to (and downloadable only from) a tenant-scoped
-// subdirectory. Must stay in sync with generateAuditPackage in ../audit.
-function auditsDirFor(tenantId: number): string {
-  return path.join(import.meta.dir, "..", "..", "data", "audits", `tenant-${tenantId}`);
+// Audit ZIPs are stored under a tenant-scoped key prefix (audits/tenant-<id>/),
+// so a tenant can never download another tenant's files even if it knows the
+// filename. The storage layer maps this 1:1 to the local layout
+// data/audits/tenant-<id>/ in fallback mode.
+
+function assertPlainFilename(filename: string): boolean {
+  return (
+    filename.length > 0 &&
+    filename !== "." &&
+    filename !== ".." &&
+    !filename.includes("/") &&
+    !filename.includes("\\")
+  );
 }
 
 // ── Audit Package ──────────────────────────────────────
@@ -23,7 +31,7 @@ app.post("/api/audit/generate", async (c) => {
       return c.json({ error: "Valid client_id is required" }, 400);
     }
 
-    const result = generateAuditPackage({
+    const result = await generateAuditPackage({
       client_id,
       vendor_id: vendor_id && typeof vendor_id === "number" ? vendor_id : undefined,
       document_type: document_type && typeof document_type === "string" ? document_type : undefined,
@@ -39,26 +47,22 @@ app.post("/api/audit/generate", async (c) => {
 });
 
 // GET /api/audit/download/:filename — download a generated audit ZIP
-app.get("/api/audit/download/:filename", (c) => {
+app.get("/api/audit/download/:filename", async (c) => {
   try {
     const filename = decodeURIComponent(c.req.param("filename"));
-    // Only ever look inside the requesting tenant's own audits directory.
-    const auditsDir = auditsDirFor(c.get("tenant_id") as number);
-    const filePath = path.join(auditsDir, filename);
-
-    // Security: prevent directory traversal / escape from the tenant dir
-    const resolved = path.resolve(filePath);
-    const resolvedDir = path.resolve(auditsDir);
-    if (!resolved.startsWith(resolvedDir)) {
+    // Only ever address the requesting tenant's own audits key space.
+    if (!assertPlainFilename(filename)) {
       return c.json({ error: "Access denied" }, 403);
     }
+    const tenantId = c.get("tenant_id") as number;
+    const key = `audits/tenant-${tenantId}/${filename}`;
 
-    if (!existsSync(filePath)) {
+    const obj = await storageGetStream(key);
+    if (!obj) {
       return c.json({ error: "Audit file not found" }, 404);
     }
 
-    const file = Bun.file(filePath);
-    return new Response(file, {
+    return new Response(obj.stream, {
       headers: {
         "Content-Type": "application/zip",
         "Content-Disposition": `attachment; filename="${filename}"`,

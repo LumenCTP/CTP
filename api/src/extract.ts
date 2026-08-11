@@ -33,7 +33,7 @@
  * them stable.
  */
 
-import { renderPdfPagesToPngs } from "./pdf-render";
+import { renderPdfPagesFromBuffer, renderPdfPagesToPngs } from "./pdf-render";
 
 export interface ExtractionResult {
   vendor_name: string | null;
@@ -95,9 +95,29 @@ export async function extractDocumentInfo(
   filePath: string,
   fileName: string,
 ): Promise<ExtractionResult> {
+  let data: Uint8Array;
+  try {
+    data = new Uint8Array(await Bun.file(filePath).arrayBuffer());
+  } catch (err) {
+    console.warn(`[extract] cannot read ${filePath} — honest fallback (${err})`);
+    return honestFallback(fileName);
+  }
+  return extractDocumentInfoFromBytes(data, fileName);
+}
+
+/**
+ * Same as extractDocumentInfo but takes the document bytes directly — used
+ * when the file lives in object storage (R2) rather than on local disk.
+ * Never throws and never fabricates data.
+ */
+export async function extractDocumentInfoFromBytes(
+  fileData: Uint8Array | Buffer,
+  fileName: string,
+): Promise<ExtractionResult> {
+  const data = fileData instanceof Uint8Array ? fileData : new Uint8Array(fileData);
   const ext = getExtension(fileName);
   if (ext === "pdf") {
-    const pages = await renderPdfPagesToPngs(filePath, MAX_PDF_PAGES);
+    const pages = await renderPdfPagesFromBuffer(data, MAX_PDF_PAGES);
     if (pages.length > 0) {
       const results: ExtractionResult[] = [];
       for (const png of pages) {
@@ -117,7 +137,7 @@ export async function extractDocumentInfo(
     return honestFallback(fileName);
   }
   if (IMAGE_EXTENSIONS.has(ext)) {
-    const aiResult = await tryAIExtraction(filePath, fileName);
+    const aiResult = await tryAIExtractionFromBytes(data, fileName);
     if (aiResult) return aiResult;
   }
   // Non-images, or images where AI was unavailable/failed
@@ -139,15 +159,27 @@ async function tryAIExtraction(
 ): Promise<ExtractionResult | null> {
   if (!process.env.AI_EXTRACTION_ENDPOINT) return null; // AI not configured
 
-  let base64: string;
+  let buffer: ArrayBuffer;
   try {
-    const buffer = await Bun.file(filePath).arrayBuffer();
-    base64 = Buffer.from(buffer).toString("base64");
+    buffer = await Bun.file(filePath).arrayBuffer();
   } catch (err) {
     console.warn(`[extract] AI: cannot read ${filePath} — honest fallback (${err})`);
     return null;
   }
+  return tryAIExtractionFromBytes(new Uint8Array(buffer), fileName);
+}
 
+/**
+ * Attempts real AI extraction on image bytes (used when the file lives in
+ * object storage rather than on local disk). Returns null (never throws)
+ * under the same conditions as tryAIExtraction.
+ */
+async function tryAIExtractionFromBytes(
+  data: Uint8Array | Buffer,
+  fileName: string,
+): Promise<ExtractionResult | null> {
+  if (!process.env.AI_EXTRACTION_ENDPOINT) return null; // AI not configured
+  const base64 = Buffer.from(data).toString("base64");
   const mime = getExtension(fileName) === "png" ? "image/png" : "image/jpeg";
   return callVisionAI(base64, mime, fileName);
 }
