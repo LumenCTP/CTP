@@ -121,6 +121,63 @@ function formatDateStr(dateStr: string | null): string {
   });
 }
 
+// Owner-specified document ordering: COI (Certificate of Insurance) first,
+// then W-9/W9, then every other document type alphabetically.
+function docTypeSortRank(documentType: string): [number, string] {
+  const norm = documentType.trim().toLowerCase().replace(/[\s_\-]+/g, "");
+  if (norm === "coi" || norm.startsWith("certificateofinsurance")) return [0, norm];
+  if (norm === "w9" || norm === "w-9" || norm === "w9form" || norm.startsWith("w9")) return [1, norm];
+  return [2, norm];
+}
+
+function sortDocs(docs: DocRow[]): DocRow[] {
+  return [...docs].sort((a, b) => {
+    const [ra, na] = docTypeSortRank(a.document_type);
+    const [rb, nb] = docTypeSortRank(b.document_type);
+    if (ra !== rb) return ra - rb;
+    if (na !== nb) return na < nb ? -1 : 1;
+    // Most recently received first within the same type
+    return b.received_date.localeCompare(a.received_date);
+  });
+}
+
+// PAGE-ONE summary — the first file in the audit package (client info, date
+// range, vendor count, unique doc count, missing/expired summary).
+function generateAuditSummary(opts: {
+  clientName: string;
+  dateStr: string;
+  dateFrom: string | null;
+  dateTo: string | null;
+  vendorCount: number;
+  docCount: number;
+  missingItemCount: number;
+  missingVendorCount: number;
+  expiredItemCount: number;
+  expiredVendorCount: number;
+}): string {
+  const lines: string[] = [];
+  lines.push(`========================================`);
+  lines.push(`AUDIT PACKAGE SUMMARY`);
+  lines.push(`========================================`);
+  lines.push(`Client: ${opts.clientName}`);
+  lines.push(`Generated: ${opts.dateStr}`);
+  const range =
+    opts.dateFrom || opts.dateTo
+      ? `${opts.dateFrom ?? "earliest"} to ${opts.dateTo ?? "latest"}`
+      : "All documents";
+  lines.push(`Date Range: ${range}`);
+  lines.push(`Vendors Included: ${opts.vendorCount}`);
+  lines.push(`Total Documents: ${opts.docCount}`);
+  lines.push(
+    `Missing Required Documents: ${opts.missingItemCount} item(s) across ${opts.missingVendorCount} vendor(s)`,
+  );
+  lines.push(
+    `Expired Documents: ${opts.expiredItemCount} item(s) across ${opts.expiredVendorCount} vendor(s)`,
+  );
+  lines.push(``);
+  return lines.join("\n");
+}
+
 function generateVendorSummary(
   vendorName: string,
   vendorContact: string | null,
@@ -311,116 +368,199 @@ function dateToDosDateTime(d: Date): { time: number; date: number } {
 export function generateAuditPackage(req: AuditRequest, tenantId: number): AuditResult {
   const db = getDb();
 
-  // Verify client exists
+  // Verify client exists (tenant-scoped)
   const client = db
-    .query("SELECT id, name FROM clients WHERE id = $id AND tenant_id = $tenant_id")
-    .get({ $id: req.client_id, $tenant_id: tenantId }) as { id: number; name: string } | undefined;
+    .query("SELECT id, name, contact_email, contact_phone, address FROM clients WHERE id = $id AND tenant_id = $tenant_id")
+    .get({ $id: req.client_id, $tenant_id: tenantId }) as
+    | { id: number; name: string; contact_email: string | null; contact_phone: string | null; address: string | null }
+    | undefined;
 
   if (!client) {
     throw new Error(`Client not found: ${req.client_id}`);
   }
 
-  // Search documents
+  // Every vendor for this client (tenant-scoped) — INCLUDING vendors with zero
+  // documents, so they show up in the missing-docs report instead of being
+  // silently dropped. When a vendor filter is applied, only that vendor is
+  // audited.
+  const vendors = req.vendor_id
+    ? (db
+        .query(
+          `SELECT id, name, contact_name, contact_email FROM vendors
+           WHERE id = $vendor_id AND client_id = $client_id AND tenant_id = $tenant_id`,
+        )
+        .all({ $vendor_id: req.vendor_id, $client_id: req.client_id, $tenant_id: tenantId }) as Array<{
+        id: number;
+        name: string;
+        contact_name: string | null;
+        contact_email: string | null;
+      }>)
+    : (db
+        .query(
+          `SELECT id, name, contact_name, contact_email FROM vendors
+           WHERE client_id = $client_id AND tenant_id = $tenant_id
+           ORDER BY name ASC`,
+        )
+        .all({ $client_id: req.client_id, $tenant_id: tenantId }) as Array<{
+        id: number;
+        name: string;
+        contact_name: string | null;
+        contact_email: string | null;
+      }>);
+
+  // Search documents (tenant- and client-scoped)
   const docs = searchDocuments(req, tenantId);
 
-  // Group by vendor
+  // Group documents by vendor, deduped by document id — the LEFT JOIN on
+  // document_extractions can repeat a document row (joined rows duplicating),
+  // and the same physical file can be referenced by multiple rows; the same
+  // document must never be counted or embedded twice.
   const vendorMap = new Map<number, {
     vendorName: string;
     vendorContact: string | null;
     vendorEmail: string | null;
     docs: DocRow[];
   }>();
+  for (const v of vendors) {
+    vendorMap.set(v.id, {
+      vendorName: v.name,
+      vendorContact: v.contact_name,
+      vendorEmail: v.contact_email,
+      docs: [],
+    });
+  }
 
+  const seenDocIds = new Set<number>();
   for (const doc of docs) {
-    if (!vendorMap.has(doc.vendor_id)) {
-      vendorMap.set(doc.vendor_id, {
-        vendorName: doc.vendor_name,
-        vendorContact: doc.vendor_contact_name,
-        vendorEmail: doc.vendor_contact_email,
-        docs: [],
-      });
-    }
-    vendorMap.get(doc.vendor_id)!.docs.push(doc);
+    if (seenDocIds.has(doc.id)) continue;
+    seenDocIds.add(doc.id);
+    const v = vendorMap.get(doc.vendor_id);
+    if (v) v.docs.push(doc);
   }
 
   const clientSlug = client.name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
   const dateStr = new Date().toISOString().slice(0, 10);
   const rootDir = `audit_${clientSlug}_${dateStr}`;
 
-  // Build ZIP entries
-  const zipEntries: ZipEntry[] = [];
-
-  // Track report data
+  // Per-vendor entries + global report data
+  const vendorEntries: ZipEntry[] = [];
   const allMissingLines: string[] = [];
   const allExpiredLines: string[] = [];
   const vendorSummaries: Array<{ vendor_name: string; doc_count: number }> = [];
-  let totalDocCount = 0;
 
-  // Process each vendor
+  let totalDocCount = 0;
+  let missingItemCount = 0;
+  let missingVendorCount = 0;
+  let expiredItemCount = 0;
+  let expiredVendorCount = 0;
+
+  // Process each vendor (alphabetical; zero-doc vendors get a summary + their
+  // required docs appear in the missing report)
   for (const [vendorId, vdata] of vendorMap) {
     const vendorDir = `${rootDir}/vendor_${vdata.vendorName.replace(/[^a-zA-Z0-9]/g, "_")}`;
 
     // Calculate compliance
     const compliance = calculateVendorCompliance(vendorId, req.client_id, tenantId);
 
-    // Vendor summary
-    const summaryText = generateVendorSummary(
-      vdata.vendorName,
-      vdata.vendorContact,
-      vdata.vendorEmail,
-      compliance,
-      vdata.docs.length,
-    );
-    zipEntries.push({
-      name: `${vendorDir}/vendor_summary.txt`,
-      data: Buffer.from(summaryText, "utf-8"),
-    });
+    // Order documents: COI → W-9 → other types (alphabetical)
+    const orderedDocs = sortDocs(vdata.docs);
 
-    vendorSummaries.push({
-      vendor_name: vdata.vendorName,
-      doc_count: vdata.docs.length,
-    });
-
-    // Missing documents report
-    const missingText = generateMissingDocsReport(vdata.vendorName, compliance);
-    if (missingText) {
-      allMissingLines.push(missingText);
-    }
-
-    // Expired documents report
-    const expiredText = generateExpiredDocsReport(vdata.vendorName, compliance);
-    if (expiredText) {
-      allExpiredLines.push(expiredText);
-    }
-
-    // Add document files
+    // Add document files — dedupe by document id (done above) AND by physical
+    // file, so a file referenced by multiple rows is only counted/embedded once.
     const seenFiles = new Set<string>();
-    for (const doc of vdata.docs) {
-      totalDocCount++;
+    const docEntries: ZipEntry[] = [];
+    let vendorUniqueDocCount = 0;
+    for (const doc of orderedDocs) {
       // file_path is relative to api/ (e.g., "data/documents/1_apex_coi_2026.pdf")
       const fullPath = path.join(API_BASE, doc.file_path);
+      if (seenFiles.has(fullPath)) continue;
+      seenFiles.add(fullPath);
+      totalDocCount++;
+      vendorUniqueDocCount++;
 
-      if (existsSync(fullPath) && !seenFiles.has(fullPath)) {
-        seenFiles.add(fullPath);
+      if (existsSync(fullPath)) {
         try {
           const fileData = readFileSync(fullPath);
-          zipEntries.push({
+          docEntries.push({
             name: `${vendorDir}/${doc.original_filename}`,
             data: fileData,
           });
         } catch (err) {
           console.error(`[audit] Could not read file: ${fullPath}`, err);
           // Include a note about the missing file
-          zipEntries.push({
+          docEntries.push({
             name: `${vendorDir}/${doc.original_filename}.error.txt`,
             data: Buffer.from(`File could not be read: ${doc.file_path}`, "utf-8"),
           });
         }
+      } else {
+        docEntries.push({
+          name: `${vendorDir}/${doc.original_filename}.error.txt`,
+          data: Buffer.from(`File could not be read: ${doc.file_path}`, "utf-8"),
+        });
       }
+    }
+
+    // Vendor summary (doc count = unique documents embedded for this vendor)
+    const summaryText = generateVendorSummary(
+      vdata.vendorName,
+      vdata.vendorContact,
+      vdata.vendorEmail,
+      compliance,
+      vendorUniqueDocCount,
+    );
+    vendorEntries.push({
+      name: `${vendorDir}/vendor_summary.txt`,
+      data: Buffer.from(summaryText, "utf-8"),
+    });
+    vendorEntries.push(...docEntries);
+
+    vendorSummaries.push({
+      vendor_name: vdata.vendorName,
+      doc_count: vendorUniqueDocCount,
+    });
+
+    // Missing documents report
+    const missingText = generateMissingDocsReport(vdata.vendorName, compliance);
+    if (missingText) {
+      allMissingLines.push(missingText);
+      missingVendorCount++;
+      missingItemCount += compliance.details.filter((d) => d.status === "missing").length;
+    }
+
+    // Expired documents report
+    const expiredText = generateExpiredDocsReport(vdata.vendorName, compliance);
+    if (expiredText) {
+      allExpiredLines.push(expiredText);
+      expiredVendorCount++;
+      expiredItemCount += compliance.details.filter((d) => d.status === "expired").length;
     }
   }
 
-  // Missing documents report (global)
+  // ── PAGE-ONE SUMMARY — first file in the package ──
+  const zipEntries: ZipEntry[] = [];
+  zipEntries.push({
+    name: `${rootDir}/00_Summary.txt`,
+    data: Buffer.from(
+      generateAuditSummary({
+        clientName: client.name,
+        dateStr,
+        dateFrom: req.date_from || null,
+        dateTo: req.date_to || null,
+        vendorCount: vendorMap.size,
+        docCount: totalDocCount,
+        missingItemCount,
+        missingVendorCount,
+        expiredItemCount,
+        expiredVendorCount,
+      }),
+      "utf-8",
+    ),
+  });
+  zipEntries.push(...vendorEntries);
+
+  // Missing documents report (global) — always present so a package can never
+  // falsely claim "none missing" when vendors were simply omitted.
   if (allMissingLines.length > 0) {
     const header = `MISSING REQUIRED DOCUMENTS REPORT\n` +
       `========================================\n` +
@@ -454,7 +594,7 @@ export function generateAuditPackage(req: AuditRequest, tenantId: number): Audit
     });
   }
 
-  // Summary JSON
+  // Summary JSON (machine-readable; kept in sync with the page-one summary)
   const summaryJson = {
     audit_date: dateStr,
     client_name: client.name,
@@ -465,8 +605,11 @@ export function generateAuditPackage(req: AuditRequest, tenantId: number): Audit
       date_from: req.date_from || null,
       date_to: req.date_to || null,
     },
+    total_documents: totalDocCount,
     matching_documents: totalDocCount,
-    vendors_included: vendorSummaries.length,
+    vendors_included: vendorMap.size,
+    missing_documents: { vendors: missingVendorCount, items: missingItemCount },
+    expired_documents: { vendors: expiredVendorCount, items: expiredItemCount },
     vendors: vendorSummaries,
   };
 
@@ -475,7 +618,7 @@ export function generateAuditPackage(req: AuditRequest, tenantId: number): Audit
     data: Buffer.from(JSON.stringify(summaryJson, null, 2), "utf-8"),
   });
 
-  // Generate ZIP
+  // Generate ZIP — tenant-scoped write path (data/audits/tenant-<id>)
   ensureAuditsDir(tenantId);
   const zipBuffer = createZipBuffer(zipEntries);
 
@@ -487,7 +630,7 @@ export function generateAuditPackage(req: AuditRequest, tenantId: number): Audit
     download_url: `/api/audit/download/${encodeURIComponent(zipFilename)}`,
     summary: {
       matching_documents: totalDocCount,
-      vendors: vendorSummaries.length,
+      vendors: vendorMap.size,
       total_size: zipBuffer.length,
     },
   };
