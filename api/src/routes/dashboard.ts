@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { getDb } from "../db";
-import { calculatePaymentWeek } from "../compliance";
+import { calculatePaymentWeek, getTenantPaymentWeekStartDay } from "../compliance";
 
 const app = new Hono();
 
@@ -28,16 +28,16 @@ app.get("/api/dashboard/stats", (c) => {
     // Vendors on hold = review + hold (anything not approved)
     const vendorsOnHold = vendorsReview + vendorsHold;
 
-    // Documents expiring this week (Mon-Sun)
-    const { sunday } = calculatePaymentWeek();
-    const today = new Date().toISOString().slice(0, 10);
+    // Documents expiring this week (within the tenant's payment-week window)
+    const weekStartDay = getTenantPaymentWeekStartDay(db, tenantId);
+    const { week_start, week_end } = calculatePaymentWeek(weekStartDay);
     const expiringThisWeek = (db.query(`
       SELECT COUNT(*) as count FROM document_extractions
       WHERE expiration_date IS NOT NULL
-        AND expiration_date >= $today
-        AND expiration_date <= $sunday
+        AND expiration_date >= $week_start
+        AND expiration_date <= $week_end
         AND is_reviewed = 1 AND document_id IN (SELECT id FROM documents WHERE tenant_id = $tenant_id)
-    `).get({ $today: today, $sunday: sunday, $tenant_id: tenantId }) as { count: number }).count;
+    `).get({ $week_start: week_start, $week_end: week_end, $tenant_id: tenantId }) as { count: number }).count;
 
     // Needs review: items where is_reviewed = 0
     const needsReview = (db.query(`

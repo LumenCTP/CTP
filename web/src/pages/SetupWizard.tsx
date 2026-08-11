@@ -27,6 +27,15 @@ interface WizardData {
 
 const STEP_LABELS = ["Company Info", "Payment Week", "Compliance Requirements", "Confirmation"];
 
+// Persisted current_step values → wizard step number (for exact-step resume).
+const STEP_MAP: Record<string, number> = {
+  company_info: 1,
+  payment_week: 2,
+  compliance: 3,
+  confirmation: 4,
+  completed: 4,
+};
+
 const STANDARD_DOC_TYPES = DEFAULT_REQUIRED_DOCUMENTS.map((d) => d.document_type);
 
 export default function SetupWizard() {
@@ -64,10 +73,13 @@ export default function SetupWizard() {
           if (w.company_address) setCompanyAddress(w.company_address);
           if (w.payment_week_start_day) setPaymentWeekDay(w.payment_week_start_day);
           if (w.compliance_client_id) setComplianceClientId(w.compliance_client_id);
-          // Resume at the furthest completed step
+          // Resume at the exact persisted step (granular), with safety clamps
+          // for legacy rows whose saved step is ahead of their actual data.
           if (w.status === "IN_PROGRESS") {
-            if (w.compliance_client_id) setStep(4);
-            else if (w.company_name || w.company_address) setStep(2);
+            let resumeStep = (w.current_step && STEP_MAP[w.current_step]) || 1;
+            if (!(w.company_name && w.company_address)) resumeStep = Math.min(resumeStep, 1);
+            else if (resumeStep >= 3 && !w.compliance_client_id) resumeStep = 3;
+            setStep(resumeStep);
           }
         }
       })
@@ -194,6 +206,7 @@ export default function SetupWizard() {
           company_address: companyAddress.trim(),
           payment_week_start_day: paymentWeekDay,
           compliance_client_id: clientId,
+          current_step: "confirmation",
         }),
       });
       if (!setupRes.ok) {
@@ -208,7 +221,27 @@ export default function SetupWizard() {
     }
   }
 
-  function nextStep(e: FormEvent) {
+  // Persist wizard progress to the API so a reload resumes at the exact step.
+  async function saveProgress(patch: Record<string, unknown>): Promise<boolean> {
+    try {
+      const res = await apiFetch("/api/setup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) {
+        const d = await res.json();
+        setError(d.error || "Failed to save your progress. Please try again.");
+        return false;
+      }
+      return true;
+    } catch {
+      setError("Failed to save your progress. Please try again.");
+      return false;
+    }
+  }
+
+  async function nextStep(e: FormEvent) {
     e.preventDefault();
     setError("");
     if (step === 1) {
@@ -220,9 +253,22 @@ export default function SetupWizard() {
         setError("Company address is required.");
         return;
       }
-      setStep(2);
+      setSubmitting(true);
+      const ok = await saveProgress({
+        company_name: companyName.trim(),
+        company_address: companyAddress.trim(),
+        current_step: "payment_week",
+      });
+      setSubmitting(false);
+      if (ok) setStep(2);
     } else if (step === 2) {
-      setStep(3);
+      setSubmitting(true);
+      const ok = await saveProgress({
+        payment_week_start_day: paymentWeekDay,
+        current_step: "compliance",
+      });
+      setSubmitting(false);
+      if (ok) setStep(3);
     }
   }
 
@@ -241,6 +287,8 @@ export default function SetupWizard() {
           company_address: companyAddress.trim(),
           payment_week_start_day: paymentWeekDay,
           compliance_client_id: complianceClientId,
+          current_step: "completed",
+          confirmed: true,
         }),
       });
       const data = await res.json();
@@ -326,7 +374,9 @@ export default function SetupWizard() {
                 placeholder="1200 Builder Ave, Portland, OR 97201"
               />
             </div>
-            <button type="submit" className="auth-btn">Continue</button>
+            <button type="submit" className="auth-btn" disabled={submitting}>
+              {submitting ? "Saving..." : "Continue"}
+            </button>
           </form>
         )}
 
@@ -352,10 +402,12 @@ export default function SetupWizard() {
               </p>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(1)}>
+              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(1)} disabled={submitting}>
                 Back
               </button>
-              <button type="submit" className="auth-btn" style={{ flex: 2 }}>Continue</button>
+              <button type="submit" className="auth-btn" style={{ flex: 2 }} disabled={submitting}>
+                {submitting ? "Saving..." : "Continue"}
+              </button>
             </div>
           </form>
         )}

@@ -18,7 +18,7 @@ const app = new Hono();
 app.post("/api/auth/register", async (c) => {
   try {
     const body = await c.req.json();
-    const { full_name, company_name, email, password, referral_code } = body;
+    const { full_name, company_name, email, password, referral_code, plan, subscription_plan } = body;
 
     if (!full_name || typeof full_name !== "string" || full_name.trim().length === 0) {
       return c.json({ error: "Full name is required" }, 400);
@@ -31,6 +31,19 @@ app.post("/api/auth/register", async (c) => {
     }
     if (!password || typeof password !== "string" || password.length < 6) {
       return c.json({ error: "Password must be at least 6 characters" }, 400);
+    }
+
+    // Chosen subscription plan (monthly | annual) — recorded on the tenant so
+    // the admin Clients table and commission engine see the real plan.
+    const rawPlan = (plan ?? subscription_plan) === undefined || (plan ?? subscription_plan) === null
+      ? ""
+      : String(plan ?? subscription_plan).trim().toLowerCase();
+    let chosenPlan: string | null = null;
+    if (rawPlan !== "") {
+      if (rawPlan !== "monthly" && rawPlan !== "annual") {
+        return c.json({ error: "plan must be 'monthly' or 'annual'" }, 400);
+      }
+      chosenPlan = rawPlan;
     }
 
     const db = getDb();
@@ -66,6 +79,7 @@ app.post("/api/auth/register", async (c) => {
     const tenant = createTenantForUser(db, userId, {
       name: company_name.trim(),
       subscription_status: "TRIAL",
+      subscription_plan: chosenPlan,
     });
     logAudit(db, "tenant", tenant.id, "tenant_created", {
       name: tenant.name,
@@ -129,6 +143,7 @@ app.post("/api/auth/register", async (c) => {
         id: tenant.id,
         name: tenant.name,
         subscription_status: tenant.subscription_status,
+        subscription_plan: tenant.subscription_plan ?? null,
         payment_week_start_day: tenant.payment_week_start_day,
         wizard_status: wizard?.status || "NOT_STARTED",
       },

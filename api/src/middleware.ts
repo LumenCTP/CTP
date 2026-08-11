@@ -157,7 +157,7 @@ export function findWizard(db: ReturnType<typeof getDb>, tenantId: number): Wiza
 export function createTenantForUser(
   db: ReturnType<typeof getDb>,
   userId: number,
-  opts?: { name?: string; subscription_status?: string; periodStart?: string; periodEnd?: string }
+  opts?: { name?: string; subscription_status?: string; periodStart?: string; periodEnd?: string; subscription_plan?: string | null }
 ): TenantRow {
   const name = opts?.name || "My Company";
   const status = opts?.subscription_status || "TRIAL";
@@ -165,8 +165,8 @@ export function createTenantForUser(
   let slug = base, suffix = 2;
   while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug").get({ $slug: slug })) slug = `${base.slice(0, Math.max(1, 40 - String(suffix).length - 1))}-${suffix++}`;
   const result = db.query(`
-    INSERT INTO tenants (name, owner_user_id, subscription_status, subscription_period_start, subscription_period_end, inbox_slug)
-    VALUES ($name, $uid, $status, $start, $end, $slug)
+    INSERT INTO tenants (name, owner_user_id, subscription_status, subscription_period_start, subscription_period_end, inbox_slug, subscription_plan)
+    VALUES ($name, $uid, $status, $start, $end, $slug, $plan)
   `).run({
     $name: name,
     $uid: userId,
@@ -174,6 +174,7 @@ export function createTenantForUser(
     $start: opts?.periodStart ?? null,
     $end: opts?.periodEnd ?? null,
     $slug: slug,
+    $plan: opts?.subscription_plan ?? null,
   });
   const tenantId = Number(result.lastInsertRowid);
 

@@ -7,6 +7,7 @@ import {
   calculateClientCompliance,
   calculatePaymentWeek,
   calculateVendorCompliance,
+  getTenantPaymentWeekStartDay,
   type PerTypeDetail,
   type VendorComplianceResult,
 } from "./compliance";
@@ -27,7 +28,7 @@ export interface ReportData {
   client_id: number;
   client_name: string;
   report_date: string;
-  payment_week: { monday: string; sunday: string };
+  payment_week: { week_start: string; week_end: string };
   approved: ReportVendor[];
   review: ReportVendor[];
   hold: ReportVendor[];
@@ -69,7 +70,9 @@ export function gatherReportData(clientId: number): ReportData {
   // Ensure fresh compliance data
   calculateClientCompliance(clientId, tenantRow.tenant_id);
 
-  const { monday, sunday } = calculatePaymentWeek();
+  // The payment week window comes from the tenant's configured start day.
+  const weekStartDay = getTenantPaymentWeekStartDay(db, tenantRow.tenant_id);
+  const { week_start, week_end } = calculatePaymentWeek(weekStartDay);
   const today = new Date().toISOString().slice(0, 10);
 
   // Get all vendors for this client with full compliance details
@@ -125,7 +128,7 @@ export function gatherReportData(clientId: number): ReportData {
           d.is_reviewed &&
           d.expiration_date &&
           d.expiration_date >= today &&
-          d.expiration_date <= sunday
+          d.expiration_date <= week_end
         );
       });
 
@@ -169,8 +172,8 @@ export function gatherReportData(clientId: number): ReportData {
       if (
         d.is_reviewed &&
         d.expiration_date &&
-        d.expiration_date >= monday &&
-        d.expiration_date <= sunday
+        d.expiration_date >= week_start &&
+        d.expiration_date <= week_end
       ) {
         expiringDuringWeek.push({
           vendor_name: v.name,
@@ -196,7 +199,7 @@ export function gatherReportData(clientId: number): ReportData {
     client_id: client.id,
     client_name: client.name,
     report_date: today,
-    payment_week: { monday, sunday },
+    payment_week: { week_start, week_end },
     approved,
     review,
     hold,
@@ -287,7 +290,7 @@ export function generatePdfReport(data: ReportData): PDFKit.PDFDocument {
     .fontSize(9)
     .fillColor(COLORS.gray)
     .text(
-      `Payment Week: ${formatDate(data.payment_week.monday)} – ${formatDate(data.payment_week.sunday)}`
+      `Payment Week: ${formatDate(data.payment_week.week_start)} – ${formatDate(data.payment_week.week_end)}`
     );
 
   doc.moveDown(0.8);
@@ -548,7 +551,7 @@ function buildSummarySheet(
   sheet.getCell("A3").font = { name: "Helvetica", size: 10, color: { argb: "FF6b7280" } };
 
   sheet.mergeCells("A4:C4");
-  sheet.getCell("A4").value = `Payment Week: ${formatDate(data.payment_week.monday)} – ${formatDate(data.payment_week.sunday)}`;
+  sheet.getCell("A4").value = `Payment Week: ${formatDate(data.payment_week.week_start)} – ${formatDate(data.payment_week.week_end)}`;
   sheet.getCell("A4").font = { name: "Helvetica", size: 10, color: { argb: "FF6b7280" } };
 
   // Section counts

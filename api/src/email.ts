@@ -111,7 +111,7 @@ export function buildWeeklyReportEmail(
     hold_count: number;
     expiring_count: number;
     missing_count: number;
-    payment_week: { monday: string; sunday: string };
+    payment_week: { week_start: string; week_end: string };
     report_date: string;
   },
 ): string {
@@ -127,7 +127,7 @@ export function buildWeeklyReportEmail(
 
   <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
     <p style="margin: 0 0 16px; color: #374151; font-size: 14px;">
-      Payment Week: <strong>${formatDate(reportSummary.payment_week.monday)} – ${formatDate(reportSummary.payment_week.sunday)}</strong><br>
+      Payment Week: <strong>${formatDate(reportSummary.payment_week.week_start)} – ${formatDate(reportSummary.payment_week.week_end)}</strong><br>
       Report Date: ${formatDate(reportSummary.report_date)}
     </p>
 

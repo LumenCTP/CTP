@@ -29,27 +29,46 @@ export interface RecalculationSummary {
 
 // ── Payment Week Calculation ───────────────────────────
 
+const WEEKDAY_INDEX: Record<string, number> = {
+  sunday: 0, monday: 1, tuesday: 2, wednesday: 3,
+  thursday: 4, friday: 5, saturday: 6,
+};
+
 /**
- * Returns the Monday and Sunday bounding the current payment week.
- * Payment week runs Monday → Sunday.
+ * Returns the week_start and week_end dates bounding the current payment week.
+ * The payment week runs from the configured start day (default Monday) through
+ * the day before it (e.g. Monday → Sunday, Wednesday → Tuesday), so a vendor's
+ * documents must stay valid through week_end to be approved for payment.
  */
-export function calculatePaymentWeek(): { monday: string; sunday: string } {
+export function calculatePaymentWeek(startDay: string = "monday"): { week_start: string; week_end: string } {
   const now = new Date();
-  const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
+  const target = WEEKDAY_INDEX[startDay] ?? WEEKDAY_INDEX.monday;
+  const todayIdx = now.getDay(); // 0=Sun, 1=Mon, ..., 6=Sat
 
-  // Monday of current week
-  const daysFromMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
-  const monday = new Date(now);
-  monday.setDate(now.getDate() - daysFromMonday);
-  monday.setHours(0, 0, 0, 0);
+  // Most recent occurrence of the start day (may be earlier this week, or last
+  // week if we are before the start day).
+  let daysBack = todayIdx - target;
+  if (daysBack < 0) daysBack += 7;
+  const weekStart = new Date(now);
+  weekStart.setDate(now.getDate() - daysBack);
+  weekStart.setHours(0, 0, 0, 0);
 
-  // Sunday of current week
-  const sunday = new Date(monday);
-  sunday.setDate(monday.getDate() + 6);
-  sunday.setHours(23, 59, 59, 999);
+  // End of the payment week = day before the next start day (start + 6 days).
+  const weekEnd = new Date(weekStart);
+  weekEnd.setDate(weekStart.getDate() + 6);
+  weekEnd.setHours(23, 59, 59, 999);
 
   const fmt = (d: Date) => d.toISOString().slice(0, 10);
-  return { monday: fmt(monday), sunday: fmt(sunday) };
+  return { week_start: fmt(weekStart), week_end: fmt(weekEnd) };
+}
+
+/** Fetch a tenant's configured payment-week start day (defaults to monday). */
+export function getTenantPaymentWeekStartDay(db: ReturnType<typeof getDb>, tenantId: number): string {
+  const row = db.query("SELECT payment_week_start_day FROM tenants WHERE id = $id").get({ $id: tenantId }) as
+    | { payment_week_start_day?: string | null }
+    | undefined;
+  const day = row?.payment_week_start_day?.trim().toLowerCase() ?? "monday";
+  return WEEKDAY_INDEX[day] !== undefined ? day : "monday";
 }
 
 // ── Per-Type Compliance ─────────────────────────────────
@@ -203,7 +222,8 @@ function worstStatus(
 function determinePaymentStatus(
   details: PerTypeDetail[],
   today: string,
-  paymentWeekSunday: string,
+  paymentWeekStart: string,
+  paymentWeekEnd: string,
 ): PaymentStatus {
   let hasMissing = false;
   let hasExpired = false;
@@ -221,12 +241,12 @@ function determinePaymentStatus(
     if (d.status === "needs_review" && d.has_unreviewed) {
       hasNeedsReview = true;
     }
-    // Check if expiring during payment week (for reviewed docs)
+    // Check if expiring during the tenant's payment week (for reviewed docs)
     if (
       d.is_reviewed &&
       d.expiration_date &&
-      d.expiration_date >= today &&
-      d.expiration_date <= paymentWeekSunday
+      d.expiration_date >= paymentWeekStart &&
+      d.expiration_date <= paymentWeekEnd
     ) {
       hasExpiringInPaymentWeek = true;
     }
@@ -263,7 +283,9 @@ export function calculateVendorCompliance(
 ): VendorComplianceResult {
   const db = getDb();
   const today = getToday();
-  const { sunday: paymentWeekSunday } = calculatePaymentWeek();
+  // Use the tenant's configured payment-week start day (not a hardcoded Monday).
+  const weekStartDay = getTenantPaymentWeekStartDay(db, tenantId);
+  const { week_start: paymentWeekStart, week_end: paymentWeekEnd } = calculatePaymentWeek(weekStartDay);
 
   // Get client's required document types
   const requiredTypes = db
@@ -299,7 +321,7 @@ export function calculateVendorCompliance(
   const overallStatus = worstStatus(statuses);
 
   // Determine payment status
-  const paymentStatus = determinePaymentStatus(details, today, paymentWeekSunday);
+  const paymentStatus = determinePaymentStatus(details, today, paymentWeekStart, paymentWeekEnd);
 
   // Upsert into compliance_status
   upsertCompliance(db, vendorId, clientId, overallStatus, paymentStatus, tenantId);

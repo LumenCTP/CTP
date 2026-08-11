@@ -9,6 +9,9 @@ const app = new Hono();
 
 const PAYMENT_WEEK_DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
+// Wizard steps, persisted granularly so a reload resumes at the exact step.
+const WIZARD_STEPS = ["company_info", "payment_week", "compliance", "confirmation", "completed"];
+
 // GET /api/setup — current setup wizard state for the authenticated user's tenant
 app.get("/api/setup", requireAuth, requireTenant, (c) => {
   try {
@@ -43,7 +46,10 @@ app.get("/api/setup", requireAuth, requireTenant, (c) => {
   }
 });
 
-// POST /api/setup — saves setup wizard data; completes the wizard when all required fields are filled
+// POST /api/setup — saves setup wizard data. The wizard is only marked
+// COMPLETED when the final Confirmation step is actually completed (body.confirmed
+// === true). Step progress is persisted granularly in current_step so a reload
+// resumes at the exact step instead of skipping ahead.
 app.post("/api/setup", requireAuth, requireTenant, async (c) => {
   try {
     const db = getDb();
@@ -58,6 +64,13 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
     if (!PAYMENT_WEEK_DAYS.includes(payment_week_start_day)) {
       return c.json({ error: `payment_week_start_day must be one of: ${PAYMENT_WEEK_DAYS.join(", ")}` }, 400);
     }
+    // Explicit step the client is on — persisted so resume is exact.
+    let current_step: string | null = null;
+    if (typeof body.current_step === "string" && WIZARD_STEPS.includes(body.current_step.trim().toLowerCase())) {
+      current_step = body.current_step.trim().toLowerCase();
+    }
+    // Explicit confirmation: the final step's "Confirm & Get Started" button.
+    const confirmed = body.confirmed === true || body.confirmed === "true";
     // Optional: the tenant's own client row that the Compliance Requirements step
     // attached its required docs to (used by the wizard resume logic).
     let compliance_client_id: number | null = null;
@@ -81,7 +94,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
           company_address = COALESCE($company_address, company_address),
           payment_week_start_day = $day,
           compliance_client_id = COALESCE($compliance_client_id, compliance_client_id),
-          current_step = 'confirmation',
+          current_step = COALESCE($current_step, current_step),
           updated_at = datetime('now')
       WHERE tenant_id = $tid
     `).run({
@@ -89,6 +102,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
       $company_address: company_address || null,
       $day: payment_week_start_day,
       $compliance_client_id: compliance_client_id,
+      $current_step: current_step,
       $tid: tenantId,
     });
 
@@ -112,7 +126,10 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
     wizard = findWizard(db, tenantId)!;
     const allFilled = !!(wizard.company_name && wizard.company_address && wizard.payment_week_start_day);
 
-    if (allFilled) {
+    // COMPLETED is only reached by explicitly confirming the final step.
+    // Saving earlier steps (even with every field filled) keeps the wizard
+    // IN_PROGRESS so a reload resumes at the exact step.
+    if (confirmed && allFilled) {
       db.query(`
         UPDATE setup_wizard
         SET status = 'COMPLETED', current_step = 'completed', completed_at = datetime('now'), updated_at = datetime('now')
@@ -122,6 +139,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
         company_name: wizard.company_name,
         company_address: wizard.company_address,
         payment_week_start_day: wizard.payment_week_start_day,
+        confirmed: true,
       });
     } else {
       db.query(`
@@ -135,7 +153,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
 
     return c.json({
       success: true,
-      completed: allFilled,
+      completed: wizard.status === "COMPLETED",
       tenant: {
         id: tenant.id,
         name: tenant.name,

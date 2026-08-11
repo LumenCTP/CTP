@@ -219,7 +219,7 @@ app.post("/api/emails/test-weekly/:client_id", async (c) => {
       report_date: reportData.report_date,
     });
 
-    const subject = `[TEST] Clear-to-Pay Weekly Report — ${reportData.payment_week.monday} to ${reportData.payment_week.sunday}`;
+    const subject = `[TEST] Clear-to-Pay Weekly Report — ${reportData.payment_week.week_start} to ${reportData.payment_week.week_end}`;
 
     sendEmail(recipients, subject, emailBody, clientId, undefined, "weekly_report");
 

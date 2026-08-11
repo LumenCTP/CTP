@@ -10,6 +10,7 @@ export default function Register() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
+  const [plan, setPlan] = useState<"monthly" | "annual">("monthly");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -58,7 +59,7 @@ export default function Register() {
     }
 
     setSubmitting(true);
-    const err = await register(fullName.trim(), companyName.trim(), email.trim(), password, referralCode);
+    const err = await register(fullName.trim(), companyName.trim(), email.trim(), password, referralCode, plan);
     setSubmitting(false);
 
     if (err) {
@@ -137,6 +138,42 @@ export default function Register() {
               placeholder="Re-enter password"
               autoComplete="new-password"
             />
+          </div>
+
+          <div className="form-group">
+            <label>Choose Your Plan</label>
+            <div style={{ display: "flex", gap: 8 }}>
+              {([
+                { value: "monthly", label: "Monthly", price: "$149/mo" },
+                { value: "annual", label: "Annual", price: "$1,200/yr" },
+              ] as const).map((p) => (
+                <button
+                  key={p.value}
+                  type="button"
+                  onClick={() => setPlan(p.value)}
+                  style={{
+                    flex: 1,
+                    padding: "10px 12px",
+                    borderRadius: 8,
+                    border: `1.5px solid ${plan === p.value ? "var(--accent, #2563eb)" : "var(--border, #d1d5db)"}`,
+                    background: plan === p.value ? "var(--accent-soft, #eff6ff)" : "transparent",
+                    cursor: "pointer",
+                    textAlign: "left",
+                    fontSize: 13,
+                  }}
+                >
+                  <div style={{ fontWeight: 700, color: plan === p.value ? "var(--accent, #2563eb)" : "var(--text)" }}>
+                    {p.label}
+                  </div>
+                  <div style={{ color: "var(--text-muted)" }}>{p.price}</div>
+                </button>
+              ))}
+            </div>
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
+              {plan === "annual"
+                ? "Annual: $1,200/year — billed once a year, save $588 vs. monthly. First month free."
+                : "Monthly: $149/month — cancel anytime. First month free."}
+            </p>
           </div>
 
           <button type="submit" className="auth-btn" disabled={submitting}>

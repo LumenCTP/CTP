@@ -121,8 +121,10 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
   if (now.getUTCDay() !== 1) return;
   if (now.getUTCHours() < 11) return;
 
-  // Determine the Monday of this week
-  const { monday } = calculatePaymentWeek();
+  // Determine the Monday of this week (the weekly email always goes out on
+  // Monday morning per the product spec — independent of each tenant's
+  // payment-week start day, which only shapes the report's week window).
+  const { week_start: monday } = calculatePaymentWeek("monday");
 
   // Prevent duplicate: only send once per Monday
   if (lastWeeklyCheckDate === monday) return;
@@ -188,7 +190,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
       });
 
       const recipients = parseRecipients(config.weekly_report_recipients);
-      const subject = `Clear-to-Pay Weekly Report — ${reportData.payment_week.monday} to ${reportData.payment_week.sunday}`;
+      const subject = `Clear-to-Pay Weekly Report — ${reportData.payment_week.week_start} to ${reportData.payment_week.week_end}`;
 
       sendEmail(recipients, subject, emailBody, config.client_id, undefined, "weekly_report");
       console.log(`[scheduler] Weekly report sent for client ${config.client_id}`);

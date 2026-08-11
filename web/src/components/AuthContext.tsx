@@ -24,7 +24,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<string | null>;
-  register: (full_name: string, company_name: string, email: string, password: string, referral_code?: string) => Promise<string | null>;
+  register: (full_name: string, company_name: string, email: string, password: string, referral_code?: string, plan?: string) => Promise<string | null>;
   logout: () => void;
   refreshUser: () => Promise<boolean>;
 }
@@ -175,7 +175,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const register = useCallback(async (
-    full_name: string, company_name: string, email: string, password: string, referral_code?: string
+    full_name: string, company_name: string, email: string, password: string, referral_code?: string, plan?: string
   ): Promise<string | null> => {
     const res = await fetch("/api/auth/register", {
       method: "POST",
@@ -186,6 +186,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         email,
         password,
         ...(referral_code ? { referral_code } : {}),
+        ...(plan ? { plan } : {}),
       }),
     });
     const data = await res.json();
