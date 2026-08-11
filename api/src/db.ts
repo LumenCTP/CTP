@@ -318,6 +318,11 @@ function runMigrations(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_commissions_partner_id ON commissions(partner_id);
     CREATE INDEX IF NOT EXISTS idx_commissions_status ON commissions(status);
     CREATE INDEX IF NOT EXISTS idx_commissions_payout_id ON commissions(payout_id);
+    -- Idempotency key for the automated commission job: one commission per
+    -- (partner_id, tenant_id, billing_period). Created as a UNIQUE index
+    -- (not a table constraint) because the table already exists; NULL
+    -- tenant_id/billing_period rows (manual/legacy) are not constrained.
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_commissions_partner_tenant_period ON commissions(partner_id, tenant_id, billing_period);
 
     CREATE TABLE IF NOT EXISTS payouts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -429,18 +434,18 @@ function runMigrations(db: Database): void {
   // Role-based access: 'user' (default), 'partner', 'admin'
   ensureColumn(db, "users", "role TEXT DEFAULT 'user'", "role");
 
-  // Extend email_log.email_type CHECK to include 'password_reset'. SQLite can't
-  // ALTER a CHECK constraint, so rebuild the table (same pattern as the
-  // documents table rebuild above). Nothing references email_log, so the
-  // DROP is safe even with foreign_keys = ON.
+  // Extend email_log.email_type CHECK to include 'partner_payout' (in addition
+  // to 'password_reset'). SQLite can't ALTER a CHECK constraint, so rebuild the
+  // table (same pattern as the documents table rebuild above). Nothing
+  // references email_log, so the DROP is safe even with foreign_keys = ON.
   const emailLogDdl = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_log'").get() as { sql: string } | undefined;
-  if (emailLogDdl && !emailLogDdl.sql.includes("'password_reset'")) {
+  if (emailLogDdl && !emailLogDdl.sql.includes("'partner_payout'")) {
     db.exec(`
       CREATE TABLE email_log_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_id INTEGER,
         vendor_id INTEGER,
-        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset')),
+        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout')),
         recipient_email TEXT NOT NULL,
         subject TEXT NOT NULL,
         sent_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -454,7 +459,7 @@ function runMigrations(db: Database): void {
     db.exec("DROP TABLE email_log");
     db.exec("ALTER TABLE email_log_new RENAME TO email_log");
     db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_client_id ON email_log(client_id); CREATE INDEX IF NOT EXISTS idx_email_log_email_type ON email_log(email_type); CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);");
-    console.log("[db] Extended email_log.email_type CHECK to include password_reset");
+    console.log("[db] Extended email_log.email_type CHECK to include partner_payout");
   }
 
   // Backfill legacy/test users so every authenticated user has an isolated tenant.

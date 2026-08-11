@@ -43,7 +43,7 @@ export function sendEmail(
   htmlBody: string,
   clientId?: number,
   vendorId?: number,
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset",
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout",
 ): void {
   const db = getDb();
 
@@ -334,6 +334,37 @@ export function buildPasswordResetEmail(fullName: string, resetLink: string): st
 </html>`;
 }
 
+// ── Partner Payout Email (monthly payout run) ───────────
+// Honest wording: the payout is being PROCESSED, not paid. Money is only
+// transferred in delegation B (Stripe Connect); until then the payout stays
+// 'pending' and the partner is told exactly that.
+export function buildPartnerPayoutEmail(partnerName: string, amount: number, periodLabel: string): string {
+  const formatted = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #1a56db; padding: 20px; border-radius: 8px 8px 0 0;">
+    <h1 style="color: #fff; margin: 0; font-size: 20px;">Your ClearToPay partner payout is being processed</h1>
+  </div>
+  <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">Hi ${partnerName},</p>
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      Your partner commission payout for <strong>${periodLabel}</strong> is
+      <strong>${formatted}</strong>. We have started processing this payment — it is
+      currently <strong>pending</strong> and will be transferred to your account on file.
+    </p>
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      You will receive a separate confirmation once the transfer has actually been completed.
+      No action is needed from you at this time.
+    </p>
+    <p style="margin: 0; font-size: 13px; color: #6b7280;">Questions? Reply to this email and our team will help.</p>
+  </div>
+  <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">This email was sent by ClearToPay Compliance.</p>
+</body>
+</html>`;
+}
 // ── Helper: Has a specific reminder been sent? ──────────
 
 export function hasReminderBeenSent(documentId: number, reminderDays: number): boolean {

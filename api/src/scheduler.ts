@@ -10,6 +10,7 @@ import {
   markReminderSent,
 } from "./email";
 import { calculatePaymentWeek, calculateAllCompliance, calculateClientCompliance } from "./compliance";
+import { calculateCommissions, runPartnerPayouts } from "./commissions";
 import { ingestDocumentAttachment } from "./routes/documents";
 import { hasPriorYearW9 } from "./mapping";
 import { QUEUE_SECRET } from "./secrets";
@@ -95,17 +96,22 @@ async function tick(): Promise<void> {
   await checkWeekly(now, todayStr);
   await checkMonthly(now, todayStr);
   checkRenewals(now, todayStr);
-  calculateCommissions();
-}
-
-// ── Commission Calculation (Partner Program) ─────────────
-
-// TODO: Wire to real Stripe events. When a Stripe payment succeeds for a tenant
-// that has an active referral (referrals.tenant_id), calculate the commission
-// for the referring partner using their commission_percentage. This stub is
-// called from the scheduler tick and currently only logs.
-function calculateCommissions(): void {
-  console.log("[scheduler] Commission check: no payments to process");
+  // Daily: auto-create partner commissions for the current billing period
+  // (idempotent per partner/tenant/period). Per-tenant failures never abort
+  // the rest of the job.
+  try {
+    calculateCommissions(now);
+  } catch (err) {
+    console.error("[scheduler] Commission calculation error:", err);
+  }
+  // End-of-month: aggregate approved commissions into one pending payout per
+  // partner (once per calendar month), email the partner, and attempt the
+  // transfer seam (delegation B). No-op unless day 30 / last day of month.
+  try {
+    runPartnerPayouts(now);
+  } catch (err) {
+    console.error("[scheduler] Partner payout run error:", err);
+  }
 }
 
 // ── Weekly Report Check ────────────────────────────────

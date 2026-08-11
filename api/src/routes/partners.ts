@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getDb } from "../db";
 import { requireAuth, requireAdmin, requirePartner, logAudit } from "../middleware";
+import { calculateCommissions, runPartnerPayouts } from "../commissions";
 
 const app = new Hono();
 
@@ -539,6 +540,31 @@ app.get("/api/payouts", requireAuth, requireAdmin, (c) => {
     ? db.query(`${baseSql} WHERE po.partner_id = $pid ORDER BY po.created_at DESC, po.id DESC`).all({ $pid: Number(partnerId) })
     : db.query(`${baseSql} ORDER BY po.created_at DESC, po.id DESC`).all();
   return c.json({ payouts: rows });
+});
+// ── Admin: Manual run triggers for the automated engine ──
+// Same code paths the scheduler calls (daily commissions, end-of-month
+// payout run), exposed so ops can trigger/verify a run on demand. Both are
+// idempotent: commissions skip when (partner, tenant, period) already exists,
+// and the payout run keeps its once-per-month + day-of-month gates.
+app.post("/api/admin/commissions/run", requireAuth, requireAdmin, (c) => {
+  try {
+    const result = calculateCommissions();
+    return c.json({ success: true, ...result, note: "Daily commission auto-creation (same as scheduler tick)" });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
+});
+app.post("/api/admin/payouts/run", requireAuth, requireAdmin, (c) => {
+  try {
+    const result = runPartnerPayouts();
+    return c.json({
+      success: true,
+      ...result,
+      note: "End-of-month payout run (same as scheduler tick). Money is NOT transferred in this delegation — payout stays pending until Stripe Connect is wired.",
+    });
+  } catch (err) {
+    return c.json({ error: String(err) }, 500);
+  }
 });
 
 // ── Admin: Dashboard + Audit Log (Phase 3) ────────────────
