@@ -6,6 +6,13 @@ import { gatherReportData, generatePdfReport, generateExcelReport } from "../rep
 
 const app = new Hono();
 
+// Reports are written to (and downloadable only from) a tenant-scoped
+// subdirectory, so a tenant can never download another tenant's files even if
+// it knows the filename. Generation and download must agree on this layout.
+function reportsDirFor(tenantId: number): string {
+  return path.join(import.meta.dir, "..", "..", "data", "reports", `tenant-${tenantId}`);
+}
+
 // ── Reports ─────────────────────────────────────────────
 
 // POST /api/reports/clear-to-pay — generate Clear-to-Pay report
@@ -34,7 +41,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
 
     const timestamp = Date.now();
     const clientSlug = client.name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
-    const reportsDir = path.join(import.meta.dir, "..", "..", "data", "reports");
+    const reportsDir = reportsDirFor(c.get("tenant_id") as number);
     if (!existsSync(reportsDir)) {
       mkdirSync(reportsDir, { recursive: true });
     }
@@ -132,12 +139,14 @@ app.post("/api/reports/clear-to-pay", async (c) => {
 app.get("/api/reports/download/:filename", (c) => {
   try {
     const filename = decodeURIComponent(c.req.param("filename"));
-    const reportsDir = path.join(import.meta.dir, "..", "..", "data", "reports");
+    // Only ever look inside the requesting tenant's own reports directory —
+    // a tenant can never fetch another tenant's files, even with a valid name.
+    const reportsDir = reportsDirFor(c.get("tenant_id") as number);
     const filePath = path.join(reportsDir, filename);
 
-    // Security: prevent directory traversal
+    // Security: prevent directory traversal / escape from the tenant dir
     if (!filePath.startsWith(reportsDir)) {
-      return c.json({ error: "Invalid filename" }, 400);
+      return c.json({ error: "Access denied" }, 403);
     }
 
     if (!existsSync(filePath)) {

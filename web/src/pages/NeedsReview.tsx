@@ -1,4 +1,6 @@
 import { useEffect, useState, useCallback } from "react";
+import { apiFetch } from "../lib/api";
+import { openFileInNewTab } from "../lib/files";
 import type { ExtractionUpdateBody } from "@clear-to-pay/shared";
 
 interface ReviewItem {
@@ -56,7 +58,7 @@ export default function NeedsReview() {
 
   const fetchItems = useCallback(async () => {
     try {
-      const res = await fetch("/api/needs-review");
+      const res = await apiFetch("/api/needs-review");
       if (!res.ok) throw new Error("Failed to fetch review queue");
       const data: ReviewItem[] = await res.json();
       setItems(data);
@@ -125,7 +127,7 @@ export default function NeedsReview() {
         is_reviewed: true,
       };
 
-      const res = await fetch(`/api/documents/${reviewingItem.id}/extraction`, {
+      const res = await apiFetch(`/api/documents/${reviewingItem.id}/extraction`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -256,7 +258,9 @@ export default function NeedsReview() {
                       className="btn btn-sm btn-outline"
                       onClick={(e) => {
                         e.stopPropagation();
-                        window.open(`/api/documents/${item.id}/file`, "_blank");
+                        openFileInNewTab(`/api/documents/${item.id}/file`, item.original_filename || "document").catch(
+                          (err) => setReviewError(err instanceof Error ? err.message : String(err)),
+                        );
                       }}
                     >
                       📄 View
@@ -294,9 +298,13 @@ export default function NeedsReview() {
                 <p className="text-muted text-sm" style={{ marginBottom: "12px" }}>
                   Document:{" "}
                   <a
-                    href={`/api/documents/${reviewingItem.id}/file`}
-                    target="_blank"
-                    rel="noopener noreferrer"
+                    href="#"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openFileInNewTab(`/api/documents/${reviewingItem.id}/file`, reviewingItem.original_filename || "document").catch(
+                        (err) => setReviewError(err instanceof Error ? err.message : String(err)),
+                      );
+                    }}
                     style={{ color: "var(--blue)", fontWeight: 600 }}
                   >
                     {reviewingItem.original_filename}

@@ -163,7 +163,7 @@ export function buildWeeklyReportEmail(
     </p>
 
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
-      Log in to your <a href="https://cleartopaycoi.ctonew.app" style="color: #1a56db;">ClearToPay dashboard</a> to view full details and manage your vendors.
+      Log in to your <a href="https://cleartopay.ctonew.app" style="color: #1a56db;">ClearToPay dashboard</a> to view full details and manage your vendors.
     </p>
   </div>
 
@@ -226,7 +226,7 @@ export function buildMonthlyReportEmail(
     </table>
 
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
-      Log in to your <a href="https://cleartopaycoi.ctonew.app" style="color: #1a56db;">ClearToPay dashboard</a> to view detailed compliance data and manage your vendors.
+      Log in to your <a href="https://cleartopay.ctonew.app" style="color: #1a56db;">ClearToPay dashboard</a> to view detailed compliance data and manage your vendors.
     </p>
   </div>
 

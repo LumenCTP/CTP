@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
+import { downloadFile } from "../lib/files";
 import { useEffect, useState, useCallback } from "react";
 import type {
   VendorListItem,
@@ -570,7 +571,18 @@ export default function Vendors() {
           <div className="modal-header"><h3>Import Vendors CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
           <div className="modal-body"><div className="form-group"><label>Client *</label><select className="form-select" value={importClientId || ""} onChange={(e) => setImportClientId(Number(e.target.value))}><option value="" disabled>Select a client…</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
             <p className="text-muted text-sm">Columns: name, contact_name, contact_email, contact_phone</p><div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
-            <a href="/api/import/vendors-template" download>Download Template</a>
+            <button
+              type="button"
+              className="link-button"
+              style={{ padding: 0, border: "none", background: "none", color: "var(--blue)", cursor: "pointer", textDecoration: "underline", fontSize: "0.875rem" }}
+              onClick={() =>
+                downloadFile("/api/import/vendors-template", "vendors-template.csv").catch((err) =>
+                  alert(err instanceof Error ? err.message : "Download failed"),
+                )
+              }
+            >
+              Download Template
+            </button>
             {importResult && <div className={importResult.errors.length ? "error-message" : "success-message"} style={{ marginTop: 12 }}><strong>{importResult.imported} imported</strong>{importResult.errors.length > 0 && <ul>{importResult.errors.map((x, i) => <li key={i}>Row {x.row}: {x.error}</li>)}</ul>}</div>}
           </div><div className="modal-footer"><button className="btn btn-outline" onClick={() => setShowImport(false)}>Close</button><button className="btn btn-primary" onClick={handleImport} disabled={!importFile || !importClientId || importing}>{importing ? "Importing…" : "Import"}</button></div>
         </div></div>

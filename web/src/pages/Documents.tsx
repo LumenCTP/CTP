@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
+import { openFileInNewTab } from "../lib/files";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "../components/AuthContext";
 import type {
@@ -550,6 +551,7 @@ function DocumentRow({
 }) {
   const [detail, setDetail] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [viewError, setViewError] = useState<string | null>(null);
 
   async function loadDetail() {
     if (detail) {
@@ -614,11 +616,15 @@ function DocumentRow({
             className="btn btn-sm btn-outline"
             onClick={(e) => {
               e.stopPropagation();
-              window.open(`/api/documents/${doc.id}/file`, "_blank");
+              setViewError(null);
+              openFileInNewTab(`/api/documents/${doc.id}/file`, doc.original_filename || "document").catch(
+                (err) => setViewError(err instanceof Error ? err.message : String(err)),
+              );
             }}
           >
             📄 View
           </button>
+          {viewError && <span className="text-muted text-sm" style={{ color: "var(--red)" }}>{viewError}</span>}
           {detailLoading && <span className="text-muted text-sm">…</span>}
         </td>
       </tr>

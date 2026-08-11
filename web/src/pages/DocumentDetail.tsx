@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiFetch } from "../lib/api";
+import { fetchFileObjectUrl, openFileInNewTab } from "../lib/files";
 import { ALL_DOCUMENT_TYPES, type DocumentDetail as DocumentDetailType, type ExtractionUpdateBody } from "@clear-to-pay/shared";
 
 const emptyForm = { vendor_name: "", insurance_carrier: "", policy_number: "", effective_date: "", expiration_date: "", certificate_holder: "", certificate_holder_address: "", document_type: "" };
@@ -20,6 +21,35 @@ export default function DocumentDetail() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // Authenticated file object URL for the document viewer (<img> / PDF open).
+  const [fileUrl, setFileUrl] = useState<string | null>(null);
+  const [fileLoading, setFileLoading] = useState(false);
+  const [fileError, setFileError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    let url: string | null = null;
+    setFileLoading(true);
+    setFileError(null);
+    fetchFileObjectUrl(`/api/documents/${id}/file`)
+      .then((u) => {
+        if (!active) return;
+        url = u;
+        setFileUrl(u);
+      })
+      .catch((err) => {
+        if (active) setFileError(err instanceof Error ? err.message : String(err));
+      })
+      .finally(() => {
+        if (active) setFileLoading(false);
+      });
+    return () => {
+      active = false;
+      if (url) URL.revokeObjectURL(url);
+      setFileUrl(null);
+    };
+  }, [id]);
 
   useEffect(() => {
     apiFetch(`/api/documents/${id}`).then(async (res) => {
@@ -57,7 +87,7 @@ export default function DocumentDetail() {
   return <div className="page-container">
     <div className="page-header"><div><Link to="/app/documents" className="back-link">← Documents</Link><h2 className="page-title">Review Document</h2><p className="page-subtitle">{doc.original_filename}</p></div>{statusBadge(doc.ingestion_status)}</div>
     <div className="document-detail-layout">
-      <section className="document-viewer-card"><h3>Document Viewer</h3>{isImage ? <img className="document-preview-image" src={`/api/documents/${id}/file`} alt={doc.original_filename} /> : <div className="document-pdf-placeholder"><span>📄</span><strong>PDF document</strong><a className="btn btn-primary" href={`/api/documents/${id}/file`} target="_blank" rel="noreferrer">Open / Download PDF</a></div>}</section>
+      <section className="document-viewer-card"><h3>Document Viewer</h3>{fileError && !fileUrl ? <div className="error-message">{fileError}</div> : fileLoading && !fileUrl ? <div className="loading">Loading document…</div> : isImage ? <img className="document-preview-image" src={fileUrl ?? undefined} alt={doc.original_filename} /> : <div className="document-pdf-placeholder"><span>📄</span><strong>PDF document</strong><button className="btn btn-primary" type="button" onClick={() => { setFileError(null); openFileInNewTab(`/api/documents/${id}/file`, doc.original_filename).catch((e) => setFileError(e instanceof Error ? e.message : String(e))); }} disabled={fileLoading}>{fileLoading ? "Loading…" : "Open / Download PDF"}</button></div>}</section>
       <form className="card extraction-form-card" onSubmit={save}><div className="card-header"><h3>Extracted Data</h3><span className="confidence-score">AI confidence: {doc.ai_confidence_score != null ? `${doc.ai_confidence_score}%` : "—"}</span></div>
         <div className="extraction-fields">
           {([ ["vendor_name","Vendor Name","text"],["insurance_carrier","Insurance Carrier","text"],["policy_number","Policy Number","text"],["effective_date","Effective Date","date"],["expiration_date","Expiration Date","date"],["certificate_holder","Certificate Holder","text"],["certificate_holder_address","Certificate Holder Address","text"]] as const).map(([key,label,type]) => <label className="form-group" key={key}>{label}<input className="form-input" type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>)}

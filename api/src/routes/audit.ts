@@ -5,6 +5,12 @@ import { generateAuditPackage } from "../audit";
 
 const app = new Hono();
 
+// Audit ZIPs are written to (and downloadable only from) a tenant-scoped
+// subdirectory. Must stay in sync with generateAuditPackage in ../audit.
+function auditsDirFor(tenantId: number): string {
+  return path.join(import.meta.dir, "..", "..", "data", "audits", `tenant-${tenantId}`);
+}
+
 // ── Audit Package ──────────────────────────────────────
 
 // POST /api/audit/generate — generate an audit ZIP package
@@ -36,14 +42,15 @@ app.post("/api/audit/generate", async (c) => {
 app.get("/api/audit/download/:filename", (c) => {
   try {
     const filename = decodeURIComponent(c.req.param("filename"));
-    const auditsDir = path.join(import.meta.dir, "..", "..", "data", "audits");
+    // Only ever look inside the requesting tenant's own audits directory.
+    const auditsDir = auditsDirFor(c.get("tenant_id") as number);
     const filePath = path.join(auditsDir, filename);
 
-    // Security: prevent directory traversal
+    // Security: prevent directory traversal / escape from the tenant dir
     const resolved = path.resolve(filePath);
     const resolvedDir = path.resolve(auditsDir);
     if (!resolved.startsWith(resolvedDir)) {
-      return c.json({ error: "Invalid filename" }, 400);
+      return c.json({ error: "Access denied" }, 403);
     }
 
     if (!existsSync(filePath)) {

@@ -1,4 +1,5 @@
 import { apiFetch } from "../lib/api";
+import { downloadFile } from "../lib/files";
 import { useEffect, useState } from "react";
 import type { ClientWithRequiredDocs } from "@clear-to-pay/shared";
 import { ALL_DOCUMENT_TYPES } from "@clear-to-pay/shared";
@@ -159,25 +160,16 @@ export default function Reports() {
         const data: ReportResult = await res.json();
         setResult(data);
 
-        // Auto-download both files
-        if (data.pdf_url) {
-          const a = document.createElement("a");
-          a.href = data.pdf_url;
-          a.download = `ClearToPay_Report.pdf`;
-          document.body.appendChild(a);
-          a.click();
-          document.body.removeChild(a);
-        }
-        if (data.excel_url) {
-          const excelUrl = data.excel_url;
-          setTimeout(() => {
-            const a = document.createElement("a");
-            a.href = excelUrl;
-            a.download = `ClearToPay_Report.xlsx`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-          }, 300);
+        // Auto-download both files (fetch-with-token → Blob → object URL)
+        try {
+          if (data.pdf_url) {
+            await downloadFile(data.pdf_url, "ClearToPay_Report.pdf");
+          }
+          if (data.excel_url) {
+            await downloadFile(data.excel_url, "ClearToPay_Report.xlsx");
+          }
+        } catch (err) {
+          setError(err instanceof Error ? err.message : "Failed to download reports");
         }
       }
     } catch (err) {
@@ -215,19 +207,38 @@ export default function Reports() {
       const data: AuditResult = await res.json();
       setAuditResult(data);
 
-      // Auto-download the zip
+      // Auto-download the zip (fetch-with-token → Blob → object URL)
       if (data.download_url) {
-        const a = document.createElement("a");
-        a.href = data.download_url;
-        a.download = data.download_url.split("/").pop() || "audit.zip";
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
+        try {
+          await downloadFile(data.download_url, data.download_url.split("/").pop() || "audit.zip");
+        } catch (err) {
+          setAuditError(err instanceof Error ? err.message : "Failed to download audit package");
+        }
       }
     } catch (err) {
       setAuditError(err instanceof Error ? err.message : String(err));
     } finally {
       setAuditLoading(false);
+    }
+  };
+
+  const handleReportDownload = async (url: string | undefined, name: string) => {
+    if (!url) return;
+    setError(null);
+    try {
+      await downloadFile(url, name);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Download failed");
+    }
+  };
+
+  const handleAuditDownload = async (url: string | undefined, name: string) => {
+    if (!url) return;
+    setAuditError(null);
+    try {
+      await downloadFile(url, name);
+    } catch (err) {
+      setAuditError(err instanceof Error ? err.message : "Download failed");
     }
   };
 
@@ -385,14 +396,14 @@ export default function Reports() {
                   <h4>Download Reports</h4>
                   <div className="download-buttons">
                     {result.pdf_url && (
-                      <a href={result.pdf_url} className="btn btn-outline" download>
+                      <button className="btn btn-outline" type="button" onClick={() => handleReportDownload(result.pdf_url, "ClearToPay_Report.pdf")}>
                         📄 Download PDF
-                      </a>
+                      </button>
                     )}
                     {result.excel_url && (
-                      <a href={result.excel_url} className="btn btn-outline" download>
+                      <button className="btn btn-outline" type="button" onClick={() => handleReportDownload(result.excel_url, "ClearToPay_Report.xlsx")}>
                         📊 Download Excel
-                      </a>
+                      </button>
                     )}
                   </div>
                 </div>
@@ -560,9 +571,18 @@ export default function Reports() {
                 <div className="download-links">
                   <h4>Download Audit Package</h4>
                   <div className="download-buttons">
-                    <a href={auditResult.download_url} className="btn btn-outline" download>
+                    <button
+                      className="btn btn-outline"
+                      type="button"
+                      onClick={() =>
+                        handleAuditDownload(
+                          auditResult.download_url,
+                          auditResult.download_url.split("/").pop() || "audit-package.zip",
+                        )
+                      }
+                    >
                       📦 Download ZIP
-                    </a>
+                    </button>
                   </div>
                 </div>
               </div>

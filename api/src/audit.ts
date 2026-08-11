@@ -40,12 +40,19 @@ interface DocRow {
   client_name: string;
 }
 
-const AUDITS_DIR = path.join(import.meta.dir, "..", "data", "audits");
+const AUDITS_ROOT = path.join(import.meta.dir, "..", "data", "audits");
 const API_BASE = path.join(import.meta.dir, "..");
 
-function ensureAuditsDir() {
-  if (!existsSync(AUDITS_DIR)) {
-    mkdirSync(AUDITS_DIR, { recursive: true });
+// Each tenant's ZIPs live in their own subdirectory so the download route can
+// serve strictly from the requester's own dir (see routes/audit.ts).
+function auditsDirFor(tenantId: number): string {
+  return path.join(AUDITS_ROOT, `tenant-${tenantId}`);
+}
+
+function ensureAuditsDir(tenantId: number) {
+  const dir = auditsDirFor(tenantId);
+  if (!existsSync(dir)) {
+    mkdirSync(dir, { recursive: true });
   }
 }
 
@@ -469,11 +476,11 @@ export function generateAuditPackage(req: AuditRequest, tenantId: number): Audit
   });
 
   // Generate ZIP
-  ensureAuditsDir();
+  ensureAuditsDir(tenantId);
   const zipBuffer = createZipBuffer(zipEntries);
 
   const zipFilename = `audit_${clientSlug}_${Date.now()}.zip`;
-  const zipPath = path.join(AUDITS_DIR, zipFilename);
+  const zipPath = path.join(auditsDirFor(tenantId), zipFilename);
   Bun.write(zipPath, zipBuffer);
 
   return {

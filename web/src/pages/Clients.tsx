@@ -1,4 +1,5 @@
 import { apiFetch } from "../lib/api";
+import { downloadFile } from "../lib/files";
 import { useEffect, useState, useCallback } from "react";
 import type { ClientWithRequiredDocs, DocumentType, RequiredDocument } from "@clear-to-pay/shared";
 import { ALL_DOCUMENT_TYPES, DEFAULT_REQUIRED_DOCUMENTS, defaultCoverageFor } from "@clear-to-pay/shared";
@@ -678,7 +679,18 @@ export default function Clients() {
           <div className="modal-header"><h3>Import Clients CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
           <div className="modal-body"><p className="text-muted text-sm">Columns: name, contact_email, contact_phone, address</p>
             <div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
-            <a href="/api/import/clients-template" download>Download Template</a>
+            <button
+              type="button"
+              className="link-button"
+              style={{ padding: 0, border: "none", background: "none", color: "var(--blue)", cursor: "pointer", textDecoration: "underline", fontSize: "0.875rem" }}
+              onClick={() =>
+                downloadFile("/api/import/clients-template", "clients-template.csv").catch((err) =>
+                  alert(err instanceof Error ? err.message : "Download failed"),
+                )
+              }
+            >
+              Download Template
+            </button>
             {importResult && <div className={importResult.errors.length ? "error-message" : "success-message"} style={{ marginTop: 12 }}><strong>{importResult.imported} imported</strong>{importResult.errors.length > 0 && <ul>{importResult.errors.map((x, i) => <li key={i}>Row {x.row}: {x.error}</li>)}</ul>}</div>}
           </div><div className="modal-footer"><button className="btn btn-outline" onClick={() => setShowImport(false)}>Close</button><button className="btn btn-primary" onClick={handleImport} disabled={!importFile || importing}>{importing ? "Importing…" : "Import"}</button></div>
         </div></div>

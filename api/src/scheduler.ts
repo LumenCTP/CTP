@@ -135,7 +135,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
 
   // Get all clients with weekly recipients configured
   const configs = db.query(`
-    SELECT cec.client_id, cec.weekly_report_recipients, cl.name as client_name
+    SELECT cec.client_id, cec.weekly_report_recipients, cl.name as client_name, cl.tenant_id as tenant_id
     FROM client_email_config cec
     JOIN clients cl ON cl.id = cec.client_id
     WHERE cec.weekly_report_recipients IS NOT NULL
@@ -144,6 +144,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
     client_id: number;
     weekly_report_recipients: string;
     client_name: string;
+    tenant_id: number | null;
   }>;
 
   for (const config of configs) {
@@ -154,9 +155,14 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
       const timestamp = Date.now();
       const clientSlug = config.client_name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
 
+      // Reports are written into the tenant's own subdir so the download route
+      // (routes/reports.ts) can serve strictly tenant-scoped files.
+      const tenantDir = path.join(REPORTS_DIR, `tenant-${config.tenant_id ?? "unknown"}`);
+      mkdirSync(tenantDir, { recursive: true });
+
       // Generate PDF
       const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
-      const pdfPath = path.join(REPORTS_DIR, pdfFilename);
+      const pdfPath = path.join(tenantDir, pdfFilename);
       const pdfDoc = generatePdfReport(reportData);
       const pdfBuffers: Buffer[] = [];
       for await (const chunk of pdfDoc) {
@@ -166,7 +172,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
 
       // Generate Excel
       const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
-      const xlsxPath = path.join(REPORTS_DIR, xlsxFilename);
+      const xlsxPath = path.join(tenantDir, xlsxFilename);
       const xlsxBuffer = await generateExcelReport(reportData);
       Bun.write(xlsxPath, xlsxBuffer);
 
