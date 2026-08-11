@@ -26,7 +26,7 @@
 
 import { createHash, createHmac } from "node:crypto";
 import path from "node:path";
-import { existsSync, mkdirSync, readdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 
 // ── Config / capability ──────────────────────────────────
 
@@ -96,7 +96,7 @@ function localGetStream(key: string): ReadableStream<Uint8Array> | null {
 async function localDelete(key: string): Promise<void> {
   const p = storageLocalPathForKey(key);
   try {
-    await Bun.rm(p, { force: true });
+    rmSync(p, { force: true });
   } catch {
     /* ignore */
   }
