@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "QUEUE_SECRET=db0457ca-9035-48b7-9c78-36f56d5fcbd1 bun run --watch src/index.ts",
-    "seed": "bun run src/seed.ts"
+    "seed": "bun run src/seed.ts",
+    "e2e:stripe": "bun run scripts/e2e-stripe.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.5",
@@ -13,6 +14,7 @@
     "exceljs": "^4.4.0",
     "hono": "^4.7.5",
     "pdfjs-dist": "^6.2.108",
-    "pdfkit": "^0.19.1"
+    "pdfkit": "^0.19.1",
+    "stripe": "^22.5.0"
   }
 }

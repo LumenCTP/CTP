@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { getDb } from "../db";
 import { requireAuth, requireAdmin, requirePartner, logAudit } from "../middleware";
 import { calculateCommissions, runPartnerPayouts } from "../commissions";
+import { getStripe, partnerConnectStatus, getPartnerStripeRow, PARTNER_PORTAL_CONNECT_URL } from "../stripe-connect";
 
 const app = new Hono();
 
@@ -195,13 +196,108 @@ app.put("/api/partners/:id/commission", requireAuth, requireAdmin, async (c) => 
 // until the partner is approved), this returns the record for ANY status so the
 // frontend can distinguish pending / rejected / suspended from approved. It is
 // still auth-gated and only ever returns the authenticated user's own row.
+// Extended (delegation B) with the Stripe Connect state and payout history so
+// the portal's "Stripe Connect" card can render from one call.
 app.get("/api/partner/me", requireAuth, (c) => {
   const db = getDb();
   const user = c.get("user") as { user_id: number };
   const partner = db.query("SELECT * FROM partners WHERE user_id = $uid").get({ $uid: user.user_id }) as Record<string, unknown> | undefined;
   if (!partner) return c.json({ error: "Partner account required" }, 403);
   const totalReferrals = (db.query("SELECT COUNT(*) as c FROM referrals WHERE partner_id = $id").get({ $id: partner.id }) as { c: number }).c;
-  return c.json({ partner: { ...partner, total_referrals: totalReferrals } });
+  const stripeRow = getPartnerStripeRow(db, Number(partner.id));
+  const stripe = {
+    stripe_account_id: stripeRow.stripe_account_id ?? null,
+    details_submitted: Number(stripeRow.stripe_details_submitted) === 1,
+    currently_due: stripeRow.stripe_currently_due ?? "[]",
+    payouts_enabled: Number(stripeRow.stripe_payouts_enabled) === 1,
+    charges_enabled: Number(stripeRow.stripe_charges_enabled) === 1,
+    disconnected_at: stripeRow.stripe_disconnected_at ?? null,
+    connect_status: partnerConnectStatus(stripeRow),
+  };
+  const payouts = db.query(`
+    SELECT id, amount, status, payment_date, payment_method, transaction_ref, notes, created_at
+    FROM payouts WHERE partner_id = $pid
+    ORDER BY created_at DESC, id DESC
+  `).all({ $pid: partner.id });
+  return c.json({ partner: { ...partner, total_referrals, stripe, payouts } });
+});
+
+// ── Stripe Connect onboarding (delegation B) ─────────────
+
+// POST /api/partners/:id/connect — admin OR the partner themself may start
+// Connect Express onboarding. Creates the Express account if the partner has
+// none, then returns an account_link url for the SPA to redirect to. If Stripe
+// is not configured → 503 {"error":"Stripe not configured"}.
+app.post("/api/partners/:id/connect", requireAuth, async (c) => {
+  try {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id)) return c.json({ error: "Invalid partner id" }, 400);
+    const db = getDb();
+    const partner = db.query("SELECT * FROM partners WHERE id = $id").get({ $id: id }) as
+      | { id: number; user_id: number; first_name: string; last_name: string; company_name: string | null; email: string; stripe_account_id: string | null }
+      | undefined;
+    if (!partner) return c.json({ error: "Partner not found" }, 404);
+
+    const user = c.get("user") as { user_id: number; email: string };
+    const roleRow = db.query("SELECT role FROM users WHERE id = ?").get(user.user_id) as { role: string } | null;
+    const isAdmin = roleRow?.role === "admin";
+    const isSelf = partner.user_id === user.user_id;
+    if (!isAdmin && !isSelf) return c.json({ error: "You can only connect your own Stripe account" }, 403);
+
+    const stripe = getStripe();
+    if (!stripe) return c.json({ error: "Stripe not configured" }, 503);
+
+    let accountId = partner.stripe_account_id;
+    if (!accountId) {
+      const account = await stripe.accounts.create({
+        type: "express",
+        email: partner.email,
+        metadata: { partner_id: String(partner.id), partner_name: partner.company_name || `${partner.first_name} ${partner.last_name}`.trim() },
+      });
+      accountId = account.id;
+      db.query("UPDATE partners SET stripe_account_id = $aid, stripe_disconnected_at = NULL, updated_at = datetime('now') WHERE id = $id").run({ $aid: accountId, $id: partner.id });
+      logPartnerAudit(db, partner.id, "stripe_connect_account_created", { stripe_account_id: accountId }, null, user.email);
+      logAudit(db, "partner", partner.id, "stripe_connect_account_created", { stripe_account_id: accountId });
+      console.log(`[partners] Connect Express account ${accountId} created for partner ${partner.id}`);
+    }
+
+    const link = await stripe.accountLinks.create({
+      account: accountId,
+      type: "account_onboarding",
+      refresh_url: PARTNER_PORTAL_CONNECT_URL,
+      return_url: PARTNER_PORTAL_CONNECT_URL,
+    });
+    logPartnerAudit(db, partner.id, "stripe_connect_onboarding_started", { stripe_account_id: accountId }, null, user.email);
+    return c.json({ url: link.url });
+  } catch (err) {
+    console.error("[partners] Stripe Connect onboarding error:", err);
+    return c.json({ error: String(err) }, 500);
+  }
+});
+
+// Partner's Connect status + payout history (same data /api/partner/me
+// returns, kept as a separate endpoint for the portal card's own refresh).
+app.get("/api/partner/connect-status", requireAuth, requirePartner, (c) => {
+  const db = getDb();
+  const partnerId = c.get("partner_id") as number;
+  const stripeRow = getPartnerStripeRow(db, partnerId);
+  const payouts = db.query(`
+    SELECT id, amount, status, payment_date, payment_method, transaction_ref, notes, created_at
+    FROM payouts WHERE partner_id = $pid
+    ORDER BY created_at DESC, id DESC LIMIT 20
+  `).all({ $pid: partnerId });
+  return c.json({
+    stripe: {
+      stripe_account_id: stripeRow.stripe_account_id ?? null,
+      details_submitted: Number(stripeRow.stripe_details_submitted) === 1,
+      currently_due: stripeRow.stripe_currently_due ?? "[]",
+      payouts_enabled: Number(stripeRow.stripe_payouts_enabled) === 1,
+      charges_enabled: Number(stripeRow.stripe_charges_enabled) === 1,
+      disconnected_at: stripeRow.stripe_disconnected_at ?? null,
+      connect_status: partnerConnectStatus(stripeRow),
+    },
+    payouts,
+  });
 });
 
 app.get("/api/partner/dashboard", requireAuth, requirePartner, (c) => {
@@ -539,6 +635,22 @@ app.get("/api/payouts", requireAuth, requireAdmin, (c) => {
   const rows = partnerId
     ? db.query(`${baseSql} WHERE po.partner_id = $pid ORDER BY po.created_at DESC, po.id DESC`).all({ $pid: Number(partnerId) })
     : db.query(`${baseSql} ORDER BY po.created_at DESC, po.id DESC`).all();
+  return c.json({ payouts: rows });
+});
+
+// Admin payouts view (delegation B): every payout joined with partner
+// name/email, amount, status, payment_date, transaction_ref, notes.
+app.get("/api/admin/payouts", requireAuth, requireAdmin, (c) => {
+  const db = getDb();
+  const rows = db.query(`
+    SELECT po.id, po.partner_id, po.amount, po.status, po.payment_date, po.payment_method,
+           po.transaction_ref, po.notes, po.created_at,
+           (p.first_name || ' ' || p.last_name) as partner_name,
+           p.email as partner_email
+    FROM payouts po
+    LEFT JOIN partners p ON p.id = po.partner_id
+    ORDER BY po.created_at DESC, po.id DESC
+  `).all();
   return c.json({ payouts: rows });
 });
 // ── Admin: Manual run triggers for the automated engine ──

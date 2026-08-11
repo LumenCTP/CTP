@@ -365,6 +365,56 @@ export function buildPartnerPayoutEmail(partnerName: string, amount: number, per
 </body>
 </html>`;
 }
+// ── Partner Transfer Confirmation (Stripe Connect, delegation B) ─────────
+// Honest wording: the transfer COMPLETED (paid) or FAILED (failed). These fire
+// from the transfer.paid / transfer.failed webhooks, never locally.
+function partnerTransferEmailShell(title: string, bodyLines: string[], footer: string): string {
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #1a56db; padding: 20px; border-radius: 8px 8px 0 0;">
+    <h1 style="color: #fff; margin: 0; font-size: 20px;">${title}</h1>
+  </div>
+  <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+    ${bodyLines.map((l) => `<p style="margin: 0 0 12px; font-size: 14px; color: #374151;">${l}</p>`).join("\n    ")}
+    <p style="margin: 0; font-size: 13px; color: #6b7280;">${footer}</p>
+  </div>
+  <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">This email was sent by ClearToPay Compliance.</p>
+</body>
+</html>`;
+}
+
+export function buildPartnerTransferPaidEmail(partnerName: string, amount: number, transferId: string): string {
+  const formatted = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+  return partnerTransferEmailShell(
+    "Your ClearToPay partner payout has been transferred",
+    [
+      `Hi ${partnerName},`,
+      `Your partner commission payout of <strong>${formatted}</strong> has been <strong>completed</strong> and transferred to your connected account.`,
+      `Stripe transfer reference: <strong>${transferId}</strong>.`,
+      `No action is needed from you. The funds are now in your Stripe account and will be available according to your payout schedule.`,
+    ],
+    "Questions? Reply to this email and our team will help.",
+  );
+}
+
+export function buildPartnerTransferFailedEmail(partnerName: string, amount: number, transferId: string, reason: string): string {
+  const formatted = new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(amount);
+  return partnerTransferEmailShell(
+    "Action needed: your ClearToPay partner payout could not be transferred",
+    [
+      `Hi ${partnerName},`,
+      `We attempted to transfer your partner commission payout of <strong>${formatted}</strong>, but the transfer <strong>failed</strong>.`,
+      `Stripe transfer reference: <strong>${transferId}</strong>.`,
+      `Reason: <strong>${reason || "unknown"}</strong>.`,
+      `Your payout stays recorded as failed on your account. Please check that your payout details are correct (bank account, onboarding requirements), then contact us and we will retry.`,
+    ],
+    "Questions? Reply to this email and our team will help.",
+  );
+}
+
 // ── Helper: Has a specific reminder been sent? ──────────
 
 export function hasReminderBeenSent(documentId: number, reminderDays: number): boolean {

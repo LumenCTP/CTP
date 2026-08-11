@@ -349,6 +349,44 @@ function runMigrations(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_partner_audit_log_partner_id ON partner_audit_log(partner_id);
   `);
 
+  // ── Stripe Connect (delegation B) ──────────────────────────
+  // Partner payout rails: stripe_account_id + onboarding fields (fed by the
+  // account.updated webhook), and tenant subscription fields (fed by
+  // customer.subscription.* webhooks).
+  ensureColumn(db, "partners", "stripe_account_id TEXT", "stripe_account_id");
+  ensureColumn(db, "partners", "stripe_details_submitted INTEGER NOT NULL DEFAULT 0", "stripe_details_submitted");
+  ensureColumn(db, "partners", "stripe_currently_due TEXT", "stripe_currently_due");
+  ensureColumn(db, "partners", "stripe_payouts_enabled INTEGER NOT NULL DEFAULT 0", "stripe_payouts_enabled");
+  ensureColumn(db, "partners", "stripe_charges_enabled INTEGER NOT NULL DEFAULT 0", "stripe_charges_enabled");
+  ensureColumn(db, "partners", "stripe_disconnected_at TEXT", "stripe_disconnected_at");
+  ensureColumn(db, "tenants", "stripe_customer_id TEXT", "stripe_customer_id");
+  ensureColumn(db, "tenants", "stripe_subscription_id TEXT", "stripe_subscription_id");
+  // payouts.status must accept 'failed' (Stripe Connect transfer failures).
+  // SQLite can't ALTER a CHECK constraint, so rebuild the table (same pattern
+  // as the email_log rebuild above). Nothing references payouts (commissions
+  // .payout_id is a plain column, no FK), so the DROP is safe.
+  const payoutsDdl = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'payouts'").get() as { sql: string } | undefined;
+  if (payoutsDdl && !payoutsDdl.sql.includes("'failed'")) {
+    db.exec(`
+      CREATE TABLE payouts_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        partner_id INTEGER NOT NULL REFERENCES partners(id),
+        amount REAL NOT NULL,
+        status TEXT DEFAULT 'pending' CHECK(status IN ('pending','paid','failed','cancelled')),
+        payment_date TEXT,
+        payment_method TEXT,
+        transaction_ref TEXT,
+        notes TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+      );
+    `);
+    db.exec(`INSERT INTO payouts_new (id, partner_id, amount, status, payment_date, payment_method, transaction_ref, notes, created_at) SELECT id, partner_id, amount, status, payment_date, payment_method, transaction_ref, notes, created_at FROM payouts`);
+    db.exec("DROP TABLE payouts");
+    db.exec("ALTER TABLE payouts_new RENAME TO payouts");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_payouts_partner_id ON payouts(partner_id)");
+    console.log("[db] Rebuilt payouts table — status CHECK now includes 'failed'");
+  }
+
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
   ensureColumn(db, "tenants", "inbox_slug TEXT", "inbox_slug");
   ensureColumn(db, "tenants", "subscription_plan TEXT DEFAULT NULL", "subscription_plan");

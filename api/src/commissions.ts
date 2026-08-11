@@ -7,6 +7,7 @@
 import { getDb } from "./db";
 import { sendEmail, buildPartnerPayoutEmail } from "./email";
 import { logAudit } from "./middleware";
+import { getStripe, isPayoutsEnabled, partnerOnboardingComplete } from "./stripe-connect";
 
 // ── Revenue / commission constants ────────────────────────────────────────
 // Source of truth: api/src/routes/partners.ts (/api/admin/cashflow uses the
@@ -305,14 +306,27 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
   return result;
 }
 
-// ── 3. Transfer seam (delegation B hooks in here) ─────────────────────────
+// ── 3. Transfer (delegation B: real Stripe Connect) ────────────────────────
 
 /**
- * Attempts to transfer a payout to the partner. THIS DELEGATION DOES NOT MOVE
- * MONEY: without STRIPE_SECRET_KEY it logs that the transfer is deferred and
- * returns WITHOUT changing the payout status (stays 'pending'). Delegation B
- * implements the real Stripe Connect transfer in the body below and then
- * marks the payout 'paid' with payment_method / transaction_ref populated.
+ * Attempts to transfer a payout to the partner via Stripe Connect.
+ *
+ * SAFETY GATES (all must pass or the transfer is SKIPPED and the payout stays
+ * 'pending', audit-logged with the reason):
+ *   1. Stripe must be configured (any key for the active mode).
+ *   2. Payouts must be enabled: TEST mode OR STRIPE_PAYOUTS_ENABLED=true
+ *      (the owner flips that flag only after the six-check test-mode E2E
+ *      passes). With only the LIVE key present and no flag, this refuses to
+ *      move real money — that is the TEST_MODE gate in action.
+ *   3. The partner must have a stripe_account_id AND be fully onboarded
+ *      (stripe_details_submitted=true, stripe_currently_due empty,
+ *      stripe_payouts_enabled=true) — fed by the account.updated webhook.
+ *
+ * When eligible: stripe.transfers.create with an idempotency key, metadata
+ * {payout_id, partner_id}; the payout's transaction_ref is stored immediately
+ * but its status stays 'pending' — finalization to 'paid'/'failed' happens via
+ * the transfer.paid / transfer.failed webhooks (single source of truth, no
+ * fabrication).
  */
 export function attemptPayoutTransfer(payoutId: number): void {
   const db = getDb();
@@ -323,15 +337,76 @@ export function attemptPayoutTransfer(payoutId: number): void {
     console.error(`[payouts] attemptPayoutTransfer: payout ${payoutId} not found`);
     return;
   }
-  const stripeKey = process.env.STRIPE_SECRET_KEY;
-  if (!stripeKey || stripeKey.trim() === "") {
-    console.log(
-      `[payouts] Stripe not configured — transfer deferred for payout ${payout.id} (partner ${payout.partner_id}, amount $${payout.amount}); status stays '${payout.status}'`,
-    );
+
+  const partner = db.query(`
+    SELECT id, first_name, last_name, email, stripe_account_id, stripe_details_submitted,
+           stripe_currently_due, stripe_payouts_enabled
+    FROM partners WHERE id = $pid
+  `).get({ $pid: payout.partner_id }) as
+    | { id: number; first_name: string; last_name: string; email: string; stripe_account_id: string | null; stripe_details_submitted: number | null; stripe_currently_due: string | null; stripe_payouts_enabled: number | null }
+    | undefined;
+
+  /** Record a skip + audit in one place. */
+  const skip = (reason: string): void => {
+    console.log(`[payouts] attemptPayoutTransfer(${payoutId}): ${reason} — leaving status '${payout.status}', transfer skipped`);
+    logPartnerAudit(db, payout.partner_id, "payout_transfer_skipped", { payout_id: payout.id, amount: payout.amount, reason }, reason, "system");
+  };
+
+  if (!partner) {
+    skip(`partner ${payout.partner_id} not found`);
     return;
   }
-  // TODO (delegation B): real Stripe Connect transfer implementation here.
-  // On success: update payouts SET status='paid', payment_method='stripe_connect',
-  // transaction_ref=<transfer id>, then audit-log. Never fabricate a transfer.
-  console.log(`[payouts] attemptPayoutTransfer(${payoutId}): Stripe key present — transfer path not implemented yet (delegation B); status unchanged`);
+  const partnerName = `${partner.first_name} ${partner.last_name}`.trim() || `partner #${partner.id}`;
+
+  const stripe = getStripe();
+  if (!stripe) {
+    skip("Stripe not configured for the active mode — no transfer");
+    return;
+  }
+
+  // TEST_MODE safety gate: live money moves ONLY when the owner explicitly
+  // enables payouts (STRIPE_PAYOUTS_ENABLED=true) after the E2E passes.
+  if (!isPayoutsEnabled()) {
+    skip("payouts not enabled — skipping transfer (set STRIPE_PAYOUTS_ENABLED=true after the test-mode E2E passes)");
+    return;
+  }
+
+  if (!partner.stripe_account_id) {
+    skip(`partner ${partner.id} has no connected Stripe account (stripe_account_id missing)`);
+    return;
+  }
+  if (!partnerOnboardingComplete(partner)) {
+    skip(`partner ${partner.id} (${partnerName}) onboarding incomplete (details_submitted=${Number(partner.stripe_details_submitted) === 1}, currently_due=${partner.stripe_currently_due ?? "[]"}, payouts_enabled=${Number(partner.stripe_payouts_enabled) === 1}) — no transfer until account.updated reports complete`);
+    return;
+  }
+
+  // ── Eligible: create the real transfer (async, fire-and-forget) ─────────
+  // Status is finalized by the transfer.paid / transfer.failed webhooks, so
+  // nothing here marks the payout paid. Idempotency key prevents double
+  // transfers if this ever runs twice for the same payout.
+  const amountCents = Math.round(Number(payout.amount) * 100);
+  console.log(`[payouts] attemptPayoutTransfer(${payoutId}): creating Stripe Connect transfer of ${payout.amount} to partner ${partner.id} (${partnerName}) account ${partner.stripe_account_id}`);
+  void (async () => {
+    try {
+      const transfer = await stripe.transfers.create({
+        amount: amountCents,
+        currency: "usd",
+        destination: partner.stripe_account_id as string,
+        metadata: { payout_id: String(payout.id), partner_id: String(partner.id) },
+      }, { idempotencyKey: `ctp-payout-${payout.id}` });
+      db.query("UPDATE payouts SET transaction_ref = $ref WHERE id = $id").run({ $ref: transfer.id, $id: payout.id });
+      logPartnerAudit(db, partner.id, "payout_transfer_created", { payout_id: payout.id, amount: payout.amount, transaction_ref: transfer.id, destination: partner.stripe_account_id }, null, "system");
+      logAudit(db, "payout", payout.id, "payout_transfer_created", { amount: payout.amount, transaction_ref: transfer.id, destination: partner.stripe_account_id });
+      console.log(`[payouts] transfer ${transfer.id} created for payout ${payout.id} (partner ${partner.id}) — status stays 'pending' until transfer.paid webhook`);
+    } catch (err: any) {
+      // Transfer creation failed (e.g. insufficient balance, bad destination).
+      // Record honestly; payout stays 'pending' for a manual retry. Never
+      // fabricate a transfer or mark anything paid.
+      const message = err?.message ? String(err.message) : String(err);
+      console.error(`[payouts] attemptPayoutTransfer(${payoutId}): Stripe transfer creation failed: ${message}`);
+      db.query("UPDATE payouts SET notes = $notes WHERE id = $id").run({ $notes: `transfer creation failed: ${message}`, $id: payout.id });
+      logPartnerAudit(db, partner.id, "payout_transfer_error", { payout_id: payout.id, amount: payout.amount, error: message }, message, "system");
+      logAudit(db, "payout", payout.id, "payout_transfer_error", { amount: payout.amount, error: message });
+    }
+  })();
 }

@@ -51,7 +51,7 @@ export default function AdminPayouts() {
 
   const load = () => {
     setLoading(true);
-    apiFetch("/api/payouts")
+    apiFetch("/api/admin/payouts")
       .then((res) => {
         if (!res.ok) throw new Error("Failed to fetch payouts");
         return res.json();

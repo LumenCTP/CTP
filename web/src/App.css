@@ -1292,6 +1292,43 @@ body {
   margin-left: auto;
 }
 
+/* ── Stripe Connect card (partner portal) ── */
+.stripe-connect-card {
+  flex-direction: column;
+  align-items: stretch;
+}
+.stripe-connect-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.stripe-connect-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.stripe-connect-hint {
+  font-size: 0.85rem;
+  color: var(--gray-300);
+  margin: 8px 0 0;
+}
+.stripe-connect-card code {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.8rem;
+  background: rgba(255, 255, 255, 0.1);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+.stripe-connect-card .data-table th {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--gray-300);
+}
+.stripe-connect-card .data-table td {
+  color: #e5e7eb;
+}
+
 .referral-code-actions .copy-btn,
 .referral-code-actions .btn-outline {
   background: rgba(255, 255, 255, 0.08);
