@@ -36,6 +36,22 @@ interface ReviewFormData {
   expiration_date: string;
   certificate_holder: string;
   document_type: string;
+  // Manual entity assignment — reviewer can attach an unassigned document to a
+  // vendor/client from the tenant's lists (null = unassigned/no match).
+  vendor_id: number | null;
+  client_id: number | null;
+}
+
+interface VendorOption {
+  id: number;
+  name: string;
+  client_id: number;
+  client_name: string | null;
+}
+
+interface ClientOption {
+  id: number;
+  name: string;
 }
 
 function confidenceColor(score: number): string {
@@ -56,6 +72,16 @@ export default function NeedsReview() {
   const [reviewError, setReviewError] = useState<string | null>(null);
   const [reviewSuccess, setReviewSuccess] = useState<string | null>(null);
 
+  // Tenant's vendors/clients for the assignment pickers (searchable selects)
+  const [vendors, setVendors] = useState<VendorOption[]>([]);
+  const [clients, setClients] = useState<ClientOption[]>([]);
+  const [vendorSearch, setVendorSearch] = useState("");
+  const [clientSearch, setClientSearch] = useState("");
+  // Original assignment when the modal opened — used to decide whether to send
+  // vendor_id/client_id on save (only when changed or already assigned).
+  const [initialVendorId, setInitialVendorId] = useState<number | null>(null);
+  const [initialClientId, setInitialClientId] = useState<number | null>(null);
+
   const fetchItems = useCallback(async () => {
     try {
       const res = await apiFetch("/api/needs-review");
@@ -73,6 +99,19 @@ export default function NeedsReview() {
     fetchItems();
   }, [fetchItems]);
 
+  // Load the tenant's vendors/clients for the assignment pickers. Failures are
+  // non-fatal — the pickers simply stay empty and review still works.
+  useEffect(() => {
+    apiFetch("/api/vendors")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: VendorOption[]) => setVendors(data))
+      .catch(() => {});
+    apiFetch("/api/clients")
+      .then((r) => (r.ok ? r.json() : []))
+      .then((data: ClientOption[]) => setClients(data))
+      .catch(() => {});
+  }, []);
+
   function emptyForm(): ReviewFormData {
     return {
       vendor_name: "",
@@ -82,6 +121,8 @@ export default function NeedsReview() {
       expiration_date: "",
       certificate_holder: "",
       document_type: "",
+      vendor_id: null,
+      client_id: null,
     };
   }
 
@@ -95,7 +136,13 @@ export default function NeedsReview() {
       expiration_date: item.expiration_date ?? "",
       certificate_holder: item.certificate_holder ?? "",
       document_type: item.extracted_document_type ?? item.document_type ?? "",
+      vendor_id: item.vendor_id || null,
+      client_id: item.client_id || null,
     });
+    setInitialVendorId(item.vendor_id || null);
+    setInitialClientId(item.client_id || null);
+    setVendorSearch("");
+    setClientSearch("");
     setReviewError(null);
     setReviewSuccess(null);
   }
@@ -103,9 +150,20 @@ export default function NeedsReview() {
   function closeReview() {
     setReviewingItem(null);
     setForm(emptyForm());
+    setInitialVendorId(null);
+    setInitialClientId(null);
+    setVendorSearch("");
+    setClientSearch("");
     setReviewError(null);
     setReviewSuccess(null);
   }
+
+  const filteredVendors = vendors.filter((v) =>
+    v.name.toLowerCase().includes(vendorSearch.toLowerCase()),
+  );
+  const filteredClients = clients.filter((c) =>
+    c.name.toLowerCase().includes(clientSearch.toLowerCase()),
+  );
 
   async function handleApprove(e: React.FormEvent) {
     e.preventDefault();
@@ -126,6 +184,16 @@ export default function NeedsReview() {
         document_type: form.document_type.trim() || null,
         is_reviewed: true,
       };
+      // Send the entity assignment only when the reviewer changed the picker or
+      // the document was already assigned. Leaving an unassigned document's
+      // picker untouched lets the API auto-map from the corrected names (same
+      // logic as upload), instead of forcing an explicit null.
+      if (form.vendor_id !== initialVendorId || initialVendorId !== null) {
+        body.vendor_id = form.vendor_id ? Number(form.vendor_id) : null;
+      }
+      if (form.client_id !== initialClientId || initialClientId !== null) {
+        body.client_id = form.client_id ? Number(form.client_id) : null;
+      }
 
       const res = await apiFetch(`/api/documents/${reviewingItem.id}/extraction`, {
         method: "PUT",
@@ -321,6 +389,86 @@ export default function NeedsReview() {
                 </p>
 
                 {reviewError && <div className="error-message">{reviewError}</div>}
+
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "1fr 1fr",
+                    gap: "12px",
+                    marginBottom: "12px",
+                    padding: "12px",
+                    background: "var(--bg-soft, #f8fafc)",
+                    borderRadius: "8px",
+                    border: "1px dashed var(--border, #d1d5db)",
+                  }}
+                >
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label>Assign to Vendor (optional)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="Search vendors…"
+                      value={vendorSearch}
+                      onChange={(e) => setVendorSearch(e.target.value)}
+                      style={{ marginBottom: 6 }}
+                    />
+                    <select
+                      className="form-input"
+                      value={form.vendor_id ? String(form.vendor_id) : ""}
+                      onChange={(e) => {
+                        const vid = e.target.value ? Number(e.target.value) : null;
+                        const next = { ...form, vendor_id: vid };
+                        // Auto-set the client from the vendor's client when a
+                        // vendor is chosen — a vendor assigned without a client
+                        // would otherwise bypass compliance requirements.
+                        if (vid) {
+                          const v = vendors.find((x) => x.id === vid);
+                          if (v) next.client_id = v.client_id;
+                        }
+                        setForm(next);
+                      }}
+                    >
+                      <option value="">— Unassigned (no vendor) —</option>
+                      {filteredVendors.map((v) => (
+                        <option key={v.id} value={String(v.id)}>
+                          {v.name}
+                          {v.client_name ? ` (${v.client_name})` : ""}
+                        </option>
+                      ))}
+                    </select>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                      Picking a vendor assigns this document to it immediately.
+                    </p>
+                  </div>
+                  <div className="form-group" style={{ margin: 0 }}>
+                    <label>Assign to Client (optional)</label>
+                    <input
+                      type="text"
+                      className="form-input"
+                      placeholder="Search clients…"
+                      value={clientSearch}
+                      onChange={(e) => setClientSearch(e.target.value)}
+                      style={{ marginBottom: 6 }}
+                    />
+                    <select
+                      className="form-input"
+                      value={form.client_id ? String(form.client_id) : ""}
+                      onChange={(e) =>
+                        setForm({ ...form, client_id: e.target.value ? Number(e.target.value) : null })
+                      }
+                    >
+                      <option value="">— Unassigned (no client) —</option>
+                      {filteredClients.map((c) => (
+                        <option key={c.id} value={String(c.id)}>
+                          {c.name}
+                        </option>
+                      ))}
+                    </select>
+                    <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: 4 }}>
+                      Auto-filled from the vendor; override if needed.
+                    </p>
+                  </div>
+                </div>
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                   <div className="form-group">

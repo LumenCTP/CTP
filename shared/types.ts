@@ -200,6 +200,10 @@ export interface ExtractionUpdateBody {
   certificate_holder?: string | null;
   document_type?: string | null;
   is_reviewed?: boolean;
+  // Manual entity assignment — lets a reviewer attach an otherwise-unassigned
+  // document to a vendor/client (null clears the assignment).
+  vendor_id?: number | null;
+  client_id?: number | null;
 }
 
 export interface DocumentUploadResponse {

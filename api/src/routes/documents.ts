@@ -314,6 +314,8 @@ app.put("/api/documents/:id/extraction", async (c) => {
       certificate_holder,
       document_type,
       is_reviewed,
+      vendor_id,
+      client_id,
     } = body;
 
     // Build dynamic update
@@ -366,16 +368,82 @@ app.put("/api/documents/:id/extraction", async (c) => {
       ).run(params);
     }
 
-    // Recalculate compliance status for the vendor using the engine
+    // ── Manual entity assignment ────────────────────────────────────────────
+    // Persist an explicit vendor/client assignment from the review UI, or fall
+    // back to the same auto-mapping used on upload (mapCOIToEntities) when the
+    // document is still unassigned. Then recalculate compliance so the new
+    // assignment immediately affects the vendor's payment status + dashboard.
     const doc = db.query(
       "SELECT vendor_id, client_id FROM documents WHERE id = $id AND tenant_id = $tenant_id"
-    ).get({ $id: id, $tenant_id: c.get("tenant_id") as number }) as { vendor_id: number; client_id: number } | undefined;
+    ).get({ $id: id, $tenant_id: tenantId }) as { vendor_id: number | null; client_id: number | null } | undefined;
+    // Prior assignment — the old vendor's compliance must be recalculated too
+    // when a document is reassigned or unassigned.
+    const priorVendorId: number | null = doc?.vendor_id ?? null;
+    const priorClientId: number | null = doc?.client_id ?? null;
 
-    if (doc) {
-      calculateVendorCompliance(doc.vendor_id, doc.client_id, c.get("tenant_id") as number);
+    const explicitIdsGiven = vendor_id !== undefined || client_id !== undefined;
+    let vendorId: number | null = doc?.vendor_id ?? null;
+    let clientId: number | null = doc?.client_id ?? null;
+
+    if (explicitIdsGiven) {
+      if (vendor_id !== undefined) {
+        if (vendor_id === null || vendor_id === 0) {
+          vendorId = null;
+        } else {
+          const v = db.query("SELECT id FROM vendors WHERE id = $id AND tenant_id = $tid").get({ $id: Number(vendor_id), $tid: tenantId });
+          if (!v) return c.json({ error: "Vendor does not belong to this tenant" }, 400);
+          vendorId = Number(vendor_id);
+        }
+      }
+      if (client_id !== undefined) {
+        if (client_id === null || client_id === 0) {
+          clientId = null;
+        } else {
+          const cl = db.query("SELECT id FROM clients WHERE id = $id AND tenant_id = $tid").get({ $id: Number(client_id), $tid: tenantId });
+          if (!cl) return c.json({ error: "Client does not belong to this tenant" }, 400);
+          clientId = Number(client_id);
+        }
+      }
     }
 
-    logAudit(db, "document", id, "extraction_updated", { ...body, is_reviewed });
+    // Auto-map from the (possibly corrected) extraction names when the document
+    // is still unassigned and the reviewer did not explicitly choose "no match"
+    // — the same logic the upload path uses.
+    if (!explicitIdsGiven && !vendorId && !clientId) {
+      const ext = db.query(
+        "SELECT certificate_holder, certificate_holder_address, vendor_name, insured_address FROM document_extractions WHERE id = $id"
+      ).get({ $id: existing.id }) as
+        | { certificate_holder: string | null; certificate_holder_address: string | null; vendor_name: string | null; insured_address: string | null }
+        | undefined;
+      if (ext) {
+        const mapped = mapCOIToEntities(db, tenantId, ext, id);
+        if (mapped) {
+          vendorId = mapped.vendorId;
+          clientId = mapped.clientId;
+        }
+      }
+    }
+
+    // Persist whenever the reviewer supplied ids (set OR explicit clear) or the
+    // auto-mapping produced an assignment — a null/void clear must land too.
+    if (explicitIdsGiven || vendorId !== null || clientId !== null) {
+      db.query("UPDATE documents SET client_id = $cid, vendor_id = $vid WHERE id = $id AND tenant_id = $tid")
+        .run({ $cid: clientId, $vid: vendorId, $id: id, $tid: tenantId });
+    }
+
+    // Recalculate compliance with the engine — same call as the upload path — so
+    // the assignment flows through to payment status and the dashboard
+    // immediately. The PRIOR vendor is recalculated as well when it changed: a
+    // document removed from a vendor can flip that vendor's payment status back
+    // to hold/review.
+    if (priorVendorId !== null && priorVendorId !== vendorId) {
+      const priorVendor = db.query("SELECT client_id FROM vendors WHERE id = $id AND tenant_id = $tid").get({ $id: priorVendorId, $tid: tenantId }) as { client_id: number } | undefined;
+      if (priorVendor) calculateVendorCompliance(priorVendorId, priorVendor.client_id, tenantId);
+    }
+    if (vendorId !== null && clientId !== null) {
+      calculateVendorCompliance(vendorId, clientId, tenantId);
+    }
+    logAudit(db, "document", id, "extraction_updated", { ...body, is_reviewed, prior_vendor_id: priorVendorId });
 
     // Return updated extraction
     const updated = db.query(
