@@ -120,6 +120,7 @@ export interface TenantRow {
   name: string;
   owner_user_id: number;
   subscription_status: string;
+  subscription_plan: string | null;
   subscription_period_start: string | null;
   subscription_period_end: string | null;
   payment_week_start_day: string;
@@ -161,7 +162,10 @@ export function createTenantForUser(
   opts?: { name?: string; subscription_status?: string; periodStart?: string; periodEnd?: string; subscription_plan?: string | null }
 ): TenantRow {
   const name = opts?.name || "My Company";
-  const status = opts?.subscription_status || "TRIAL";
+  // New tenants start PENDING — they must complete payment at checkout before
+  // the app (and its data routes) unlock. The webhook / checkout-confirm path
+  // flips the tenant to ACTIVE once payment is collected.
+  const status = opts?.subscription_status || "PENDING";
   // Per-company slug: company name with all non-alphanumeric characters
   // removed, case preserved ("ABC Company" → "ABCCompany").
   const base = companyNameToSlug(name);
@@ -203,6 +207,16 @@ export async function requireTenant(c: any, next: any) {
   const tenant = findTenantForUser(db, user.user_id);
   if (!tenant) {
     return c.json({ error: "No tenant found for this user. Please contact support." }, 403);
+  }
+  // Paywall gate: only ACTIVE tenants may read/write data. PENDING (never
+  // paid), TRIAL (legacy), PAST_DUE (unpaid renewal) and anything else are all
+  // blocked with 402 — the SPA routes them to the paywall.
+  if (tenant.subscription_status !== "ACTIVE") {
+    return c.json({
+      error: "subscription_required",
+      message: "Complete payment to activate your account",
+      checkout_url: "/checkout",
+    }, 402);
   }
   c.set("tenant_id", tenant.id);
   return next();

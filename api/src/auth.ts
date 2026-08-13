@@ -79,10 +79,12 @@ app.post("/api/auth/register", async (c) => {
       full_name: profileName,
     });
 
-    // Auto-create tenant + setup wizard for the new user
+    // Auto-create tenant + setup wizard for the new user. Tenants start
+    // PENDING — the account is locked behind the paywall until payment is
+    // collected at checkout (webhook or /api/checkout/confirm flips ACTIVE).
     const tenant = createTenantForUser(db, userId, {
       name: company_name.trim(),
-      subscription_status: "TRIAL",
+      subscription_status: "PENDING",
       subscription_plan: chosenPlan,
     });
     logAudit(db, "tenant", tenant.id, "tenant_created", {
@@ -342,6 +344,7 @@ app.get("/api/auth/me", async (c) => {
     tenant_id: tenant?.id ?? null,
     tenant_name: tenant?.name ?? null,
     subscription_status: tenant?.subscription_status ?? null,
+    subscription_plan: tenant?.subscription_plan ?? null,
     payment_week_start_day: tenant?.payment_week_start_day ?? "monday",
     wizard_status: wizard?.status ?? null,
     inbox_slug: tenant?.inbox_slug ?? null,

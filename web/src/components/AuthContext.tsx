@@ -11,6 +11,7 @@ interface User {
   tenant_id?: number | null;
   tenant_name?: string | null;
   subscription_status?: string | null;
+  subscription_plan?: string | null;
   payment_week_start_day?: string | null;
   wizard_status?: string | null;
   // Partner-specific fields (populated from /api/partner/me when role === "partner")
@@ -77,6 +78,7 @@ function mergeTenant(user: Record<string, unknown>, tenant: Record<string, unkno
     tenant_id: (tenant?.id as number) ?? null,
     tenant_name: (tenant?.name as string) ?? null,
     subscription_status: (tenant?.subscription_status as string) ?? null,
+    subscription_plan: (tenant?.subscription_plan as string) ?? null,
     payment_week_start_day: (tenant?.payment_week_start_day as string) ?? "monday",
     wizard_status: (tenant?.wizard_status as string) ?? null,
   };
@@ -87,6 +89,24 @@ function mergeTenant(user: Record<string, unknown>, tenant: Record<string, unkno
 export function needsSetup(user: User | null): boolean {
   if (!user || user.role === "admin") return false;
   return user.wizard_status === "NOT_STARTED" || user.wizard_status === "IN_PROGRESS";
+}
+
+// True when the user must pay before using the app: any non-admin, non-partner
+// tenant whose subscription_status is not ACTIVE (PENDING, TRIAL, PAST_DUE, ...)
+// is blocked behind the paywall. Admins and partners have their own portals and
+// are never gated on tenant payment.
+export function needsPayment(user: User | null): boolean {
+  if (!user) return false;
+  if (user.role === "admin" || user.role === "partner") return false;
+  return user.subscription_status !== "ACTIVE";
+}
+
+// Where an authenticated user should land: paywall for unpaid tenants, the
+// setup wizard while it's incomplete, otherwise the dashboard.
+export function getHomePath(user: User): string {
+  if (needsPayment(user)) return "/app";
+  if (needsSetup(user)) return "/app/setup";
+  return "/app";
 }
 
 // True when the user is a partner whose application has not been approved yet

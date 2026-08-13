@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
-import { BrowserRouter, Routes, Route, Navigate, Outlet } from "react-router-dom";
-import { AuthProvider, useAuth, needsSetup, needsPartnerSetup, type User } from "./components/AuthContext";
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate } from "react-router-dom";
+import { AuthProvider, useAuth, needsSetup, needsPayment, getHomePath, needsPartnerSetup, type User } from "./components/AuthContext";
 import Layout from "./components/Layout";
 import PartnerShell from "./components/PartnerShell";
 import Logo from "./components/Logo";
+import Paywall from "./pages/Paywall";
 import Dashboard from "./pages/Dashboard";
 import Clients from "./pages/Clients";
 import Vendors from "./pages/Vendors";
@@ -57,6 +58,12 @@ function ProtectedRoute() {
     return <Navigate to="/app/login" replace />;
   }
 
+  // Paywall gate: unpaid (PENDING/TRIAL/PAST_DUE) tenants must complete
+  // payment before reaching the app, the setup wizard, or any other tenant UI.
+  if (needsPayment(user)) {
+    return <Paywall />;
+  }
+
   return <Outlet />;
 }
 
@@ -71,8 +78,8 @@ function HomeRedirect() {
   if (user?.role === "partner") {
     return <Navigate to={needsPartnerSetup(user) ? "/app/partner/status" : "/app/partner/dashboard"} replace />;
   }
-  if (user && needsSetup(user)) {
-    return <Navigate to="/app/setup" replace />;
+  if (user) {
+    return <Navigate to={getHomePath(user)} replace />;
   }
   return <Navigate to="/app" replace />;
 }
@@ -218,10 +225,87 @@ function PublicRoute() {
   return <Outlet />;
 }
 
+// localStorage key the marketing /checkout page uses to stash the Stripe
+// session id before redirecting to Stripe (so the confirm step works even if
+// Stripe's ?session_id= query param is stripped by an intermediate redirect).
+const CHECKOUT_SESSION_KEY = "cleartopay_checkout_session";
+
+/**
+ * Handles the return from Stripe Checkout on /app?checkout=success. Calls
+ * POST /api/checkout/confirm with the session id (URL param first, then the
+ * localStorage stash), then re-fetches /me so the app reflects the now-ACTIVE
+ * tenant (wizard or dashboard). Safe to run more than once — the webhook may
+ * have already activated the tenant; confirm is idempotent.
+ */
+function CheckoutReturnHandler() {
+  const { token, loading, refreshUser } = useAuth();
+  const [activating, setActivating] = useState(false);
+  const navigate = useNavigate();
+
+  useEffect(() => {
+    if (loading || !token) return;
+    if (typeof window === "undefined") return;
+    const qs = new URLSearchParams(window.location.search);
+    if (qs.get("checkout") !== "success") return;
+
+    let sessionId = qs.get("session_id");
+    if (!sessionId) {
+      try {
+        sessionId = localStorage.getItem(CHECKOUT_SESSION_KEY);
+      } catch {
+        sessionId = null;
+      }
+    }
+
+    setActivating(true);
+    (async () => {
+      try {
+        if (sessionId) {
+          await fetch("/api/checkout/confirm", {
+            method: "POST",
+            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+            body: JSON.stringify({ session_id: sessionId }),
+          });
+        }
+        // Whether confirm succeeded or the webhook already did the job,
+        // refresh /me so the shell routes to the wizard/dashboard.
+        await refreshUser();
+      } catch {
+        // Network error — fall through; /me will still be refreshed on next mount.
+      }
+      try {
+        localStorage.removeItem(CHECKOUT_SESSION_KEY);
+      } catch {
+        // ignore
+      }
+      // Strip the ?checkout=success&session_id=... params so a reload doesn't
+      // re-run confirmation.
+      window.history.replaceState({}, "", "/app");
+      setActivating(false);
+      navigate("/app", { replace: true });
+    })();
+  }, [loading, token, refreshUser, navigate]);
+
+  if (activating) {
+    return (
+      <div style={{
+        display: "flex", alignItems: "center", justifyContent: "center",
+        height: "100vh", color: "var(--text-muted)", fontSize: "1rem",
+        flexDirection: "column", gap: 12,
+      }}>
+        <Logo size={48} />
+        Activating your account…
+      </div>
+    );
+  }
+  return null;
+}
+
 export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
+        <CheckoutReturnHandler />
         <Routes>
           {/* Public routes */}
           <Route element={<PublicRoute />}>

@@ -600,7 +600,8 @@ app.post("/api/checkout/session", async (c) => {
 
   // Optional: if the caller is authenticated, attach their tenant to the
   // subscription so the webhook finds the existing tenant instead of creating
-  // a new one for the email.
+  // a new one for the email. Also used for client_reference_id (ownership
+  // verification on /api/checkout/confirm).
   let tenantId: number | undefined;
   const authHeader = c.req.header("Authorization");
   if (authHeader?.startsWith("Bearer ")) {
@@ -609,6 +610,14 @@ app.post("/api/checkout/session", async (c) => {
       const t = findTenantForUser(getDb(), user.user_id);
       if (t) tenantId = t.id;
     }
+  }
+  // Fallback: no auth token, but an email was provided — look the user up by
+  // email so the session can still be tied to their tenant.
+  if (tenantId === undefined && email) {
+    const u = getDb().query(
+      "SELECT tenant_id FROM users WHERE lower(email) = lower($email) AND tenant_id IS NOT NULL"
+    ).get({ $email: email.trim().toLowerCase() }) as { tenant_id: number } | undefined;
+    if (u?.tenant_id) tenantId = u.tenant_id;
   }
 
   let priceId: string;
@@ -620,23 +629,30 @@ app.post("/api/checkout/session", async (c) => {
   }
   if (!priceId) return c.json({ error: "Unknown plan" }, 400);
 
+  // Default success/cancel URLs point back to the SAME origin the request came
+  // from (works on dev and live hosts); fall back to the canonical live domain.
+  const reqOrigin = c.req.header("Origin");
+  const reqHost = c.req.header("Host");
+  const baseOrigin = reqOrigin && /^https?:\/\//.test(reqOrigin)
+    ? reqOrigin.replace(/\/+$/, "")
+    : reqHost && !reqHost.includes("localhost") && !reqHost.includes("127.0.0.1")
+      ? `https://${reqHost}`
+      : "https://cleartopay.ctonew.app";
+
   const successUrl = typeof body.success_url === "string" && body.success_url !== ""
     ? body.success_url
-    : "https://cleartopay.ctonew.app/app?checkout=success";
+    : `${baseOrigin}/app?checkout=success`;
   const cancelUrl = typeof body.cancel_url === "string" && body.cancel_url !== ""
     ? body.cancel_url
-    : "https://cleartopay.ctonew.app/checkout?cancelled=1";
+    : `${baseOrigin}/checkout?cancelled=1`;
 
   const baseParams: Stripe.Checkout.SessionCreateParams = {
     mode: "subscription",
-    // Require a payment method at checkout even though the 30-day trial
-    // charges nothing until it ends — customers must have a card on file so
-    // the subscription is billable from day 1 (Stripe auto-charges it when the
-    // trial ends).
+    // A card (or other payment method) is required at checkout — payment is
+    // collected immediately; there is no free trial.
     payment_method_collection: "always",
     line_items: [{ price: priceId, quantity: 1 }],
     subscription_data: {
-      trial_period_days: 30,
       metadata: {
         plan,
         ...(tenantId !== undefined ? { tenant_id: String(tenantId) } : {}),
@@ -645,6 +661,10 @@ app.post("/api/checkout/session", async (c) => {
     metadata: { plan, source: "site-checkout" },
     success_url: successUrl,
     cancel_url: cancelUrl,
+    // Ownership anchor for /api/checkout/confirm: the session carries the
+    // tenant id so the confirm endpoint can verify the session belongs to the
+    // authenticated user.
+    ...(tenantId !== undefined ? { client_reference_id: String(tenantId) } : {}),
     ...(email ? { customer_email: email } : {}),
   };
 
@@ -656,11 +676,160 @@ app.post("/api/checkout/session", async (c) => {
     if (!session.url) {
       return c.json({ error: "Stripe did not return a checkout URL" }, 500);
     }
-    return c.json({ url: session.url });
+    // session_id is required by the SPA's /api/checkout/confirm step.
+    return c.json({ url: session.url, session_id: session.id });
   } catch (err) {
     console.error("[checkout] session create failed:", err);
     return c.json({ error: `Could not create checkout session: ${String(err)}` }, 500);
   }
+});
+
+// ── Checkout Confirm (synchronous activation fallback) ───
+
+// POST /api/checkout/confirm — belt-and-suspenders activation path. Activates
+// the caller's tenant immediately after a paid Stripe Checkout session, so a
+// customer who just paid is ACTIVE right away even though the webhook signing
+// secret match with the Stripe Dashboard is still unconfirmed.
+//
+// Auth: manual bearer check (same pattern as the session handler) so this
+// endpoint is NOT under the requireTenant gate — PENDING tenants must be able
+// to call it (it performs its own ownership verification).
+//
+// Body: { session_id }
+// Returns: { status: "active", tenant } once the tenant is activated.
+app.post("/api/checkout/confirm", async (c) => {
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+  const sessionId = typeof body.session_id === "string" && body.session_id.trim() !== ""
+    ? body.session_id.trim()
+    : null;
+  if (!sessionId) {
+    return c.json({ error: "session_id is required" }, 400);
+  }
+
+  const authHeader = c.req.header("Authorization");
+  if (!authHeader?.startsWith("Bearer ")) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+  const user = await verifyAuthToken(authHeader.slice(7));
+  if (!user) {
+    return c.json({ error: "Unauthorized" }, 401);
+  }
+
+  const stripe = getStripe();
+  if (!stripe) {
+    return c.json({ error: "Stripe is not configured" }, 503);
+  }
+
+  let session: Stripe.Checkout.Session;
+  try {
+    session = await stripe.checkout.sessions.retrieve(sessionId);
+  } catch (err: any) {
+    if (err?.statusCode === 404 || err?.code === "resource_missing") {
+      return c.json({ error: "session_not_found" }, 404);
+    }
+    console.error("[checkout] confirm: session retrieve failed:", err);
+    return c.json({ error: `Could not retrieve checkout session: ${String(err)}` }, 400);
+  }
+
+  // Gate: only activate when Stripe reports the payment was collected.
+  const paid = session.payment_status === "paid" ||
+    (session.payment_status === "no_payment_required" && session.subscription != null);
+  if (!paid) {
+    return c.json({ error: "not_paid", message: "This checkout session has not been paid yet." }, 402);
+  }
+
+  // Ownership: the session's client_reference_id must be the caller's tenant,
+  // OR the session's customer email must match the caller's email.
+  const db = getDb();
+  const tenant = findTenantForUser(db, user.user_id);
+  if (!tenant) {
+    return c.json({ error: "No tenant found for this user. Please contact support." }, 403);
+  }
+  const refMatch = session.client_reference_id != null && String(session.client_reference_id) === String(tenant.id);
+  const emailMatch = typeof session.customer_email === "string" &&
+    session.customer_email.trim().toLowerCase() === user.email.toLowerCase();
+  if (!refMatch && !emailMatch) {
+    return c.json({ error: "session_does_not_belong_to_user" }, 403);
+  }
+
+  // Retrieve the subscription for real billing-period dates when available.
+  let periodStart: string | null = null;
+  let periodEnd: string | null = null;
+  let subPlan: string | null = null;
+  let subId: string | null = typeof session.subscription === "string" ? session.subscription : null;
+  let customerId: string | null = typeof session.customer === "string" ? session.customer : null;
+  const metaPlan = session.metadata?.plan ? String(session.metadata.plan).toLowerCase() : null;
+  if (subId) {
+    try {
+      const sub = await stripe.subscriptions.retrieve(subId);
+      if (sub?.current_period_start) periodStart = new Date(sub.current_period_start * 1000).toISOString().slice(0, 10);
+      if (sub?.current_period_end) periodEnd = new Date(sub.current_period_end * 1000).toISOString().slice(0, 10);
+      subPlan = planFromSubscription(sub) ?? metaPlan;
+      subId = sub.id ? String(sub.id) : subId;
+      customerId = typeof sub.customer === "string" ? sub.customer : customerId;
+    } catch (err) {
+      console.warn(`[checkout] confirm: subscription retrieve failed (${subId}): ${String(err)}`);
+    }
+  }
+
+  // Fallback period dates: today → +30d (monthly) / +365d (annual).
+  const plan = subPlan ?? metaPlan ?? null;
+  const today = new Date().toISOString().slice(0, 10);
+  if (!periodStart) periodStart = today;
+  if (!periodEnd) {
+    const days = plan === "annual" ? 365 : 30;
+    periodEnd = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+  }
+
+  db.query(`
+    UPDATE tenants
+    SET subscription_status = 'ACTIVE',
+        subscription_plan = COALESCE($plan, subscription_plan),
+        subscription_period_start = COALESCE($start, subscription_period_start),
+        subscription_period_end = COALESCE($end, subscription_period_end),
+        stripe_customer_id = COALESCE($cus, stripe_customer_id),
+        stripe_subscription_id = COALESCE($sub, stripe_subscription_id),
+        updated_at = datetime('now')
+    WHERE id = $tid
+  `).run({
+    $plan: plan,
+    $start: periodStart,
+    $end: periodEnd,
+    $cus: customerId,
+    $sub: subId,
+    $tid: tenant.id,
+  });
+  logAudit(db, "tenant", tenant.id, "subscription_activated", {
+    source: "checkout_confirm",
+    session_id: sessionId,
+    plan,
+    period_start: periodStart,
+    period_end: periodEnd,
+    stripe_customer_id: customerId,
+    stripe_subscription_id: subId,
+  });
+  console.log(`[checkout] confirm: tenant ${tenant.id} activated (plan=${plan ?? "unchanged"}, session ${sessionId})`);
+
+  const wizard = findWizard(db, tenant.id);
+  const updated = findTenantForUser(db, user.user_id)!;
+  return c.json({
+    status: "active",
+    tenant: {
+      id: updated.id,
+      name: updated.name,
+      subscription_status: updated.subscription_status,
+      subscription_plan: updated.subscription_plan ?? null,
+      subscription_period_start: updated.subscription_period_start,
+      subscription_period_end: updated.subscription_period_end,
+      payment_week_start_day: updated.payment_week_start_day,
+      wizard_status: wizard?.status || "NOT_STARTED",
+    },
+  });
 });
 
 export default app;

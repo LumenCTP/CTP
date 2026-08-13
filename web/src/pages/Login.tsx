@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate, useLocation } from "react-router-dom";
-import { useAuth, needsSetup } from "../components/AuthContext";
+import { useAuth, getHomePath } from "../components/AuthContext";
 import Logo from "../components/Logo";
 import { apiFetch } from "../lib/api";
 
@@ -31,7 +31,9 @@ export default function Login() {
   }
 
   if (user) {
-    return <Navigate to={needsSetup(user) ? "/app/setup" : "/app"} replace />;
+    // getHomePath routes PENDING/PAST_DUE tenants to /app, where the app shell
+    // renders the paywall (they must pay before using the app).
+    return <Navigate to={getHomePath(user)} replace />;
   }
 
   async function handleSubmit(e: FormEvent) {

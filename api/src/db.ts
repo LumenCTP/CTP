@@ -179,7 +179,7 @@ function runMigrations(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
       owner_user_id INTEGER NOT NULL,
-      subscription_status TEXT DEFAULT 'TRIAL',
+      subscription_status TEXT DEFAULT 'PENDING',
       subscription_period_start TEXT,
       subscription_period_end TEXT,
       payment_week_start_day TEXT DEFAULT 'monday',
@@ -531,7 +531,7 @@ function runMigrations(db: Database): void {
   // Backfill legacy/test users so every authenticated user has an isolated tenant.
   const legacyUsers = db.query("SELECT id, company_name FROM users WHERE tenant_id IS NULL").all() as Array<{ id: number; company_name: string }>;
   for (const user of legacyUsers) {
-    const tenantResult = db.query(`INSERT INTO tenants (name, owner_user_id, subscription_status) VALUES ($name, $uid, 'TRIAL')`).run({ $name: user.company_name || "My Company", $uid: user.id });
+    const tenantResult = db.query(`INSERT INTO tenants (name, owner_user_id, subscription_status) VALUES ($name, $uid, 'PENDING')`).run({ $name: user.company_name || "My Company", $uid: user.id });
     const tenantId = Number(tenantResult.lastInsertRowid);
     db.query("INSERT INTO setup_wizard (tenant_id, status, current_step, company_name, completed_at) VALUES ($tid, 'COMPLETED', 'completed', $name, datetime('now'))").run({ $tid: tenantId, $name: user.company_name || "My Company" });
     db.query("UPDATE users SET tenant_id = $tid WHERE id = $uid").run({ $tid: tenantId, $uid: user.id });

@@ -1,6 +1,6 @@
 import { useState, type FormEvent } from "react";
 import { Link, Navigate } from "react-router-dom";
-import { useAuth, needsSetup } from "../components/AuthContext";
+import { useAuth, getHomePath } from "../components/AuthContext";
 import Logo from "../components/Logo";
 
 export default function Register() {
@@ -28,8 +28,11 @@ export default function Register() {
     );
   }
 
+  // Already logged in: PENDING tenants land on the paywall (/app), everyone
+  // else goes to the wizard or dashboard. Newly-registered users are redirected
+  // to /checkout inside handleSubmit (see below) — not the wizard.
   if (user) {
-    return <Navigate to={needsSetup(user) ? "/app/setup" : "/app"} replace />;
+    return <Navigate to={getHomePath(user)} replace />;
   }
 
   async function handleSubmit(e: FormEvent) {
@@ -61,7 +64,13 @@ export default function Register() {
 
     if (err) {
       setError(err);
+      return;
     }
+
+    // Account created with a PENDING tenant — the customer must pay NOW to
+    // activate. Send them to the marketing /checkout page (same origin) with
+    // their chosen plan preselected; the checkout page shows the success note.
+    window.location.href = `/checkout?plan=${plan}&registered=1`;
   }
 
   return (
@@ -159,14 +168,18 @@ export default function Register() {
             </div>
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
               {plan === "annual"
-                ? "Annual: $1,200/year — billed once a year, save $588 vs. monthly. First month free."
-                : "Monthly: $149/month — cancel anytime. First month free."}
+                ? "Annual: $1,200/year — billed once a year, save $588 vs. monthly. You'll be charged today."
+                : "Monthly: $149/month — billed monthly, cancel anytime. You'll be charged today."}
             </p>
           </div>
 
           <button type="submit" className="auth-btn" disabled={submitting}>
             {submitting ? "Creating Account..." : "Create Account"}
           </button>
+
+          <p style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", marginTop: -8 }}>
+            No free trial — payment is collected when you complete checkout.
+          </p>
         </form>
 
         <p className="auth-footer">
