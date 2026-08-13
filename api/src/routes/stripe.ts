@@ -629,6 +629,11 @@ app.post("/api/checkout/session", async (c) => {
 
   const baseParams: Stripe.Checkout.SessionCreateParams = {
     mode: "subscription",
+    // Require a payment method at checkout even though the 30-day trial
+    // charges nothing until it ends — customers must have a card on file so
+    // the subscription is billable from day 1 (Stripe auto-charges it when the
+    // trial ends).
+    payment_method_collection: "always",
     line_items: [{ price: priceId, quantity: 1 }],
     subscription_data: {
       trial_period_days: 30,
