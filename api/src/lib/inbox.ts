@@ -1,12 +1,20 @@
 // ── Per-client inbound mailbox identity ──────────────────
-// Each tenant gets a clean per-company submission address on the product
-// domain, e.g. "ABC Company" → ABCCompany@cleartopayconstruction.com.
+// Each tenant gets a per-company submission address on the platform's mail
+// domain using the +subaddress format the ingestion pipeline supports,
+// e.g. "ABC Company" →
+// cleartopay-compliance-0d8d884b+ABCCompany@ctomail.io.
 //
 // The slug is the company name with every non-alphanumeric character removed
-// (case preserved). The domain is overridable via the INBOX_DOMAIN env var so
-// it can be flipped without a redeploy.
+// (case preserved). The base address is overridable via the INBOX_BASE_ADDRESS
+// env var so it can be flipped without a redeploy.
+//
+// NOTE: this intentionally does NOT use the product domain
+// (cleartopayconstruction.com): its MX points at Microsoft 365, where no
+// per-company mailboxes exist, so mail to ABCCompany@cleartopayconstruction.com
+// would bounce. The +subaddress format routes to the team inbox the platform
+// monitors.
 
-const INBOX_DOMAIN = process.env.INBOX_DOMAIN || "cleartopayconstruction.com";
+const INBOX_BASE_ADDRESS = process.env.INBOX_BASE_ADDRESS || "cleartopay-compliance-0d8d884b@ctomail.io";
 
 /**
  * "ABC Company" → "ABCCompany"; "Acme Builders LLC" → "AcmeBuildersLLC".
@@ -19,17 +27,19 @@ export function companyNameToSlug(name: string): string {
   return slug || "company";
 }
 
-/** Renders the tenant's submission inbox address, e.g. "ABCCompany@cleartopayconstruction.com". */
+/** Renders the tenant's submission inbox address, e.g. "cleartopay-compliance-0d8d884b+ABCCompany@ctomail.io". */
 export function buildInboxAddress(slug: string | null | undefined): string | null {
   if (!slug) return null;
-  return `${slug}@${INBOX_DOMAIN}`;
+  const at = INBOX_BASE_ADDRESS.indexOf("@");
+  if (at <= 0) return `${slug}@${INBOX_BASE_ADDRESS}`;
+  return `${INBOX_BASE_ADDRESS.slice(0, at)}+${slug}@${INBOX_BASE_ADDRESS.slice(at + 1)}`;
 }
 
 /**
  * Extracts the tenant slug from an inbound to_address.
- * Supports the current "<Slug>@<domain>" format AND the legacy
- * "cleartopay-compliance-0d8d884b+<slug>@ctomail.io" +subaddress format, so
- * old inboxes keep routing until the domain cutover.
+ * Supports the current "cleartopay-compliance-0d8d884b+<slug>@ctomail.io"
+ * +subaddress format, and keeps parsing a bare "<Slug>@<domain>" so nothing
+ * that used the old format stops routing.
  */
 export function slugFromToAddress(toAddress: string): string {
   const local = (toAddress || "").split("@")[0] || "";

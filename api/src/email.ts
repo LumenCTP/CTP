@@ -77,7 +77,7 @@ export function parseAttachmentsJson(raw: string | null): EmailAttachment[] {
 
 /**
  * Builds the tenant's custom document-submission inbox address
- * (<CompanyName>@cleartopayconstruction.com, e.g. ABCCompany@cleartopayconstruction.com)
+ * (e.g. cleartopay-compliance-0d8d884b+ABCCompany@ctomail.io)
  * from the tenant's inbox_slug. Falls back to the global sender address when
  * the tenant has no slug (or the lookup fails).
  */
