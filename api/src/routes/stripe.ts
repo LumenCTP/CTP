@@ -1,9 +1,10 @@
 import { Hono } from "hono";
 import { createHmac, timingSafeEqual } from "node:crypto";
+import Stripe from "stripe";
 import { getDb } from "../db";
-import { findTenantForUser, createTenantForUser, findWizard, logAudit } from "../middleware";
+import { findTenantForUser, createTenantForUser, findWizard, logAudit, verifyAuthToken } from "../middleware";
 import { logPartnerAudit } from "./partners";
-import { getWebhookSecrets, StripeMode } from "../stripe-connect";
+import { getStripe, getWebhookSecrets, StripeMode } from "../stripe-connect";
 import { sendEmail, buildPartnerTransferPaidEmail, buildPartnerTransferFailedEmail } from "../email";
 
 const app = new Hono();
@@ -413,7 +414,10 @@ app.post("/api/webhooks/stripe", async (c) => {
       return c.json({ success: true, event_type: type, ...result });
     }
 
-    if (type === "customer.subscription.created" || type === "customer.subscription.updated") {
+    if (type === "customer.subscription.created" || type === "customer.subscription.updated" || type === "customer.subscription.deleted") {
+      // created/updated: sync plan + status (incl. "trialing" → TRIAL).
+      // deleted: Stripe sends the subscription with status "canceled", which
+      // handleSubscriptionEvent maps to CANCELLED on the tenant.
       const result = handleSubscriptionEvent(event);
       // Always 2xx fast — an unmatched subscription is not an error to Stripe.
       return c.json({ received: true, event_type: type, handled: result.handled, note: result.note });
@@ -440,6 +444,150 @@ app.post("/api/webhooks/stripe", async (c) => {
     console.error("[stripe] Webhook error:", err);
     return c.json({ error: String(err) }, 500);
   }
+});
+
+// ── Checkout Session (public) ────────────────────────────
+
+// Subscription plans sold on the marketing checkout page. Prices are ensured
+// idempotently in the OWNER'S Stripe account (via their secret key) — the
+// platform catalog placeholders in the web app are never touched.
+const CHECKOUT_PLANS: Record<string, { product: string; amount: number; interval: "month" | "year" }> = {
+  monthly: { product: "ClearToPay Monthly", amount: 14900, interval: "month" },
+  annual: { product: "ClearToPay Annual", amount: 120000, interval: "year" },
+};
+
+/**
+ * Find (by metadata.plan on an active price) or create the price for a plan.
+ * Returns the price id, or null for an unknown plan. Safe to call repeatedly —
+ * a price created by a previous call is reused.
+ */
+async function ensurePlanPrice(stripe: Stripe, plan: string): Promise<string | null> {
+  const cfg = CHECKOUT_PLANS[plan];
+  if (!cfg) return null;
+  const prices = await stripe.prices.list({ active: true, limit: 100 });
+  for (const p of prices.data) {
+    if (
+      p.currency === "usd" &&
+      p.unit_amount === cfg.amount &&
+      p.recurring?.interval === cfg.interval &&
+      p.metadata?.plan === plan
+    ) {
+      return p.id;
+    }
+  }
+  const product = await stripe.products.create({ name: cfg.product, metadata: { plan } });
+  const price = await stripe.prices.create({
+    product: product.id,
+    unit_amount: cfg.amount,
+    currency: "usd",
+    recurring: { interval: cfg.interval },
+    metadata: { plan },
+  });
+  console.log(`[checkout] created price ${price.id} for plan ${plan} (${cfg.product}, ${(cfg.amount / 100).toFixed(2)}/${cfg.interval})`);
+  return price.id;
+}
+
+// POST /api/checkout/session — create a Stripe Checkout session for the
+// monthly or annual subscription. Public (no auth required); when the caller IS
+// authenticated, their tenant_id is passed through as subscription metadata so
+// the webhook can attach the subscription to their existing tenant.
+//
+// Body: { plan: "monthly" | "annual", success_url?, cancel_url?, email? }
+// Returns: { url } — a Stripe-hosted checkout page. Creating a session never
+// charges anyone and never provisions a tenant (that happens on the webhook).
+app.post("/api/checkout/session", async (c) => {
+  const stripe = getStripe();
+  if (!stripe) {
+    return c.json({ error: "Stripe is not configured" }, 503);
+  }
+
+  let body: any = {};
+  try {
+    body = await c.req.json();
+  } catch {
+    return c.json({ error: "Invalid JSON body" }, 400);
+  }
+
+  const plan = String(body.plan ?? "").toLowerCase();
+  if (plan !== "monthly" && plan !== "annual") {
+    return c.json({ error: "plan must be 'monthly' or 'annual'" }, 400);
+  }
+
+  const email = typeof body.email === "string" && body.email.trim() !== "" ? body.email.trim() : undefined;
+  if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return c.json({ error: "Invalid email address" }, 400);
+  }
+
+  // Optional: if the caller is authenticated, attach their tenant to the
+  // subscription so the webhook finds the existing tenant instead of creating
+  // a new one for the email.
+  let tenantId: number | undefined;
+  const authHeader = c.req.header("Authorization");
+  if (authHeader?.startsWith("Bearer ")) {
+    const user = await verifyAuthToken(authHeader.slice(7));
+    if (user) {
+      const t = findTenantForUser(getDb(), user.user_id);
+      if (t) tenantId = t.id;
+    }
+  }
+
+  let priceId: string;
+  try {
+    priceId = (await ensurePlanPrice(stripe, plan))!;
+  } catch (err) {
+    console.error("[checkout] failed to ensure plan price:", err);
+    return c.json({ error: `Failed to set up pricing: ${String(err)}` }, 500);
+  }
+  if (!priceId) return c.json({ error: "Unknown plan" }, 400);
+
+  const successUrl = typeof body.success_url === "string" && body.success_url !== ""
+    ? body.success_url
+    : "https://cleartopay.ctonew.app/app?checkout=success";
+  const cancelUrl = typeof body.cancel_url === "string" && body.cancel_url !== ""
+    ? body.cancel_url
+    : "https://cleartopay.ctonew.app/checkout?cancelled=1";
+
+  const baseParams: Stripe.Checkout.SessionCreateParams = {
+    mode: "subscription",
+    line_items: [{ price: priceId, quantity: 1 }],
+    subscription_data: {
+      trial_period_days: 30,
+      metadata: {
+        plan,
+        ...(tenantId !== undefined ? { tenant_id: String(tenantId) } : {}),
+      },
+    },
+    metadata: { plan, source: "site-checkout" },
+    success_url: successUrl,
+    cancel_url: cancelUrl,
+    ...(email ? { customer_email: email } : {}),
+  };
+
+  // Prefer all payment methods; retry with fewer if the account hasn't
+  // activated a method (e.g. PayPal) — an unactivated method must never break
+  // checkout.
+  const methodAttempts: Array<Stripe.Checkout.SessionCreateParams["payment_method_types"]> = [
+    ["card", "apple_pay", "google_pay", "paypal"],
+    ["card", "apple_pay", "google_pay"],
+    ["card"],
+  ];
+  let lastErr: unknown = null;
+  for (const paymentMethodTypes of methodAttempts) {
+    try {
+      const session = await stripe.checkout.sessions.create({
+        ...baseParams,
+        payment_method_types: paymentMethodTypes,
+      });
+      if (!session.url) {
+        return c.json({ error: "Stripe did not return a checkout URL" }, 500);
+      }
+      return c.json({ url: session.url });
+    } catch (err) {
+      lastErr = err;
+      console.warn(`[checkout] session create failed with payment methods ${JSON.stringify(paymentMethodTypes)}: ${String(err)}`);
+    }
+  }
+  return c.json({ error: `Could not create checkout session: ${String(lastErr)}` }, 500);
 });
 
 export default app;
