@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getDb } from "../db";
 import { requireAuth, requireTenant, findWizard, logAudit } from "../middleware";
+import { buildInboxAddress, companyNameToSlug } from "../lib/inbox";
 import type { TenantRow } from "../middleware";
 
 const app = new Hono();
@@ -27,7 +28,7 @@ app.get("/api/setup", requireAuth, requireTenant, (c) => {
         subscription_status: tenant.subscription_status,
         payment_week_start_day: tenant.payment_week_start_day,
         inbox_slug: tenant.inbox_slug,
-        inbox_address: tenant.inbox_slug ? `cleartopay-compliance-0d8d884b+${tenant.inbox_slug}@ctomail.io` : null,
+        inbox_address: buildInboxAddress(tenant.inbox_slug),
       },
       wizard: wizard
         ? {
@@ -106,12 +107,25 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
       $tid: tenantId,
     });
 
-    // Update tenant name to company_name (if provided) + payment week start day
+    // Update tenant name to company_name (if provided) + payment week start day.
+    // The user's profile name (full_name) stays in sync with the company name:
+    // the account profile name IS the company name.
     if (company_name) {
-      const slugBase = company_name.toLowerCase().replace(/[\s_-]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "company";
+      const authUser = c.get("user") as { user_id: number } | undefined;
+      if (authUser?.user_id) {
+        db.query("UPDATE users SET full_name = $name, company_name = $name WHERE id = $uid").run({
+          $name: company_name,
+          $uid: authUser.user_id,
+        });
+      }
+      // Per-company slug: company name with all non-alphanumeric characters
+      // removed, case preserved ("ABC Company" → "ABCCompany"). Only generated
+      // when the tenant has no slug yet; existing slugs (incl. backfilled ones)
+      // are kept so the submission address stays stable.
+      const slugBase = companyNameToSlug(company_name);
       const current = db.query("SELECT inbox_slug FROM tenants WHERE id=$id").get({$id:tenantId}) as {inbox_slug:string|null}|undefined;
       let slug = current?.inbox_slug || slugBase, suffix=2;
-      while (!current?.inbox_slug && db.query("SELECT id FROM tenants WHERE inbox_slug=$slug AND id!=$id").get({$slug:slug,$id:tenantId})) slug = `${slugBase.slice(0, Math.max(1,40-String(suffix).length-1))}-${suffix++}`;
+      while (!current?.inbox_slug && db.query("SELECT id FROM tenants WHERE inbox_slug=$slug COLLATE NOCASE AND id!=$id").get({$slug:slug,$id:tenantId})) slug = `${slugBase.slice(0, Math.max(1, 60 - String(suffix).length))}${suffix++}`;
       db.query(`
         UPDATE tenants SET name = $name, inbox_slug = $slug, payment_week_start_day = $day, updated_at = datetime('now')
         WHERE id = $id

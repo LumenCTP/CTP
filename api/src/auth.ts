@@ -9,6 +9,7 @@ import {
   logAudit,
 } from "./middleware";
 import { sendEmail, buildPasswordResetEmail } from "./email";
+import { buildInboxAddress } from "./lib/inbox";
 import { logPartnerAudit } from "./routes/partners";
 
 const app = new Hono();
@@ -20,9 +21,6 @@ app.post("/api/auth/register", async (c) => {
     const body = await c.req.json();
     const { full_name, company_name, email, password, referral_code, plan, subscription_plan } = body;
 
-    if (!full_name || typeof full_name !== "string" || full_name.trim().length === 0) {
-      return c.json({ error: "Full name is required" }, 400);
-    }
     if (!company_name || typeof company_name !== "string" || company_name.trim().length === 0) {
       return c.json({ error: "Company name is required" }, 400);
     }
@@ -32,6 +30,12 @@ app.post("/api/auth/register", async (c) => {
     if (!password || typeof password !== "string" || password.length < 6) {
       return c.json({ error: "Password must be at least 6 characters" }, 400);
     }
+
+    // Owner requirement: the account profile name IS the company name. When the
+    // company name is provided it becomes the user's full_name/profile name
+    // (shown in the TopBar and used wherever full_name is used). A separately
+    // supplied full_name is accepted but ignored for non-company callers.
+    const profileName = company_name.trim();
 
     // Chosen subscription plan (monthly | annual) — recorded on the tenant so
     // the admin Clients table and commission engine see the real plan.
@@ -62,7 +66,7 @@ app.post("/api/auth/register", async (c) => {
       INSERT INTO users (full_name, company_name, email, password_hash)
       VALUES ($full_name, $company_name, $email, $password_hash)
     `).run({
-      $full_name: full_name.trim(),
+      $full_name: profileName,
       $company_name: company_name.trim(),
       $email: email.trim().toLowerCase(),
       $password_hash: passwordHash,
@@ -72,7 +76,7 @@ app.post("/api/auth/register", async (c) => {
     const token = await createAuthToken({
       user_id: userId,
       email: email.trim().toLowerCase(),
-      full_name: full_name.trim(),
+      full_name: profileName,
     });
 
     // Auto-create tenant + setup wizard for the new user
@@ -115,7 +119,7 @@ app.post("/api/auth/register", async (c) => {
               $pid: partner.id,
               $code: code,
               $company: company_name.trim(),
-              $contact_name: full_name.trim(),
+              $contact_name: profileName,
               $email: email.trim().toLowerCase(),
               $tid: tenant.id,
             });
@@ -135,7 +139,7 @@ app.post("/api/auth/register", async (c) => {
       token,
       user: {
         id: userId,
-        full_name: full_name.trim(),
+        full_name: profileName,
         company_name: company_name.trim(),
         email: email.trim().toLowerCase(),
       },
@@ -341,7 +345,7 @@ app.get("/api/auth/me", async (c) => {
     payment_week_start_day: tenant?.payment_week_start_day ?? "monday",
     wizard_status: wizard?.status ?? null,
     inbox_slug: tenant?.inbox_slug ?? null,
-    inbox_address: tenant?.inbox_slug ? `cleartopay-compliance-0d8d884b+${tenant.inbox_slug}@ctomail.io` : null,
+    inbox_address: buildInboxAddress(tenant?.inbox_slug ?? null),
   });
 });
 

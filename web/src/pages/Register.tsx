@@ -5,7 +5,6 @@ import Logo from "../components/Logo";
 
 export default function Register() {
   const { user, loading, register } = useAuth();
-  const [fullName, setFullName] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -37,10 +36,6 @@ export default function Register() {
     e.preventDefault();
     setError("");
 
-    if (!fullName.trim()) {
-      setError("Full name is required.");
-      return;
-    }
     if (!companyName.trim()) {
       setError("Company name is required.");
       return;
@@ -59,7 +54,9 @@ export default function Register() {
     }
 
     setSubmitting(true);
-    const err = await register(fullName.trim(), companyName.trim(), email.trim(), password, referralCode, plan);
+    // The account profile name IS the company name — register passes the
+    // company name as the profile name (the API ignores any separate name).
+    const err = await register(companyName.trim(), companyName.trim(), email.trim(), password, referralCode, plan);
     setSubmitting(false);
 
     if (err) {
@@ -80,19 +77,6 @@ export default function Register() {
 
         <form onSubmit={handleSubmit} className="auth-form">
           <div className="form-group">
-            <label htmlFor="fullName">Full Name</label>
-            <input
-              id="fullName"
-              type="text"
-              value={fullName}
-              onChange={(e) => setFullName(e.target.value)}
-              placeholder="John Smith"
-              autoComplete="name"
-              autoFocus
-            />
-          </div>
-
-          <div className="form-group">
             <label htmlFor="companyName">Company Name</label>
             <input
               id="companyName"
@@ -101,7 +85,11 @@ export default function Register() {
               onChange={(e) => setCompanyName(e.target.value)}
               placeholder="ABC Construction"
               autoComplete="organization"
+              autoFocus
             />
+            <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 4 }}>
+              Your company name is also your account profile name.
+            </p>
           </div>
 
           <div className="form-group">

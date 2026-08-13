@@ -2,6 +2,7 @@ import { apiFetch } from "../lib/api";
 import { useEffect, useState } from "react";
 import type { DashboardStats } from "@clear-to-pay/shared";
 import { openHelp } from "../components/HelpWidget";
+import { useAuth } from "../components/AuthContext";
 
 interface ClearToPayVendor {
   vendor_id: number;
@@ -33,6 +34,7 @@ const metricCards: MetricCard[] = [
 ];
 
 export default function Dashboard() {
+  const { user } = useAuth();
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [documentCount, setDocumentCount] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -93,7 +95,7 @@ export default function Dashboard() {
         <section className="onboarding-card" aria-labelledby="onboarding-title">
           <h3 id="onboarding-title">👋 Welcome to ClearToPay! Let's get you set up.</h3>
           <p className="onboarding-intro">Complete these three steps to start tracking vendor compliance.</p>
-          {(() => { const raw = localStorage.getItem("ctp_user"); const u = raw ? JSON.parse(raw) : null; return u?.inbox_address ? <p style={{fontWeight:700}}>📥 Email documents to: {u.inbox_address}</p> : null; })()}
+          {user?.inbox_address ? <p style={{ fontWeight: 700 }}>📥 Email documents to: {user.inbox_address}</p> : null}
           <div className="onboarding-steps">
             {steps.map((step, index) => (
               <div className={`onboarding-step${step.done ? " is-complete" : ""}`} key={step.href}>

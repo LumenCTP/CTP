@@ -1,12 +1,18 @@
 import { getDb } from "./db";
 import { storageGet } from "./storage";
+import { buildInboxAddress } from "./lib/inbox";
 import type { ReportData } from "./reports";
 
 // ── Email Identity ───────────────────────────────────────
 
-const EMAIL_FROM_ADDRESS = "cleartopay-compliance-0d8d884b@ctomail.io";
-const EMAIL_FROM_NAME = "ClearToPay Docs";
-const EMAIL_REPLY_TO = "cleartopay-compliance-0d8d884b@ctomail.io";
+// Outbound sender identity. The From address/name are overridable via env vars
+// (api/.env) so they can be flipped without a redeploy; the code defaults are
+// the product's reports mailbox on the owner's domain.
+const EMAIL_FROM_ADDRESS = process.env.EMAIL_FROM_ADDRESS || "reports@cleartopayconstruction.com";
+const EMAIL_FROM_NAME = process.env.EMAIL_FROM_NAME || "ClearToPay Compliance";
+// Reply-To defaults to the same reports mailbox (it must be monitored or
+// forwarded so replies are not lost); overridable via EMAIL_REPLY_TO.
+const EMAIL_REPLY_TO = process.env.EMAIL_REPLY_TO || EMAIL_FROM_ADDRESS;
 
 // ── Attachments ──────────────────────────────────────────
 
@@ -71,14 +77,15 @@ export function parseAttachmentsJson(raw: string | null): EmailAttachment[] {
 
 /**
  * Builds the tenant's custom document-submission inbox address
- * (cleartopay-compliance-0d8d884b+<slug>@ctomail.io) from the tenant's
- * inbox_slug. Falls back to the global inbox address when the tenant has
- * no slug (or the lookup fails).
+ * (<CompanyName>@cleartopayconstruction.com, e.g. ABCCompany@cleartopayconstruction.com)
+ * from the tenant's inbox_slug. Falls back to the global sender address when
+ * the tenant has no slug (or the lookup fails).
  */
 export function getTenantInboxAddress(tenantId?: number | null): string {
   if (tenantId) {
     const row = getDb().query("SELECT inbox_slug FROM tenants WHERE id = $id").get({ $id: tenantId }) as { inbox_slug: string | null } | undefined;
-    if (row?.inbox_slug) return EMAIL_FROM_ADDRESS.replace("@", `+${row.inbox_slug}@`);
+    const addr = buildInboxAddress(row?.inbox_slug);
+    if (addr) return addr;
   }
   return EMAIL_FROM_ADDRESS;
 }
@@ -91,8 +98,8 @@ export function getTenantInboxAddress(tenantId?: number | null): string {
  * The queue is processed by the platform's email delivery system.
  * Emails are also logged to email_log for audit purposes.
  *
- * From:     ClearToPay Compliance <cleartopay-compliance-0d8d884b@ctomail.io>
- * Reply-To: cleartopay-compliance-0d8d884b@ctomail.io
+ * From:     ClearToPay Compliance <reports@cleartopayconstruction.com>
+ * Reply-To: reports@cleartopayconstruction.com
  *
  * To swap in a real email provider (SendGrid, AWS SES, Resend, etc.),
  * replace the queue insert with an HTTP fetch call.

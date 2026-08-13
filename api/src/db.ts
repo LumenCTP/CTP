@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import path from "node:path";
+import { companyNameToSlug } from "./lib/inbox";
 // NOTE: relative import — the API process (bun run) has no node_modules symlink
 // for the "@clear-to-pay/shared" workspace package (only the web app does), so
 // package-name imports only work for type-only usage (stripped at runtime).
@@ -394,9 +395,22 @@ function runMigrations(db: Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS inbox_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, raw_email_json TEXT NOT NULL, processed BOOLEAN NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')))`) ;
   ensureColumn(db, "inbox_queue", "error TEXT", "error");
   ensureColumn(db, "inbox_queue", "processed_at TEXT", "processed_at");
-  // Populate inbox slugs for tenants created before this migration.
-  const missingSlugs = db.query("SELECT id, name FROM tenants WHERE inbox_slug IS NULL OR inbox_slug = ''").all() as Array<{id:number;name:string}>;
-  for (const t of missingSlugs) { let base=(t.name||"company").toLowerCase().replace(/[\s_-]+/g,"-").replace(/[^a-z0-9-]/g,"").replace(/-+/g,"-").replace(/^-|-$/g,"").slice(0,40)||"company"; let slug=base, n=2; while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug AND id != $id").get({$slug:slug,$id:t.id})) slug=`${base.slice(0, Math.max(1,40-(String(n).length+1)))}-${n++}`; db.query("UPDATE tenants SET inbox_slug=$slug WHERE id=$id").run({$slug:slug,$id:t.id}); }
+  // Populate/re-derive inbox slugs in the owner's per-company format: company
+  // name with all non-alphanumeric characters removed, case preserved
+  // ("ABC Company" → "ABCCompany"). Tenants with a legacy lowercase-dash slug
+  // (created before this format) are re-derived on next startup; slugs that are
+  // already alphanumeric-only are left alone. Collisions are suffixed
+  // numerically ("ABCCompany2") and compared case-insensitively (email local
+  // parts are case-insensitive in practice).
+  const missingOrLegacy = db.query(
+    "SELECT id, name FROM tenants WHERE inbox_slug IS NULL OR inbox_slug = '' OR inbox_slug GLOB '*[^A-Za-z0-9]*'"
+  ).all() as Array<{ id: number; name: string }>;
+  for (const t of missingOrLegacy) {
+    const base = companyNameToSlug(t.name);
+    let slug = base, n = 2;
+    while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug COLLATE NOCASE AND id != $id").get({ $slug: slug, $id: t.id })) slug = `${base.slice(0, Math.max(1, 60 - String(n).length))}${n++}`;
+    db.query("UPDATE tenants SET inbox_slug=$slug WHERE id=$id").run({ $slug: slug, $id: t.id });
+  }
   // MVP document uploads may be unassigned until a client/vendor is selected.
   const docCols = db.query("PRAGMA table_info(documents)").all() as Array<{ name: string; notnull: number }>;
   if (docCols.some(c => (c.name === "vendor_id" || c.name === "client_id") && c.notnull === 1)) {

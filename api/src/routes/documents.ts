@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import path from "node:path";
 import { getDb } from "../db";
+import { slugFromToAddress } from "../lib/inbox";
 import { QUEUE_SECRET } from "../secrets";
 import { logAudit, requireQueueSecret } from "../middleware";
 import { extractDocumentInfoFromBytes } from "../extract";
@@ -90,7 +91,7 @@ app.post("/api/inbox/ingest", async (c) => {
     if (!Array.isArray(body?.attachments) || body.attachments.length === 0) return c.json({error:"attachments must be a non-empty array"},400);
     const db = getDb();
     let tenantId = c.get("tenant_id") as number | undefined;
-    if (!tenantId && c.req.header("X-Queue-Secret") === QUEUE_SECRET && typeof body.tenant_slug === "string") { const t = db.query("SELECT id FROM tenants WHERE inbox_slug=$slug").get({$slug:body.tenant_slug}) as {id:number}|undefined; if (!t) return c.json({error:"Unknown tenant_slug"},404); tenantId=t.id; }
+    if (!tenantId && c.req.header("X-Queue-Secret") === QUEUE_SECRET && typeof body.tenant_slug === "string") { const t = db.query("SELECT id FROM tenants WHERE inbox_slug=$slug COLLATE NOCASE").get({$slug:body.tenant_slug}) as {id:number}|undefined; if (!t) return c.json({error:"Unknown tenant_slug"},404); tenantId=t.id; }
     if (!tenantId) return c.json({error:"Tenant is required"},401);
     const clientId = body.client_id == null ? null : Number(body.client_id), vendorId = body.vendor_id == null ? null : Number(body.vendor_id);
     if (clientId !== null && !Number.isInteger(clientId) || vendorId !== null && !Number.isInteger(vendorId)) return c.json({error:"Invalid client_id or vendor_id"},400);
@@ -107,9 +108,9 @@ app.post("/api/inbox/ingest", async (c) => {
 // POST /api/inbox/receive — queue raw email from an external mailbox poller.
 app.post("/api/inbox/receive", async (c) => {
   const denied = requireQueueSecret(c); if (denied) return denied;
-  try { const body = await c.req.json(); const to=String(body.to_address||""); const local=to.split("@")[0]; const slug=(local.match(/\+([a-z0-9-]+)/i)||[])[1];
-    if (!slug || !Array.isArray(body.attachments)) return c.json({error:"to_address with +tenant-slug and attachments are required"},400);
-    const db=getDb(); const t=db.query("SELECT id FROM tenants WHERE inbox_slug=$slug").get({$slug:slug}) as {id:number}|undefined; if(!t) return c.json({error:"Unknown tenant slug"},404);
+  try { const body = await c.req.json(); const slug=slugFromToAddress(String(body.to_address||""));
+    if (!slug || !Array.isArray(body.attachments)) return c.json({error:"to_address with a tenant address and attachments are required"},400);
+    const db=getDb(); const t=db.query("SELECT id FROM tenants WHERE inbox_slug=$slug COLLATE NOCASE").get({$slug:slug}) as {id:number}|undefined; if(!t) return c.json({error:"Unknown tenant slug"},404);
     const raw={...body,tenant_slug:slug}; const q=db.query("INSERT INTO inbox_queue (raw_email_json,processed) VALUES ($raw,1)").run({$raw:JSON.stringify(raw)});
     const docs=[]; for(const a of body.attachments) { if(typeof a.filename!=="string"||typeof a.content_base64!=="string"||typeof a.content_type!=="string") return c.json({error:"Invalid attachment"},400); const content=Uint8Array.from(atob(a.content_base64.replace(/^data:[^;]+;base64,/,"")),ch=>ch.charCodeAt(0)); docs.push(await ingestDocumentAttachment({db,tenantId:t.id,filename:a.filename,content,contentType:a.content_type,senderName:body.from_name,senderEmail:body.from_address})); }
     return c.json({queued:true,queue_id:Number(q.lastInsertRowid),documents:docs},201); } catch(err){ console.error("[inbox/receive]",err); return c.json({error:String(err)},400); }

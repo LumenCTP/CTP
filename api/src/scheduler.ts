@@ -1,4 +1,5 @@
 import { getDb } from "./db";
+import { slugFromToAddress } from "./lib/inbox";
 import { gatherReportData, generatePdfReport, generateExcelReport } from "./reports";
 import {
   sendEmail,
@@ -30,18 +31,18 @@ function inboxPollTick(): void {
     for (const row of rows) {
       try {
         const email = JSON.parse(row.raw_email_json);
-        // Extract slug from to_address
-        let tenantSlug: string | null = null;
+        // Extract slug from to_address — supports both the current
+        // "<Slug>@cleartopayconstruction.com" format and the legacy
+        // "…+<slug>@ctomail.io" +subaddress format.
         const toAddr = email.to_address || "";
-        const slugMatch = toAddr.match(/\+([a-z0-9-]+)@/i);
-        if (slugMatch) tenantSlug = slugMatch[1];
+        const tenantSlug = slugFromToAddress(toAddr) || null;
 
         if (!tenantSlug) {
           db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now'), error = 'no slug in to_address' WHERE id = ?", [row.id]);
           continue;
         }
 
-        const tenant = db.query("SELECT id FROM tenants WHERE inbox_slug = ?").get(tenantSlug) as { id: number } | undefined;
+        const tenant = db.query("SELECT id FROM tenants WHERE inbox_slug = ? COLLATE NOCASE").get(tenantSlug) as { id: number } | undefined;
         if (!tenant) {
           db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now'), error = 'tenant not found' WHERE id = ?", [row.id]);
           continue;

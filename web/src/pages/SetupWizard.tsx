@@ -84,7 +84,12 @@ export default function SetupWizard() {
         }
       })
       .catch(() => {})
-      .finally(() => setLoadingWizard(false));
+      .finally(() => {
+        setLoadingWizard(false);
+        // Refresh the cached user from /api/auth/me so inbox_address (and any
+        // profile-name sync) is current for the confirmation step and TopBar.
+        void refreshUser();
+      });
   }, [token]);
 
   // When resuming with a saved compliance client, load its configured requirements

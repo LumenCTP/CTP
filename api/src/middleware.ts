@@ -1,4 +1,5 @@
 import { getDb } from "./db";
+import { companyNameToSlug } from "./lib/inbox";
 import { QUEUE_SECRET } from "./secrets";
 
 // All tenant-owned data endpoints require both authentication and a tenant.
@@ -161,9 +162,11 @@ export function createTenantForUser(
 ): TenantRow {
   const name = opts?.name || "My Company";
   const status = opts?.subscription_status || "TRIAL";
-  const base = name.toLowerCase().replace(/[\s_-]+/g, "-").replace(/[^a-z0-9-]/g, "").replace(/-+/g, "-").replace(/^-|-$/g, "").slice(0, 40) || "company";
+  // Per-company slug: company name with all non-alphanumeric characters
+  // removed, case preserved ("ABC Company" → "ABCCompany").
+  const base = companyNameToSlug(name);
   let slug = base, suffix = 2;
-  while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug").get({ $slug: slug })) slug = `${base.slice(0, Math.max(1, 40 - String(suffix).length - 1))}-${suffix++}`;
+  while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug COLLATE NOCASE").get({ $slug: slug })) slug = `${base.slice(0, Math.max(1, 60 - String(suffix).length))}${suffix++}`;
   const result = db.query(`
     INSERT INTO tenants (name, owner_user_id, subscription_status, subscription_period_start, subscription_period_end, inbox_slug, subscription_plan)
     VALUES ($name, $uid, $status, $start, $end, $slug, $plan)
