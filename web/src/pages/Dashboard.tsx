@@ -83,7 +83,10 @@ export default function Dashboard() {
     <div className="dashboard">
       <div className="dashboard-heading">
         <h2 className="page-title">Dashboard</h2>
-        {hasClients && <button className="setup-guide-link" onClick={() => setShowGuide((visible) => !visible)}>{showGuide ? "Hide Setup Guide" : "Setup Guide"}</button>}
+        <div className="dashboard-heading-actions">
+          {hasClients && <button className="setup-guide-link" onClick={() => setShowGuide((visible) => !visible)}>{showGuide ? "Hide Setup Guide" : "Setup Guide"}</button>}
+          <button className="setup-guide-link" onClick={() => openHelp()}>Help & Support</button>
+        </div>
       </div>
 
       {showGuide && (
