@@ -142,6 +142,74 @@ function handleSubscriptionEvent(event: any): { handled: boolean; note: string }
   return { handled: true, note: `tenant ${tenant.id} updated` };
 }
 
+/** Find the tenant a subscription invoice belongs to — via stripe_customer_id or
+ * stripe_subscription_id stored on the tenant. */
+function findTenantForInvoice(db: ReturnType<typeof getDb>, invoice: any): { id: number; name: string } | undefined {
+  const customer = typeof invoice?.customer === "string" ? invoice.customer : null;
+  if (customer) {
+    const t = db.query("SELECT id, name FROM tenants WHERE stripe_customer_id = $cus").get({ $cus: customer }) as { id: number; name: string } | undefined;
+    if (t) return t;
+  }
+  const sub = typeof invoice?.subscription === "string" ? invoice.subscription : null;
+  if (sub) {
+    const t = db.query("SELECT id, name FROM tenants WHERE stripe_subscription_id = $sub").get({ $sub: sub }) as { id: number; name: string } | undefined;
+    if (t) return t;
+  }
+  return undefined;
+}
+
+/** invoice.payment_succeeded — a subscription payment went through. Update the
+ * tenant's billing period from the invoice line period (the source of truth for
+ * renewal dates) and set the status back to ACTIVE. */
+function handleInvoicePaymentSucceeded(event: any): { handled: boolean; note: string } {
+  const invoice = event?.data?.object ?? {};
+  const db = getDb();
+  const tenant = findTenantForInvoice(db, invoice);
+  if (!tenant) {
+    const note = `invoice ${invoice.id ?? "?"} for customer ${invoice.customer ?? "?"} — no tenant match (stripe_customer_id or stripe_subscription_id)`;
+    console.warn(`[stripe] invoice.payment_succeeded: ${note}`);
+    return { handled: false, note };
+  }
+  const period = invoice?.lines?.data?.[0]?.period;
+  let start: string | null = null;
+  let end: string | null = null;
+  if (period?.start) start = new Date(period.start * 1000).toISOString().slice(0, 10);
+  if (period?.end) end = new Date(period.end * 1000).toISOString().slice(0, 10);
+  db.query(`
+    UPDATE tenants
+    SET subscription_status = 'ACTIVE',
+        subscription_period_start = COALESCE($start, subscription_period_start),
+        subscription_period_end = COALESCE($end, subscription_period_end),
+        updated_at = datetime('now')
+    WHERE id = $tid
+  `).run({ $start: start, $end: end, $tid: tenant.id });
+  logAudit(db, "tenant", tenant.id, "invoice_payment_succeeded", { invoice: invoice.id ?? null, period_start: start, period_end: end });
+  console.log(`[stripe] invoice.payment_succeeded: tenant ${tenant.id} (${tenant.name}) → period ${start ?? "?"} → ${end ?? "?"}`);
+  return { handled: true, note: `tenant ${tenant.id} period updated` };
+}
+
+/** invoice.payment_failed — a subscription renewal payment failed. Flag the
+ * tenant PAST_DUE so the client sees the hold until payment is collected. */
+function handleInvoicePaymentFailed(event: any): { handled: boolean; note: string } {
+  const invoice = event?.data?.object ?? {};
+  const db = getDb();
+  const tenant = findTenantForInvoice(db, invoice);
+  if (!tenant) {
+    const note = `invoice ${invoice.id ?? "?"} for customer ${invoice.customer ?? "?"} — no tenant match (stripe_customer_id or stripe_subscription_id)`;
+    console.warn(`[stripe] invoice.payment_failed: ${note}`);
+    return { handled: false, note };
+  }
+  db.query(`
+    UPDATE tenants
+    SET subscription_status = 'PAST_DUE',
+        updated_at = datetime('now')
+    WHERE id = $tid
+  `).run({ $tid: tenant.id });
+  logAudit(db, "tenant", tenant.id, "invoice_payment_failed", { invoice: invoice.id ?? null, attempt: invoice.attempt ?? null });
+  console.log(`[stripe] invoice.payment_failed: tenant ${tenant.id} (${tenant.name}) → PAST_DUE`);
+  return { handled: true, note: `tenant ${tenant.id} marked PAST_DUE` };
+}
+
 function handleAccountUpdated(event: any): { handled: boolean; note: string } {
   const account = event?.data?.object ?? {};
   const db = getDb();
@@ -423,6 +491,18 @@ app.post("/api/webhooks/stripe", async (c) => {
       return c.json({ received: true, event_type: type, handled: result.handled, note: result.note });
     }
 
+    if (type === "invoice.payment_succeeded") {
+      // Renewal (or initial) invoice paid — real billing period dates.
+      const result = handleInvoicePaymentSucceeded(event);
+      return c.json({ received: true, event_type: type, handled: result.handled, note: result.note });
+    }
+
+    if (type === "invoice.payment_failed") {
+      // Renewal payment failed — flag the tenant PAST_DUE.
+      const result = handleInvoicePaymentFailed(event);
+      return c.json({ received: true, event_type: type, handled: result.handled, note: result.note });
+    }
+
     if (type === "account.updated") {
       const result = handleAccountUpdated(event);
       return c.json({ received: true, event_type: type, handled: result.handled, note: result.note });
@@ -563,31 +643,19 @@ app.post("/api/checkout/session", async (c) => {
     ...(email ? { customer_email: email } : {}),
   };
 
-  // Prefer all payment methods; retry with fewer if the account hasn't
-  // activated a method (e.g. PayPal) — an unactivated method must never break
-  // checkout.
-  const methodAttempts: Array<Stripe.Checkout.SessionCreateParams["payment_method_types"]> = [
-    ["card", "apple_pay", "google_pay", "paypal"],
-    ["card", "apple_pay", "google_pay"],
-    ["card"],
-  ];
-  let lastErr: unknown = null;
-  for (const paymentMethodTypes of methodAttempts) {
-    try {
-      const session = await stripe.checkout.sessions.create({
-        ...baseParams,
-        payment_method_types: paymentMethodTypes,
-      });
-      if (!session.url) {
-        return c.json({ error: "Stripe did not return a checkout URL" }, 500);
-      }
-      return c.json({ url: session.url });
-    } catch (err) {
-      lastErr = err;
-      console.warn(`[checkout] session create failed with payment methods ${JSON.stringify(paymentMethodTypes)}: ${String(err)}`);
+  // Do NOT hard-code payment methods — Stripe dynamically determines and
+  // displays the payment methods eligible for the customer/device/location
+  // (card, Apple Pay, Google Pay, Amazon Pay, Cash App Pay, Link, ...).
+  try {
+    const session = await stripe.checkout.sessions.create(baseParams);
+    if (!session.url) {
+      return c.json({ error: "Stripe did not return a checkout URL" }, 500);
     }
+    return c.json({ url: session.url });
+  } catch (err) {
+    console.error("[checkout] session create failed:", err);
+    return c.json({ error: `Could not create checkout session: ${String(err)}` }, 500);
   }
-  return c.json({ error: `Could not create checkout session: ${String(lastErr)}` }, 500);
 });
 
 export default app;
