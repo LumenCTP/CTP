@@ -1,27 +1,39 @@
 import { Hono } from "hono";
 import { getDb } from "../db";
 import { requireQueueSecret } from "../middleware";
-import { sendEmail, buildWeeklyReportEmail, buildRenewalReminderEmail, parseRecipients } from "../email";
-import { gatherReportData } from "../reports";
+import { sendEmail, buildWeeklyReportEmail, buildRenewalReminderEmail, parseRecipients, parseAttachmentsJson, resolveEmailAttachments } from "../email";
+import { gatherReportData, generatePdfReport, generateExcelReport } from "../reports";
+import { storagePut } from "../storage";
 
 const app = new Hono();
 
 // ── Email Queue Processing ─────────────────────────────────
 
 // POST /api/emails/process-queue — claim/read queued messages for the delivery worker.
-app.post("/api/emails/process-queue", (c) => {
+// Attachments are resolved from the storage layer at claim time: each queued
+// attachment's metadata (filename, contentType, storageKey) is looked up via
+// storageGet and returned inline as base64, so the outbound payload carries
+// filename + MIME + bytes without the DB ever holding file payloads.
+app.post("/api/emails/process-queue", async (c) => {
   const denied = requireQueueSecret(c);
   if (denied) return denied;
   try {
     const db = getDb();
     const rows = db.query(`
       SELECT id, from_address, from_name, reply_to, recipient_email, subject,
-             html_body, client_id, vendor_id, email_type
+             html_body, attachments, client_id, vendor_id, email_type
       FROM outgoing_email_queue
       WHERE status = 'queued'
       ORDER BY id ASC
-    `).all();
-    return c.json(rows);
+    `).all() as Array<Record<string, unknown> & { attachments: string | null }>;
+
+    const out = [];
+    for (const row of rows) {
+      const atts = parseAttachmentsJson(row.attachments);
+      const resolved = atts.length > 0 ? await resolveEmailAttachments(atts) : [];
+      out.push({ ...row, attachments: resolved });
+    }
+    return c.json(out);
   } catch (err) {
     return c.json({ error: String(err) }, 500);
   }
@@ -197,7 +209,7 @@ app.post("/api/emails/test-weekly/:client_id", async (c) => {
     // Get email config to know recipients
     const config = db.query(
       "SELECT weekly_report_recipients FROM client_email_config WHERE client_id = $client_id AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)"
-    ).get({ $client_id: clientId }) as { weekly_report_recipients: string | null } | undefined;
+    ).get({ $client_id: clientId, $tenant_id: c.get("tenant_id") as number }) as { weekly_report_recipients: string | null } | undefined;
 
     if (!config?.weekly_report_recipients) {
       return c.json({ error: "No weekly report recipients configured. Set them up first." }, 400);
@@ -207,6 +219,30 @@ app.post("/api/emails/test-weekly/:client_id", async (c) => {
 
     // Gather report data
     const reportData = gatherReportData(clientId);
+
+    // Generate and persist the same PDF + XLSX report files the Monday
+    // scheduler attaches, so the test email carries identical attachments.
+    const timestamp = Date.now();
+    const clientSlug = client.name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
+    const tenantPrefix = `reports/tenant-${c.get("tenant_id") as number}`;
+
+    const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
+    const pdfDoc = generatePdfReport(reportData);
+    const pdfBuffers: Buffer[] = [];
+    for await (const chunk of pdfDoc) {
+      pdfBuffers.push(Buffer.from(chunk));
+    }
+    await storagePut(`${tenantPrefix}/${pdfFilename}`, Buffer.concat(pdfBuffers), "application/pdf");
+
+    const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
+    const xlsxBuffer = await generateExcelReport(reportData);
+    await storagePut(`${tenantPrefix}/${xlsxFilename}`, xlsxBuffer,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+    const attachments = [
+      { filename: pdfFilename, contentType: "application/pdf", storageKey: `${tenantPrefix}/${pdfFilename}` },
+      { filename: xlsxFilename, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", storageKey: `${tenantPrefix}/${xlsxFilename}` },
+    ];
 
     // Build email
     const emailBody = buildWeeklyReportEmail(client.name, {
@@ -221,12 +257,13 @@ app.post("/api/emails/test-weekly/:client_id", async (c) => {
 
     const subject = `[TEST] Clear-to-Pay Weekly Report — ${reportData.payment_week.week_start} to ${reportData.payment_week.week_end}`;
 
-    sendEmail(recipients, subject, emailBody, clientId, undefined, "weekly_report");
+    sendEmail(recipients, subject, emailBody, clientId, undefined, "weekly_report", attachments);
 
     return c.json({
       success: true,
       recipients,
       subject,
+      attachments: attachments.map((a) => ({ filename: a.filename, contentType: a.contentType, storageKey: a.storageKey })),
       summary: {
         approved_count: reportData.approved.length,
         review_count: reportData.review.length,

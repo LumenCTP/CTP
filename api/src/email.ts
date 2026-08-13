@@ -1,4 +1,5 @@
 import { getDb } from "./db";
+import { storageGet } from "./storage";
 import type { ReportData } from "./reports";
 
 // ── Email Identity ───────────────────────────────────────
@@ -6,6 +7,65 @@ import type { ReportData } from "./reports";
 const EMAIL_FROM_ADDRESS = "cleartopay-compliance-0d8d884b@ctomail.io";
 const EMAIL_FROM_NAME = "ClearToPay Docs";
 const EMAIL_REPLY_TO = "cleartopay-compliance-0d8d884b@ctomail.io";
+
+// ── Attachments ──────────────────────────────────────────
+
+/**
+ * An attachment referenced by an outgoing email. The queue row stores only
+ * this lightweight metadata (JSON in outgoing_email_queue.attachments) — the
+ * file bytes stay in the storage layer and are resolved at send time via
+ * storageGet, so big payloads are never copied into the DB.
+ */
+export interface EmailAttachment {
+  /** Client-visible filename, e.g. "ClearToPay_Acme_1786….pdf". */
+  filename: string;
+  /** MIME type, e.g. "application/pdf". */
+  contentType: string;
+  /** Storage key the file was stored under (storagePut), e.g. "reports/tenant-49/….pdf". */
+  storageKey: string;
+}
+
+/**
+ * Resolves queued attachment metadata against the storage layer, returning the
+ * file bytes as base64 for delivery. Used by the queue worker (process-queue)
+ * so the outbound payload carries filename + MIME + non-empty bytes. Returns
+ * `resolved: false` (contentBase64 null) when the object is missing so the
+ * worker can still deliver the body while flagging the gap.
+ */
+export async function resolveEmailAttachments(
+  attachments: EmailAttachment[],
+): Promise<Array<EmailAttachment & { contentBase64: string | null; resolved: boolean }>> {
+  const out: Array<EmailAttachment & { contentBase64: string | null; resolved: boolean }> = [];
+  for (const a of attachments) {
+    try {
+      const obj = await storageGet(a.storageKey);
+      if (obj && obj.data.length > 0) {
+        out.push({ ...a, contentBase64: obj.data.toString("base64"), resolved: true });
+      } else {
+        out.push({ ...a, contentBase64: null, resolved: false });
+      }
+    } catch (err) {
+      console.error(`[email] Attachment resolve failed for ${a.storageKey}:`, err);
+      out.push({ ...a, contentBase64: null, resolved: false });
+    }
+  }
+  return out;
+}
+
+/** Parses the JSON in outgoing_email_queue.attachments into EmailAttachment[]. */
+export function parseAttachmentsJson(raw: string | null): EmailAttachment[] {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter(
+      (a): a is EmailAttachment =>
+        !!a && typeof a.filename === "string" && typeof a.contentType === "string" && typeof a.storageKey === "string",
+    );
+  } catch {
+    return [];
+  }
+}
 
 // ── Tenant Inbox Address ──────────────────────────────────
 
@@ -44,6 +104,7 @@ export function sendEmail(
   clientId?: number,
   vendorId?: number,
   emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout",
+  attachments?: EmailAttachment[],
 ): void {
   const db = getDb();
 
@@ -54,6 +115,7 @@ export function sendEmail(
   console.log(`[email] To: ${to.join(", ")}`);
   console.log(`[email] Subject: ${subject}`);
   console.log(`[email] Type: ${emailType ?? "manual"}`);
+  console.log(`[email] Attachments: ${attachments ? attachments.map((a) => `${a.filename} (${a.contentType})`).join(", ") || "(none)" : "(none)"}`);
   console.log("══════════════════════════════════════════════");
 
   // Log to email_log for every recipient
@@ -61,6 +123,8 @@ export function sendEmail(
     INSERT INTO email_log (client_id, vendor_id, email_type, recipient_email, subject, status, sent_at)
     VALUES ($client_id, $vendor_id, $email_type, $recipient_email, $subject, 'queued', datetime('now'))
   `);
+
+  const attachmentsJson = attachments && attachments.length > 0 ? JSON.stringify(attachments) : null;
 
   for (const recipient of to) {
     insertStmt.run({
@@ -73,8 +137,8 @@ export function sendEmail(
 
     // Queue for delivery
     db.query(`
-      INSERT INTO outgoing_email_queue (from_address, from_name, reply_to, recipient_email, subject, html_body, client_id, vendor_id, email_type)
-      VALUES ($from_addr, $from_name, $reply_to, $recipient, $subject, $body, $client_id, $vendor_id, $email_type)
+      INSERT INTO outgoing_email_queue (from_address, from_name, reply_to, recipient_email, subject, html_body, attachments, client_id, vendor_id, email_type)
+      VALUES ($from_addr, $from_name, $reply_to, $recipient, $subject, $body, $attachments, $client_id, $vendor_id, $email_type)
     `).run({
       $from_addr: EMAIL_FROM_ADDRESS,
       $from_name: EMAIL_FROM_NAME,
@@ -82,6 +146,7 @@ export function sendEmail(
       $recipient: recipient.trim(),
       $subject: subject,
       $body: htmlBody,
+      $attachments: attachmentsJson,
       $client_id: clientId ?? null,
       $vendor_id: vendorId ?? null,
       $email_type: emailType ?? "weekly_report",
@@ -430,4 +495,77 @@ export function markReminderSent(documentId: number, reminderDays: number): void
   db.query(
     "INSERT OR IGNORE INTO renewal_reminders_sent (document_id, reminder_days) VALUES ($document_id, $reminder_days)"
   ).run({ $document_id: documentId, $reminder_days: reminderDays });
+}
+
+// ── Multipart message builder ────────────────────────────
+// Builds a complete RFC 2822 MIME message (multipart/alternative + attachments)
+// from a queued email row. Used by the delivery worker contract test to prove
+// the queue row + resolved storage bytes form a valid email with both report
+// files attached; also the seam a direct SMTP sender would use.
+
+/** Base64 content of an attachment in the order it should appear in the MIME body. */
+export interface ResolvedAttachmentPart {
+  filename: string;
+  contentType: string;
+  contentBase64: string | null;
+}
+
+const CRLF = "\r\n";
+
+function base64Wrap(b64: string, lineLength = 76): string {
+  const out: string[] = [];
+  for (let i = 0; i < b64.length; i += lineLength) out.push(b64.slice(i, i + lineLength));
+  return out.join(CRLF);
+}
+
+/**
+ * Builds a multipart/alternative MIME message with an HTML part and one
+ * application/octet-stream attachment part per resolved attachment. Returns
+ * the complete message as a string (headers + body) that can be handed to any
+ * SMTP client.
+ */
+export function buildMultipartMessage(opts: {
+  fromAddress: string;
+  fromName: string;
+  replyTo: string;
+  to: string[];
+  subject: string;
+  htmlBody: string;
+  attachments: ResolvedAttachmentPart[];
+}): string {
+  const boundary = `ctp-boundary-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  const lines: string[] = [];
+
+  // Headers
+  lines.push(`From: ${opts.fromName} <${opts.fromAddress}>`);
+  lines.push(`To: ${opts.to.join(", ")}`);
+  lines.push(`Reply-To: ${opts.replyTo}`);
+  lines.push(`Subject: ${opts.subject.replace(/[\r\n]/g, " ")}`);
+  lines.push(`MIME-Version: 1.0`);
+  lines.push(`Content-Type: multipart/alternative; boundary="${boundary}"`);
+  lines.push("");
+
+  // HTML body part
+  lines.push(`--${boundary}`);
+  lines.push(`Content-Type: text/html; charset="utf-8"`);
+  lines.push(`Content-Transfer-Encoding: 7bit`);
+  lines.push("");
+  lines.push(opts.htmlBody);
+  lines.push("");
+
+  // Attachment parts
+  for (const att of opts.attachments) {
+    lines.push(`--${boundary}`);
+    lines.push(`Content-Type: ${att.contentType}; name="${att.filename.replace(/["\r\n]/g, "")}"`);
+    lines.push(`Content-Transfer-Encoding: base64`);
+    lines.push(`Content-Disposition: attachment; filename="${att.filename.replace(/["\r\n]/g, "")}"`);
+    lines.push("");
+    if (att.contentBase64) {
+      lines.push(base64Wrap(att.contentBase64));
+    }
+    lines.push("");
+  }
+
+  lines.push(`--${boundary}--`);
+  return lines.join(CRLF);
 }

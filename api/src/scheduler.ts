@@ -167,6 +167,14 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
       await storagePut(`${tenantPrefix}/${xlsxFilename}`, xlsxBuffer,
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
 
+      // Both report files are persisted via the storage layer; the email only
+      // references them by storage key (resolved to bytes at send time), so the
+      // queue never carries the file payloads.
+      const attachments = [
+        { filename: pdfFilename, contentType: "application/pdf", storageKey: `${tenantPrefix}/${pdfFilename}` },
+        { filename: xlsxFilename, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", storageKey: `${tenantPrefix}/${xlsxFilename}` },
+      ];
+
       // Build email body
       const emailBody = buildWeeklyReportEmail(config.client_name, {
         approved_count: reportData.approved.length,
@@ -181,7 +189,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
       const recipients = parseRecipients(config.weekly_report_recipients);
       const subject = `Clear-to-Pay Weekly Report — ${reportData.payment_week.week_start} to ${reportData.payment_week.week_end}`;
 
-      sendEmail(recipients, subject, emailBody, config.client_id, undefined, "weekly_report");
+      sendEmail(recipients, subject, emailBody, config.client_id, undefined, "weekly_report", attachments);
       console.log(`[scheduler] Weekly report sent for client ${config.client_id}`);
     } catch (err) {
       console.error(`[scheduler] Error generating weekly report for client ${config.client_id}:`, err);

@@ -224,6 +224,7 @@ function runMigrations(db: Database): void {
       recipient_email TEXT NOT NULL,
       subject TEXT NOT NULL,
       html_body TEXT NOT NULL,
+      attachments TEXT,
       client_id INTEGER,
       vendor_id INTEGER,
       email_type TEXT NOT NULL DEFAULT 'manual',
@@ -499,6 +500,12 @@ function runMigrations(db: Database): void {
     db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_client_id ON email_log(client_id); CREATE INDEX IF NOT EXISTS idx_email_log_email_type ON email_log(email_type); CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);");
     console.log("[db] Extended email_log.email_type CHECK to include partner_payout");
   }
+
+  // Email attachments: JSON array of { filename, contentType, storageKey } on
+  // outgoing_email_queue rows. The delivery worker resolves the bytes from
+  // storage when it claims the row (process-queue), so no payload is stored in
+  // the DB itself.
+  ensureColumn(db, "outgoing_email_queue", "attachments TEXT", "attachments");
 
   // Backfill legacy/test users so every authenticated user has an isolated tenant.
   const legacyUsers = db.query("SELECT id, company_name FROM users WHERE tenant_id IS NULL").all() as Array<{ id: number; company_name: string }>;
