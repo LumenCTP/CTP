@@ -49,6 +49,17 @@ export interface ExtractionResult {
   document_type: string | null;
   ai_confidence_score: number;
   /**
+   * Producer block (top-right of an ACORD COI — the agency/agent that issued
+   * the certificate, incl. contact person, phone and email). Only populated
+   * for COI-type documents; null for every other type (there is no producer
+   * on a W-9 etc.). The producer email is the preferred renewal-reminder
+   * recipient for COIs.
+   */
+  producer_name: string | null;
+  producer_contact: string | null;
+  producer_email: string | null;
+  producer_phone: string | null;
+  /**
    * How this extraction was produced:
    *  - "ai"        — real vision-model extraction (image or rendered PDF page)
    *  - "filename"  — honest filename-only fallback (no fabricated fields)
@@ -228,6 +239,9 @@ async function callVisionAI(
           "and insurance certificates (general liability, workers compensation, commercial auto, umbrella). " +
           "Extract the requested fields from the document image. " +
           "If a field is not visible or illegible, return null for it — never guess or invent values. " +
+          "For COI documents, also read the PRODUCER block at the TOP-RIGHT of the form " +
+          "(the agency/agent that issued the certificate — agency name, contact person, phone, email). " +
+          "For every NON-COI document type, producer fields must be null — there is no producer block. " +
           'Return ONLY valid JSON with no commentary and no markdown, matching this schema exactly: ' +
           JSON.stringify({
             document_type:
@@ -241,6 +255,14 @@ async function callVisionAI(
             certificate_holder_address: "string or null",
             insured_address: "string or null",
             form_date: '"YYYY-MM-DD" or null (only for W-9 forms)',
+            producer_name:
+              "string or null — agency/agent name from the Producer block (top-right) of a COI; MUST be null for non-COI documents",
+            producer_contact:
+              "string or null — contact person name in the Producer block of a COI; MUST be null for non-COI documents",
+            producer_email:
+              "string or null — email address in the Producer block of a COI (e.g. agent@agency.com); MUST be null for non-COI documents",
+            producer_phone:
+              "string or null — phone number in the Producer block of a COI; MUST be null for non-COI documents",
             ai_confidence_score: "number 0.0 to 1.0 — overall confidence in this extraction",
             certificate_holder_name_confidence:
               "number 0.0 to 1.0 — 0 when certificate_holder is null",
@@ -488,6 +510,13 @@ function normalizeExtraction(raw: any, fileName: string): ExtractionResult | nul
     insured_address: cleanString(raw.insured_address),
     form_date: normalizeDate(raw.form_date),
     document_type: documentType,
+    // Producer block exists only on COIs (ACORD top-right). Any value the model
+    // returns for a non-COI document is a misread — null it out so the
+    // renewal-reminder recipient logic can never pick up a bogus email.
+    producer_name: documentType === "COI" ? cleanString(raw.producer_name) : null,
+    producer_contact: documentType === "COI" ? cleanString(raw.producer_contact) : null,
+    producer_email: documentType === "COI" ? cleanString(raw.producer_email) : null,
+    producer_phone: documentType === "COI" ? cleanString(raw.producer_phone) : null,
     ai_confidence_score: confidence,
     extraction_method: "ai",
   };
@@ -546,6 +575,10 @@ function honestFallback(fileName: string): ExtractionResult {
     insured_address: null,
     form_date: null,
     document_type: documentType,
+    producer_name: null,
+    producer_contact: null,
+    producer_email: null,
+    producer_phone: null,
     ai_confidence_score: 0,
     extraction_method: "filename",
   };

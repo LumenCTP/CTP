@@ -58,7 +58,7 @@ export async function ingestDocumentAttachment(opts: {
     // new extraction — including high-confidence AI ones — until a human reviews
     // it. The honest filename fallback therefore lands in Needs Review too, and
     // no fabricated/filename-only data can ever drive compliance statuses.
-    db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,document_type,ai_confidence_score,extraction_method) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$type,$confidence,$method)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$type:extraction.document_type,$confidence:extraction.ai_confidence_score,$method:extraction.extraction_method});
+    db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,producer_name,producer_contact,producer_email,producer_phone,document_type,ai_confidence_score,extraction_method) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$prod_name,$prod_contact,$prod_email,$prod_phone,$type,$confidence,$method)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$prod_name:extraction.producer_name,$prod_contact:extraction.producer_contact,$prod_email:extraction.producer_email,$prod_phone:extraction.producer_phone,$type:extraction.document_type,$confidence:extraction.ai_confidence_score,$method:extraction.extraction_method});
     db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
     // Auto-create client/vendor rows ONLY from real AI extraction with high
     // holder confidence. The honest fallback sets confidence 0 and
@@ -153,6 +153,10 @@ app.get("/api/documents", (c) => {
         de.certificate_holder_name_confidence,
         de.insured_address,
         de.w9_form_date,
+        de.producer_name,
+        de.producer_contact,
+        de.producer_email,
+        de.producer_phone,
         de.extraction_method,
         de.document_type AS extracted_document_type
       FROM documents d
@@ -218,6 +222,10 @@ app.get("/api/documents/:id", (c) => {
         de.certificate_holder_name_confidence,
         de.insured_address,
         de.w9_form_date,
+        de.producer_name,
+        de.producer_contact,
+        de.producer_email,
+        de.producer_phone,
         de.extraction_method,
         de.document_type AS extracted_document_type
       FROM documents d
@@ -236,7 +244,7 @@ app.get("/api/documents/:id", (c) => {
     const extractions = db.query(`
       SELECT id, document_id, vendor_name, insurance_carrier, policy_number,
              effective_date, expiration_date, certificate_holder, document_type,
-             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, is_reviewed, extraction_method, extracted_at
+             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, producer_name, producer_contact, producer_email, producer_phone, is_reviewed, extraction_method, extracted_at
       FROM document_extractions
       WHERE document_id = $document_id
       ORDER BY extracted_at DESC
@@ -314,6 +322,10 @@ app.put("/api/documents/:id/extraction", async (c) => {
       expiration_date,
       certificate_holder,
       document_type,
+      producer_name,
+      producer_contact,
+      producer_email,
+      producer_phone,
       is_reviewed,
       vendor_id,
       client_id,
@@ -350,6 +362,22 @@ app.put("/api/documents/:id/extraction", async (c) => {
     if (document_type !== undefined) {
       updates.push("document_type = $document_type");
       params.$document_type = document_type?.trim() || null;
+    }
+    if (producer_name !== undefined) {
+      updates.push("producer_name = $producer_name");
+      params.$producer_name = producer_name?.trim() || null;
+    }
+    if (producer_contact !== undefined) {
+      updates.push("producer_contact = $producer_contact");
+      params.$producer_contact = producer_contact?.trim() || null;
+    }
+    if (producer_email !== undefined) {
+      updates.push("producer_email = $producer_email");
+      params.$producer_email = producer_email?.trim() || null;
+    }
+    if (producer_phone !== undefined) {
+      updates.push("producer_phone = $producer_phone");
+      params.$producer_phone = producer_phone?.trim() || null;
     }
     if (is_reviewed !== undefined) {
       updates.push("is_reviewed = $is_reviewed");
@@ -448,7 +476,7 @@ app.put("/api/documents/:id/extraction", async (c) => {
 
     // Return updated extraction
     const updated = db.query(
-      "SELECT id, document_id, vendor_name, insurance_carrier, policy_number, effective_date, expiration_date, certificate_holder, document_type, ai_confidence_score, is_reviewed, extracted_at FROM document_extractions WHERE id = $id"
+      "SELECT id, document_id, vendor_name, insurance_carrier, policy_number, effective_date, expiration_date, certificate_holder, document_type, producer_name, producer_contact, producer_email, producer_phone, ai_confidence_score, is_reviewed, extracted_at FROM document_extractions WHERE id = $id"
     ).get({ $id: existing.id }) as any;
 
     return c.json({ ...updated, is_reviewed: !!updated.is_reviewed });
@@ -481,6 +509,10 @@ app.get("/api/needs-review", (c) => {
         de.certificate_holder_name_confidence,
         de.insured_address,
         de.w9_form_date,
+        de.producer_name,
+        de.producer_contact,
+        de.producer_email,
+        de.producer_phone,
         de.extraction_method,
         de.document_type AS extracted_document_type,
         de.id AS extraction_id,

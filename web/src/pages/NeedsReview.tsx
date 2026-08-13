@@ -26,6 +26,10 @@ interface ReviewItem {
   extracted_document_type: string | null;
   extraction_id: number;
   extracted_vendor_name: string | null;
+  producer_name: string | null;
+  producer_contact: string | null;
+  producer_email: string | null;
+  producer_phone: string | null;
 }
 
 interface ReviewFormData {
@@ -36,6 +40,12 @@ interface ReviewFormData {
   expiration_date: string;
   certificate_holder: string;
   document_type: string;
+  // Producer block (ACORD COI agency/agent contact) — preferred recipient for
+  // renewal reminders when an email is present.
+  producer_name: string;
+  producer_contact: string;
+  producer_email: string;
+  producer_phone: string;
   // Manual entity assignment — reviewer can attach an unassigned document to a
   // vendor/client from the tenant's lists (null = unassigned/no match).
   vendor_id: number | null;
@@ -121,6 +131,10 @@ export default function NeedsReview() {
       expiration_date: "",
       certificate_holder: "",
       document_type: "",
+      producer_name: "",
+      producer_contact: "",
+      producer_email: "",
+      producer_phone: "",
       vendor_id: null,
       client_id: null,
     };
@@ -136,6 +150,10 @@ export default function NeedsReview() {
       expiration_date: item.expiration_date ?? "",
       certificate_holder: item.certificate_holder ?? "",
       document_type: item.extracted_document_type ?? item.document_type ?? "",
+      producer_name: item.producer_name ?? "",
+      producer_contact: item.producer_contact ?? "",
+      producer_email: item.producer_email ?? "",
+      producer_phone: item.producer_phone ?? "",
       vendor_id: item.vendor_id || null,
       client_id: item.client_id || null,
     });
@@ -182,6 +200,10 @@ export default function NeedsReview() {
         expiration_date: form.expiration_date.trim() || null,
         certificate_holder: form.certificate_holder.trim() || null,
         document_type: form.document_type.trim() || null,
+        producer_name: form.producer_name.trim() || null,
+        producer_contact: form.producer_contact.trim() || null,
+        producer_email: form.producer_email.trim() || null,
+        producer_phone: form.producer_phone.trim() || null,
         is_reviewed: true,
       };
       // Send the entity assignment only when the reviewer changed the picker or
@@ -535,6 +557,69 @@ export default function NeedsReview() {
                     value={form.certificate_holder}
                     onChange={(e) => setForm({ ...form, certificate_holder: e.target.value })}
                   />
+                </div>
+                <div
+                  style={{
+                    marginTop: "12px",
+                    padding: "12px",
+                    background: "var(--bg-soft, #f8fafc)",
+                    borderRadius: "8px",
+                    border: "1px dashed var(--border, #d1d5db)",
+                  }}
+                >
+                  <p
+                    style={{
+                      margin: "0 0 8px",
+                      fontSize: "12px",
+                      fontWeight: 700,
+                      textTransform: "uppercase",
+                      letterSpacing: "0.04em",
+                      color: "var(--text-muted, #6b7280)",
+                    }}
+                  >
+                    Producer (COI agency/agent — top-right of the certificate)
+                  </p>
+                  <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>
+                    Renewal reminders for this document go to the producer email when present.
+                  </p>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+                    <div className="form-group">
+                      <label>Producer / Agency Name</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={form.producer_name}
+                        onChange={(e) => setForm({ ...form, producer_name: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Contact Person</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={form.producer_contact}
+                        onChange={(e) => setForm({ ...form, producer_contact: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Producer Email</label>
+                      <input
+                        type="email"
+                        className="form-input"
+                        value={form.producer_email}
+                        onChange={(e) => setForm({ ...form, producer_email: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label>Producer Phone</label>
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={form.producer_phone}
+                        onChange={(e) => setForm({ ...form, producer_phone: e.target.value })}
+                      />
+                    </div>
+                  </div>
                 </div>
               </div>
               <div className="modal-footer">

@@ -4,7 +4,7 @@ import { apiFetch } from "../lib/api";
 import { fetchFileObjectUrl, openFileInNewTab } from "../lib/files";
 import { ALL_DOCUMENT_TYPES, type DocumentDetail as DocumentDetailType, type ExtractionUpdateBody } from "@clear-to-pay/shared";
 
-const emptyForm = { vendor_name: "", insurance_carrier: "", policy_number: "", effective_date: "", expiration_date: "", certificate_holder: "", certificate_holder_address: "", document_type: "" };
+const emptyForm = { vendor_name: "", insurance_carrier: "", policy_number: "", effective_date: "", expiration_date: "", certificate_holder: "", certificate_holder_address: "", producer_name: "", producer_contact: "", producer_email: "", producer_phone: "", document_type: "" };
 type FormState = typeof emptyForm;
 
 function statusBadge(status: string | undefined) {
@@ -64,6 +64,10 @@ export default function DocumentDetail() {
         expiration_date: data.extractions?.[0]?.expiration_date ?? data.expiration_date ?? "",
         certificate_holder: data.extractions?.[0]?.certificate_holder ?? data.certificate_holder ?? "",
         certificate_holder_address: data.extractions?.[0]?.certificate_holder_address ?? data.certificate_holder_address ?? "",
+        producer_name: data.extractions?.[0]?.producer_name ?? "",
+        producer_contact: data.extractions?.[0]?.producer_contact ?? "",
+        producer_email: data.extractions?.[0]?.producer_email ?? "",
+        producer_phone: data.extractions?.[0]?.producer_phone ?? "",
         document_type: data.extractions?.[0]?.document_type ?? data.extracted_document_type ?? data.document_type ?? "",
       });
       setReviewed(Boolean(data.is_reviewed || data.extractions?.[0]?.is_reviewed));
@@ -92,6 +96,11 @@ export default function DocumentDetail() {
         <div className="extraction-fields">
           {([ ["vendor_name","Vendor Name","text"],["insurance_carrier","Insurance Carrier","text"],["policy_number","Policy Number","text"],["effective_date","Effective Date","date"],["expiration_date","Expiration Date","date"],["certificate_holder","Certificate Holder","text"],["certificate_holder_address","Certificate Holder Address","text"]] as const).map(([key,label,type]) => <label className="form-group" key={key}>{label}<input className="form-input" type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>)}
           <label className="form-group">Document Type<select className="form-select" value={form.document_type} onChange={(e) => setForm({ ...form, document_type: e.target.value })}><option value="">Select type…</option>{ALL_DOCUMENT_TYPES.map((type) => <option key={type} value={type}>{type}</option>)}</select></label>
+          <div className="producer-fields" style={{ gridColumn: "1 / -1", padding: "12px", background: "var(--bg-soft, #f8fafc)", borderRadius: "8px", border: "1px dashed var(--border, #d1d5db)" }}>
+            <p style={{ margin: "0 0 4px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-muted, #6b7280)" }}>Producer (COI agency/agent — top-right of the certificate)</p>
+            <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>Renewal reminders for this document go to the producer email when present.</p>
+            {([ ["producer_name","Producer / Agency Name","text"],["producer_contact","Contact Person","text"],["producer_email","Producer Email","email"],["producer_phone","Producer Phone","text"]] as const).map(([key,label,type]) => <label className="form-group" key={key}>{label}<input className="form-input" type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>)}
+          </div>
         </div>
         <label className="review-checkbox"><input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} /> Mark as reviewed / approved</label>
         {error && <div className="error-message">{error}</div>}<div className="form-actions"><Link className="btn btn-outline" to="/app/documents">Cancel</Link><button className="btn btn-primary" type="submit" disabled={saving}>{saving ? "Saving…" : reviewed ? "Save & Approve" : "Save"}</button></div>

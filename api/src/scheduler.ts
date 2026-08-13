@@ -351,10 +351,17 @@ function checkRenewals(now: Date, todayStr: string): void {
   const REMINDER_WINDOWS = [30, 15, 7, 0];
 
   for (const config of configs) {
-    // Find all reviewed documents for this client's vendors that have expiration dates
+    // Find all reviewed documents for this client's vendors that have expiration dates.
+    // Recipient preference (per doc): producer_email (the agency/agent contact from
+    // the top-right Producer block of a COI) first, falling back to sender_email
+    // (the person who submitted the document). Manually-entered documents have no
+    // sender_email, so the producer email is what makes them reachable. A doc with
+    // NEITHER is skipped (no recipient to mail). The producer_email requirement was
+    // previously a hard `sender_email IS NOT NULL` filter, which silently excluded
+    // every manual-entry document — that filter is gone.
     const docs = db.query(`
       SELECT d.id as document_id, d.vendor_id, d.document_type, d.sender_email,
-             de.expiration_date, v.name as vendor_name
+             de.expiration_date, de.producer_email, de.producer_name, v.name as vendor_name
       FROM documents d
       JOIN document_extractions de ON de.document_id = d.id
       JOIN vendors v ON v.id = d.vendor_id
@@ -362,18 +369,27 @@ function checkRenewals(now: Date, todayStr: string): void {
         AND de.is_reviewed = 1
         AND de.expiration_date IS NOT NULL
         AND de.expiration_date != ''
-        AND d.sender_email IS NOT NULL
-        AND d.sender_email != ''
     `).all({ $client_id: config.client_id }) as Array<{
       document_id: number;
       vendor_id: number;
       document_type: string;
-      sender_email: string;
+      sender_email: string | null;
       expiration_date: string;
+      producer_email: string | null;
+      producer_name: string | null;
       vendor_name: string;
     }>;
 
     for (const doc of docs) {
+      // Recipient selection — exact order: producer_email (COI agency/agent) →
+      // sender_email (submitter). Neither → skip (no recipient; the doc gets no
+      // reminder until a producer or sender email is recorded).
+      const recipientEmail = (doc.producer_email ?? "").trim() || (doc.sender_email ?? "").trim();
+      if (!recipientEmail) {
+        console.log(`[scheduler] Renewal reminder skipped for document ${doc.document_id} (${doc.vendor_name} — ${doc.document_type}): no producer_email and no sender_email`);
+        continue;
+      }
+
       const expDate = new Date(doc.expiration_date + "T00:00:00Z");
       const diffMs = expDate.getTime() - now.getTime();
       const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
@@ -387,7 +403,7 @@ function checkRenewals(now: Date, todayStr: string): void {
           }
 
           try {
-            console.log(`[scheduler] Sending ${window}-day renewal reminder for document ${doc.document_id} (${doc.vendor_name} — ${doc.document_type})`);
+            console.log(`[scheduler] Sending ${window}-day renewal reminder for document ${doc.document_id} (${doc.vendor_name} — ${doc.document_type}) → ${recipientEmail}`);
 
             const emailBody = buildRenewalReminderEmail(
               doc.vendor_name,
@@ -395,6 +411,7 @@ function checkRenewals(now: Date, todayStr: string): void {
               doc.expiration_date,
               window,
               config.tenant_id,
+              doc.producer_name,
             );
             const outreach = hasPriorYearW9(db, doc.vendor_id, now.getFullYear() - 1)
               ? "Please submit an updated Certificate of Insurance (COI)."
@@ -404,7 +421,7 @@ function checkRenewals(now: Date, todayStr: string): void {
             const subject = `Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${window === 0 ? "today" : `in ${window} days`}`;
 
             sendEmail(
-              [doc.sender_email],
+              [recipientEmail],
               subject,
               emailBodyWithOutreach,
               config.client_id,

@@ -285,22 +285,28 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
 
     const doc = db.query(`
       SELECT d.id, d.vendor_id, d.client_id, d.document_type, d.sender_email,
-             de.expiration_date, v.name as vendor_name
+             de.expiration_date, de.producer_email, de.producer_name, v.name as vendor_name
       FROM documents d
       JOIN document_extractions de ON de.document_id = d.id
       JOIN vendors v ON v.id = d.vendor_id
       WHERE d.id = $id AND de.is_reviewed = 1 AND d.tenant_id = $tenant_id
     `).get({ $id: docId, $tenant_id: c.get("tenant_id") }) as {
       id: number; vendor_id: number; client_id: number; document_type: string;
-      sender_email: string | null; expiration_date: string | null; vendor_name: string;
+      sender_email: string | null; expiration_date: string | null;
+      producer_email: string | null; producer_name: string | null; vendor_name: string;
     } | undefined;
 
     if (!doc) {
       return c.json({ error: "Document not found or not reviewed" }, 404);
     }
 
-    if (!doc.sender_email) {
-      return c.json({ error: "No sender email on this document" }, 400);
+    // Recipient preference — same order as the scheduler's renewal job:
+    // producer_email (COI agency/agent contact) first, falling back to
+    // sender_email (the submitter). A manually-entered doc with only a
+    // producer email must still get a reminder.
+    const recipient = (doc.producer_email ?? "").trim() || (doc.sender_email ?? "").trim();
+    if (!recipient) {
+      return c.json({ error: "No producer email or sender email on this document" }, 400);
     }
 
     if (!doc.expiration_date) {
@@ -316,15 +322,18 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
       doc.document_type,
       doc.expiration_date,
       Math.max(0, diffDays),
+      undefined,
+      doc.producer_name,
     );
 
     const subject = `[TEST] Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${diffDays <= 0 ? "today" : `in ${diffDays} days`}`;
 
-    sendEmail([doc.sender_email], subject, emailBody, doc.client_id, doc.vendor_id, "renewal_reminder");
+    sendEmail([recipient], subject, emailBody, doc.client_id, doc.vendor_id, "renewal_reminder");
 
     return c.json({
       success: true,
-      recipient: doc.sender_email,
+      recipient,
+      recipient_source: (doc.producer_email ?? "").trim() ? "producer_email" : "sender_email",
       subject,
       vendor_name: doc.vendor_name,
       document_type: doc.document_type,

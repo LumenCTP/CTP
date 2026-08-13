@@ -315,12 +315,18 @@ export function buildRenewalReminderEmail(
   expirationDate: string,
   daysUntilExpiry: number,
   tenantId?: number | null,
+  producerName?: string | null,
 ): string {
   const inboxAddress = getTenantInboxAddress(tenantId);
   const urgencyColor = daysUntilExpiry <= 7 ? "#dc2626" : daysUntilExpiry <= 15 ? "#d97706" : "#374151";
   const urgencyText = daysUntilExpiry === 0
     ? `expires <strong>today</strong>`
     : `expires in <strong>${daysUntilExpiry} days</strong>`;
+  // When the recipient is the COI producer (agency/agent), address them by name
+  // so the reminder reads as intended instead of a generic greeting.
+  const attentionLine = producerName && producerName.trim()
+    ? `<p style="margin: 0 0 12px; font-size: 14px; color: #374151;">Attention: <strong>${producerName}</strong></p>`
+    : "";
 
   return `
 <!DOCTYPE html>
@@ -332,6 +338,7 @@ export function buildRenewalReminderEmail(
   </div>
 
   <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+    ${attentionLine}
     <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
       This is a reminder that the following compliance document for <strong>${vendorName}</strong> ${urgencyText}:
     </p>

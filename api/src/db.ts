@@ -435,6 +435,13 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "document_extractions", "certificate_holder_name_confidence REAL NOT NULL DEFAULT 0.0", "certificate_holder_name_confidence");
   ensureColumn(db, "document_extractions", "insured_address TEXT", "insured_address");
   ensureColumn(db, "document_extractions", "w9_form_date TEXT", "w9_form_date");
+  // Producer block (ACORD COI top-right: agency/agent that issued the cert).
+  // Only populated for COI-type documents; null otherwise. producer_email is
+  // the preferred renewal-reminder recipient for COIs.
+  ensureColumn(db, "document_extractions", "producer_name TEXT", "producer_name");
+  ensureColumn(db, "document_extractions", "producer_contact TEXT", "producer_contact");
+  ensureColumn(db, "document_extractions", "producer_email TEXT", "producer_email");
+  ensureColumn(db, "document_extractions", "producer_phone TEXT", "producer_phone");
   // Extraction provenance: 'ai' (real vision-model extraction) vs 'filename'
   // (honest filename-only fallback). Never fabricate fields on the fallback.
   ensureColumn(db, "document_extractions", "extraction_method TEXT DEFAULT 'filename'", "extraction_method");

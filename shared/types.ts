@@ -96,6 +96,12 @@ export interface DocumentExtraction {
   ai_confidence_score: number;
   is_reviewed: boolean;
   extracted_at: string;
+  // Producer block (top-right of an ACORD COI — the agency/agent that issued
+  // the certificate). Only populated for COI-type documents; null otherwise.
+  producer_name: string | null;
+  producer_contact: string | null;
+  producer_email: string | null;
+  producer_phone: string | null;
 }
 
 // ── Compliance ────────────────────────────────────────
@@ -199,6 +205,12 @@ export interface ExtractionUpdateBody {
   expiration_date?: string | null;
   certificate_holder?: string | null;
   document_type?: string | null;
+  // Producer block (ACORD COI agency/agent contact — recipients for renewal
+  // reminders when present). Editable in the review UIs; null for non-COIs.
+  producer_name?: string | null;
+  producer_contact?: string | null;
+  producer_email?: string | null;
+  producer_phone?: string | null;
   is_reviewed?: boolean;
   // Manual entity assignment — lets a reviewer attach an otherwise-unassigned
   // document to a vendor/client (null clears the assignment).
