@@ -13,6 +13,7 @@
     "@types/pdfkit": "^0.17.6",
     "exceljs": "^4.4.0",
     "hono": "^4.7.5",
+    "nodemailer": "^9.0.5",
     "pdfjs-dist": "^6.2.108",
     "pdfkit": "^0.19.1",
     "stripe": "^22.5.0"

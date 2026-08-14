@@ -1,6 +1,7 @@
 import { getDb } from "./db";
 import { storageGet } from "./storage";
 import { buildInboxAddress } from "./lib/inbox";
+import { smtpConfigured, sendViaSmtp, SMTP_CC_ADDRESS } from "./smtp";
 import type { ReportData } from "./reports";
 
 // ── Email Identity ───────────────────────────────────────
@@ -93,18 +94,20 @@ export function getTenantInboxAddress(tenantId?: number | null): string {
 // ── Email Sender ─────────────────────────────────────────
 
 /**
- * Sends email by writing to the outgoing_email_queue table.
+ * Sends email. Delivery is chosen centrally here so no call site can forget
+ * the owner's outbound rules:
  *
- * The queue is processed by the platform's email delivery system.
- * Emails are also logged to email_log for audit purposes.
+ * - ClearToPaySMTP set (production): direct M365 SMTP delivery from
+ *   EMAIL_FROM_ADDRESS with every message CC'd to documents@
+ *   (SMTP_CC_ADDRESS) — see deliverViaM365Smtp().
+ * - ClearToPaySMTP absent (dev/test): the platform queue path is used — a
+ *   row goes to outgoing_email_queue for the process-queue worker and
+ *   email_log records it as 'queued'.
  *
- * From:     ClearToPay Compliance <reports@cleartopayconstruction.com>
- * Reply-To: reports@cleartopayconstruction.com
- *
- * To swap in a real email provider (SendGrid, AWS SES, Resend, etc.),
- * replace the queue insert with an HTTP fetch call.
+ * From:     ClearToPay Compliance <EMAIL_FROM_ADDRESS>
+ * Reply-To: EMAIL_REPLY_TO
  */
-export function sendEmail(
+export async function sendEmail(
   to: string[],
   subject: string,
   htmlBody: string,
@@ -112,36 +115,42 @@ export function sendEmail(
   vendorId?: number,
   emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout",
   attachments?: EmailAttachment[],
-): void {
+): Promise<void> {
   const db = getDb();
-
+  const recipients = to.map((r) => r.trim()).filter(Boolean);
+  if (recipients.length === 0) return;
   console.log("══════════════════════════════════════════════");
-  console.log(`[email] QUEUING EMAIL`);
+  console.log(`[email] ${smtpConfigured() ? "SMTP-DELIVER" : "QUEUING"} EMAIL`);
   console.log(`[email] From: ${EMAIL_FROM_NAME} <${EMAIL_FROM_ADDRESS}>`);
   console.log(`[email] Reply-To: ${EMAIL_REPLY_TO}`);
-  console.log(`[email] To: ${to.join(", ")}`);
+  console.log(`[email] To: ${recipients.join(", ")}`);
   console.log(`[email] Subject: ${subject}`);
   console.log(`[email] Type: ${emailType ?? "manual"}`);
   console.log(`[email] Attachments: ${attachments ? attachments.map((a) => `${a.filename} (${a.contentType})`).join(", ") || "(none)" : "(none)"}`);
   console.log("══════════════════════════════════════════════");
-
+  if (smtpConfigured()) {
+    // Direct M365 SMTP path — wins whenever ClearToPaySMTP is set. Every
+    // message is CC'd to the documents@ mailbox (owner directive). No queue
+    // row is created: the SMTP conversation is the delivery, email_log is
+    // the audit trail, and the platform worker can never double-send.
+    await deliverViaM365Smtp({ recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db });
+    return;
+  }
+  // ── Platform queue path (fallback when ClearToPaySMTP is absent) ──
   // Log to email_log for every recipient
   const insertStmt = db.query(`
     INSERT INTO email_log (client_id, vendor_id, email_type, recipient_email, subject, status, sent_at)
     VALUES ($client_id, $vendor_id, $email_type, $recipient_email, $subject, 'queued', datetime('now'))
   `);
-
   const attachmentsJson = attachments && attachments.length > 0 ? JSON.stringify(attachments) : null;
-
-  for (const recipient of to) {
+  for (const recipient of recipients) {
     insertStmt.run({
       $client_id: clientId ?? null,
       $vendor_id: vendorId ?? null,
       $email_type: emailType ?? "weekly_report",
-      $recipient_email: recipient.trim(),
+      $recipient_email: recipient,
       $subject: subject,
     });
-
     // Queue for delivery
     db.query(`
       INSERT INTO outgoing_email_queue (from_address, from_name, reply_to, recipient_email, subject, html_body, attachments, client_id, vendor_id, email_type)
@@ -150,7 +159,7 @@ export function sendEmail(
       $from_addr: EMAIL_FROM_ADDRESS,
       $from_name: EMAIL_FROM_NAME,
       $reply_to: EMAIL_REPLY_TO,
-      $recipient: recipient.trim(),
+      $recipient: recipient,
       $subject: subject,
       $body: htmlBody,
       $attachments: attachmentsJson,
@@ -158,6 +167,83 @@ export function sendEmail(
       $vendor_id: vendorId ?? null,
       $email_type: emailType ?? "weekly_report",
     });
+  }
+}
+
+/**
+ * Direct M365 SMTP delivery (used when ClearToPaySMTP is set).
+ * Resolves attachment bytes from the storage layer, builds the multipart
+ * MIME message (From / Reply-To / To / Cc headers), sends it through
+ * smtp.office365.com, and records the outcome in email_log. Every message
+ * is CC'd to documents@ (SMTP_CC_ADDRESS) unless the recipient already IS
+ * documents@ — the CC is deduped so the owner's mailbox never gets a
+ * duplicate of its own mail. Delivery failures are logged and recorded on
+ * email_log as 'error' (never silently retried); the platform path is NOT a
+ * fallback here because SMTP wins whenever ClearToPaySMTP is present.
+ */
+async function deliverViaM365Smtp(args: {
+  recipients: string[];
+  subject: string;
+  htmlBody: string;
+  clientId?: number;
+  vendorId?: number;
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout";
+  attachments?: EmailAttachment[];
+  db: ReturnType<typeof getDb>;
+}): Promise<void> {
+  const { recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db } = args;
+  // Resolve attachment bytes (storage layer) for the MIME payload.
+  const resolvedAtts = attachments && attachments.length > 0 ? await resolveEmailAttachments(attachments) : [];
+  for (const att of resolvedAtts) {
+    if (!att.resolved) console.warn(`[smtp] Attachment ${att.filename} (${att.storageKey}) could not be resolved — sending without bytes`);
+  }
+  // CC documents@ on every outbound message; dedupe when the recipient IS documents@.
+  const cc = recipients.some((r) => r.toLowerCase() === SMTP_CC_ADDRESS) ? [] : [SMTP_CC_ADDRESS];
+  const mimeMessage = buildMultipartMessage({
+    fromAddress: EMAIL_FROM_ADDRESS,
+    fromName: EMAIL_FROM_NAME,
+    replyTo: EMAIL_REPLY_TO,
+    to: recipients,
+    cc,
+    subject,
+    htmlBody,
+    attachments: resolvedAtts.map((a) => ({
+      filename: a.filename,
+      contentType: a.contentType,
+      contentBase64: a.contentBase64,
+    })),
+  });
+  const recordLog = (status: "sent" | "error", errorMessage?: string) => {
+    for (const recipient of recipients) {
+      db.query(`
+        INSERT INTO email_log (client_id, vendor_id, email_type, recipient_email, subject, status, sent_at, error_message)
+        VALUES ($client_id, $vendor_id, $email_type, $recipient_email, $subject, $status, datetime('now'), $error_message)
+      `).run({
+        $client_id: clientId ?? null,
+        $vendor_id: vendorId ?? null,
+        $email_type: emailType ?? "weekly_report",
+        $recipient_email: recipient,
+        $subject: subject,
+        $status: status,
+        $error_message: errorMessage ?? null,
+      });
+    }
+  };
+  try {
+    await sendViaSmtp({
+      fromAddress: EMAIL_FROM_ADDRESS,
+      fromName: EMAIL_FROM_NAME,
+      replyTo: EMAIL_REPLY_TO,
+      to: recipients,
+      cc,
+      subject,
+      mimeMessage,
+    });
+    recordLog("sent");
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[smtp] Delivery failed for "${subject}" → ${recipients.join(", ")}: ${msg}`);
+    recordLog("error", msg);
   }
 }
 
@@ -543,6 +629,7 @@ export function buildMultipartMessage(opts: {
   fromName: string;
   replyTo: string;
   to: string[];
+  cc?: string[];
   subject: string;
   htmlBody: string;
   attachments: ResolvedAttachmentPart[];
@@ -553,6 +640,7 @@ export function buildMultipartMessage(opts: {
   // Headers
   lines.push(`From: ${opts.fromName} <${opts.fromAddress}>`);
   lines.push(`To: ${opts.to.join(", ")}`);
+  if (opts.cc && opts.cc.length > 0) lines.push(`Cc: ${opts.cc.join(", ")}`);
   lines.push(`Reply-To: ${opts.replyTo}`);
   lines.push(`Subject: ${opts.subject.replace(/[\r\n]/g, " ")}`);
   lines.push(`MIME-Version: 1.0`);
