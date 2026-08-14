@@ -2,6 +2,7 @@ import { getDb } from "./db";
 import { storageGet } from "./storage";
 import { buildInboxAddress } from "./lib/inbox";
 import { smtpConfigured, sendViaSmtp, SMTP_CC_ADDRESS } from "./smtp";
+import { graphMailConfigured, sendViaGraphMail } from "./graph-mail";
 import type { ReportData } from "./reports";
 
 // ── Email Identity ───────────────────────────────────────
@@ -94,15 +95,36 @@ export function getTenantInboxAddress(tenantId?: number | null): string {
 // ── Email Sender ─────────────────────────────────────────
 
 /**
+ * Which outbound path sendEmail() will take, in priority order:
+ *   1. "graph" — Microsoft Graph sendMail (OAuth 2.0 client-credentials),
+ *      active when M365_TENANT_ID + M365_CLIENT_ID + M365_CLIENT_SECRET are
+ *      all set (the owner's Entra app registration; primary path).
+ *   2. "smtp"  — direct M365 SMTP (smtp.office365.com with SMTP-AUTH app
+ *      password), active when ClearToPaySMTP is set (works in tenants where
+ *      SMTP client submission is enabled).
+ *   3. "queue" — the platform outgoing_email_queue path (no M365 config).
+ * Exported so the harness can assert the ordering without sending anything.
+ */
+export type DeliveryPath = "graph" | "smtp" | "queue";
+
+export function getDeliveryPath(): DeliveryPath {
+  if (graphMailConfigured()) return "graph";
+  if (smtpConfigured()) return "smtp";
+  return "queue";
+}
+
+/**
  * Sends email. Delivery is chosen centrally here so no call site can forget
  * the owner's outbound rules:
  *
- * - ClearToPaySMTP set (production): direct M365 SMTP delivery from
- *   EMAIL_FROM_ADDRESS with every message CC'd to documents@
- *   (SMTP_CC_ADDRESS) — see deliverViaM365Smtp().
- * - ClearToPaySMTP absent (dev/test): the platform queue path is used — a
- *   row goes to outgoing_email_queue for the process-queue worker and
- *   email_log records it as 'queued'.
+ * - M365 Graph secrets set (primary, owner directive 2026-08-14): Microsoft
+ *   Graph sendMail as EMAIL_FROM_ADDRESS with every message CC'd to
+ *   documents@ (SMTP_CC_ADDRESS) — see deliverViaGraphMail().
+ * - ClearToPaySMTP set (fallback): direct M365 SMTP delivery from
+ *   EMAIL_FROM_ADDRESS with the same CC — see deliverViaM365Smtp().
+ * - Neither set (dev/test): the platform queue path is used — a row goes to
+ *   outgoing_email_queue for the process-queue worker and email_log records
+ *   it as 'queued'.
  *
  * From:     ClearToPay Compliance <EMAIL_FROM_ADDRESS>
  * Reply-To: EMAIL_REPLY_TO
@@ -119,8 +141,9 @@ export async function sendEmail(
   const db = getDb();
   const recipients = to.map((r) => r.trim()).filter(Boolean);
   if (recipients.length === 0) return;
+  const path = getDeliveryPath();
   console.log("══════════════════════════════════════════════");
-  console.log(`[email] ${smtpConfigured() ? "SMTP-DELIVER" : "QUEUING"} EMAIL`);
+  console.log(`[email] ${path === "graph" ? "GRAPH-DELIVER" : path === "smtp" ? "SMTP-DELIVER" : "QUEUING"} EMAIL`);
   console.log(`[email] From: ${EMAIL_FROM_NAME} <${EMAIL_FROM_ADDRESS}>`);
   console.log(`[email] Reply-To: ${EMAIL_REPLY_TO}`);
   console.log(`[email] To: ${recipients.join(", ")}`);
@@ -128,7 +151,14 @@ export async function sendEmail(
   console.log(`[email] Type: ${emailType ?? "manual"}`);
   console.log(`[email] Attachments: ${attachments ? attachments.map((a) => `${a.filename} (${a.contentType})`).join(", ") || "(none)" : "(none)"}`);
   console.log("══════════════════════════════════════════════");
-  if (smtpConfigured()) {
+  if (path === "graph") {
+    // Microsoft Graph sendMail (primary). No queue row is created: the Graph
+    // sendMail conversation is the delivery, email_log is the audit trail,
+    // and the platform worker can never double-send.
+    await deliverViaGraphMail({ recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db });
+    return;
+  }
+  if (path === "smtp") {
     // Direct M365 SMTP path — wins whenever ClearToPaySMTP is set. Every
     // message is CC'd to the documents@ mailbox (owner directive). No queue
     // row is created: the SMTP conversation is the delivery, email_log is
@@ -167,6 +197,92 @@ export async function sendEmail(
       $vendor_id: vendorId ?? null,
       $email_type: emailType ?? "weekly_report",
     });
+  }
+}
+
+/**
+ * Records one email_log row per recipient with the given status. Shared by the
+ * Graph and SMTP direct-delivery paths so both write the same audit trail
+ * (status 'sent' on success / 'error' with message on failure; no queue row).
+ */
+function recordEmailLog(args: {
+  db: ReturnType<typeof getDb>;
+  recipients: string[];
+  clientId?: number;
+  vendorId?: number;
+  emailType?: string;
+  subject: string;
+  status: "sent" | "error";
+  errorMessage?: string;
+}): void {
+  const { db, recipients, clientId, vendorId, emailType, subject, status, errorMessage } = args;
+  const stmt = db.query(`
+    INSERT INTO email_log (client_id, vendor_id, email_type, recipient_email, subject, status, sent_at, error_message)
+    VALUES ($client_id, $vendor_id, $email_type, $recipient_email, $subject, $status, datetime('now'), $error_message)
+  `);
+  for (const recipient of recipients) {
+    stmt.run({
+      $client_id: clientId ?? null,
+      $vendor_id: vendorId ?? null,
+      $email_type: emailType ?? "weekly_report",
+      $recipient_email: recipient,
+      $subject: subject,
+      $status: status,
+      $error_message: errorMessage ?? null,
+    });
+  }
+}
+
+/**
+ * Direct Microsoft Graph sendMail delivery (used when the M365 client-credentials
+ * secrets are set — the primary path). Resolves attachment bytes from the
+ * storage layer, builds the Graph JSON payload (subject / HTML body / To /
+ * Cc / base64 attachments / saveToSentItems), sends it through
+ * POST https://graph.microsoft.com/v1.0/users/{EMAIL_FROM_ADDRESS}/sendMail,
+ * and records the outcome in email_log. Every message is CC'd to documents@
+ * (SMTP_CC_ADDRESS) unless the recipient already IS documents@ — the CC is
+ * deduped so the owner's mailbox never gets a duplicate of its own mail.
+ * Delivery failures are logged and recorded on email_log as 'error' (never
+ * silently retried); the platform path is NOT a fallback here because Graph
+ * wins whenever the M365 secrets are present.
+ */
+async function deliverViaGraphMail(args: {
+  recipients: string[];
+  subject: string;
+  htmlBody: string;
+  clientId?: number;
+  vendorId?: number;
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout";
+  attachments?: EmailAttachment[];
+  db: ReturnType<typeof getDb>;
+}): Promise<void> {
+  const { recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db } = args;
+  // Resolve attachment bytes (storage layer) for the Graph payload.
+  const resolvedAtts = attachments && attachments.length > 0 ? await resolveEmailAttachments(attachments) : [];
+  for (const att of resolvedAtts) {
+    if (!att.resolved) console.warn(`[graph-mail] Attachment ${att.filename} (${att.storageKey}) could not be resolved — sending without bytes`);
+  }
+  // CC documents@ on every outbound message; dedupe when the recipient IS documents@.
+  const cc = recipients.some((r) => r.toLowerCase() === SMTP_CC_ADDRESS) ? [] : [SMTP_CC_ADDRESS];
+  try {
+    await sendViaGraphMail({
+      fromAddress: EMAIL_FROM_ADDRESS,
+      to: recipients,
+      cc,
+      subject,
+      htmlBody,
+      bodyContentType: "HTML",
+      attachments: resolvedAtts.map((a) => ({
+        filename: a.filename,
+        contentType: a.contentType,
+        contentBase64: a.contentBase64,
+      })),
+    });
+    recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "sent" });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error(`[graph-mail] Delivery failed for "${subject}" → ${recipients.join(", ")}: ${msg}`);
+    recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "error", errorMessage: msg });
   }
 }
 
@@ -213,22 +329,6 @@ async function deliverViaM365Smtp(args: {
       contentBase64: a.contentBase64,
     })),
   });
-  const recordLog = (status: "sent" | "error", errorMessage?: string) => {
-    for (const recipient of recipients) {
-      db.query(`
-        INSERT INTO email_log (client_id, vendor_id, email_type, recipient_email, subject, status, sent_at, error_message)
-        VALUES ($client_id, $vendor_id, $email_type, $recipient_email, $subject, $status, datetime('now'), $error_message)
-      `).run({
-        $client_id: clientId ?? null,
-        $vendor_id: vendorId ?? null,
-        $email_type: emailType ?? "weekly_report",
-        $recipient_email: recipient,
-        $subject: subject,
-        $status: status,
-        $error_message: errorMessage ?? null,
-      });
-    }
-  };
   try {
     await sendViaSmtp({
       fromAddress: EMAIL_FROM_ADDRESS,
@@ -239,11 +339,11 @@ async function deliverViaM365Smtp(args: {
       subject,
       mimeMessage,
     });
-    recordLog("sent");
+    recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "sent" });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[smtp] Delivery failed for "${subject}" → ${recipients.join(", ")}: ${msg}`);
-    recordLog("error", msg);
+    recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "error", errorMessage: msg });
   }
 }
 
