@@ -58,6 +58,7 @@ export default function SetupWizard() {
   const [savingDocs, setSavingDocs] = useState(false);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
 
   // Load existing wizard state (so returning users can resume)
   useEffect(() => {
@@ -280,6 +281,11 @@ export default function SetupWizard() {
   async function completeSetup() {
     setSubmitting(true);
     setError("");
+    if (!acknowledged) {
+      setError("Please confirm that you have set your compliance criteria before completing setup.");
+      setSubmitting(false);
+      return;
+    }
     try {
       const res = await apiFetch("/api/setup", {
         method: "POST",
@@ -548,13 +554,40 @@ export default function SetupWizard() {
                 <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted, #6b7280)" }}>
                   Documents will be automatically processed and matched.
                 </p>
+                <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>
+                  ClearToPay stores and tracks your documents; your customer (the contractor)
+                  sets the compliance requirements. Contact them with questions about coverage.
+                </p>
               </div>
             )}
+            <label
+              style={{
+                display: "flex",
+                alignItems: "flex-start",
+                gap: 10,
+                margin: "0 0 16px",
+                fontSize: 13,
+                color: "var(--text-muted, #6b7280)",
+                cursor: "pointer",
+                lineHeight: 1.45,
+              }}
+            >
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+                style={{ marginTop: 2 }}
+              />
+              <span>
+                I confirm I have set my company's compliance criteria and understand
+                ClearToPay administers my requirements rather than setting them.
+              </span>
+            </label>
             <div style={{ display: "flex", gap: 8 }}>
               <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(3)} disabled={submitting}>
                 Back
               </button>
-              <button type="button" className="auth-btn" style={{ flex: 2 }} onClick={completeSetup} disabled={submitting}>
+              <button type="button" className="auth-btn" style={{ flex: 2 }} onClick={completeSetup} disabled={submitting || !acknowledged}>
                 {submitting ? "Saving..." : "Confirm & Get Started"}
               </button>
             </div>

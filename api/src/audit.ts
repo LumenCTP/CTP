@@ -158,6 +158,10 @@ function generateAuditSummary(opts: {
     `Expired Documents: ${opts.expiredItemCount} item(s) across ${opts.expiredVendorCount} vendor(s)`,
   );
   lines.push(``);
+  lines.push(
+    `This package reflects the compliance documents on file and the criteria configured for ${opts.clientName} as of ${opts.dateStr}. It is an administrative tool, not legal advice. ClearToPay does not determine coverage adequacy; final payment and coverage decisions are the client's responsibility.`,
+  );
+  lines.push(``);
   return lines.join("\n");
 }
 

@@ -354,6 +354,10 @@ export default function Documents() {
             <div style={{ background: "var(--blue-light, #eff6ff)", border: "1px solid var(--blue-100, #dbeafe)", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 13, color: "var(--blue-700, #1d4ed8)" }}>
               📧 Vendors can also email documents directly to{" "}
               <strong style={{ wordBreak: "break-all" }}>{user.inbox_address}</strong>
+              <span style={{ display: "block", marginTop: 6, fontSize: 12, color: "var(--blue-600, #2563eb)" }}>
+                ClearToPay stores and tracks your documents; your customer (the contractor)
+                sets the compliance requirements. Contact them with questions about coverage.
+              </span>
             </div>
           )}
           <form onSubmit={handleUpload} style={{ display: "flex", flexDirection: "column", gap: "16px" }}>

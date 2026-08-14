@@ -428,6 +428,9 @@ export function buildWeeklyReportEmail(
   <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">
     This automated report was sent by ClearToPay Compliance. Reports are generated every Monday morning.
   </p>
+  <p style="margin: 8px 0 0; font-size: 10px; color: #9ca3af; text-align: center;">
+    This report reflects the compliance documents on file and the criteria configured for ${clientName} as of ${formatDate(reportSummary.report_date)}. It is an administrative tool, not legal advice. ClearToPay does not determine coverage adequacy; final payment and coverage decisions are the client's responsibility.
+  </p>
 </body>
 </html>`;
 }
@@ -490,6 +493,9 @@ export function buildMonthlyReportEmail(
 
   <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">
     This automated report was sent by ClearToPay Compliance. Monthly reports are generated on the 1st of each month.
+  </p>
+  <p style="margin: 8px 0 0; font-size: 10px; color: #9ca3af; text-align: center;">
+    This report reflects the compliance documents on file and the criteria configured for ${clientName} as of ${monthlySummary.month} ${monthlySummary.year}. It is an administrative tool, not legal advice. ClearToPay does not determine coverage adequacy; final payment and coverage decisions are the client's responsibility.
   </p>
 </body>
 </html>`;
