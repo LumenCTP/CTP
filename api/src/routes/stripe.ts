@@ -123,19 +123,29 @@ function handleSubscriptionEvent(event: any): { handled: boolean; note: string }
   const status = mapSubscriptionStatus(sub.status);
   const customerId = typeof sub.customer === "string" ? sub.customer : null;
   const subId = sub.id ? String(sub.id) : null;
+  // Trial end (subscription.trial_end is a Unix epoch in seconds) — stored only
+  // while the subscription is trialing; cleared once it converts to paid.
+  const trialEnd = status === "TRIAL" && typeof sub.trial_end === "number"
+    ? new Date(sub.trial_end * 1000).toISOString().slice(0, 10)
+    : null;
+  const cancelAtPeriodEnd = sub.cancel_at_period_end === true ? 1 : 0;
   db.query(`
     UPDATE tenants
     SET subscription_plan = COALESCE($plan, subscription_plan),
         subscription_status = $status,
+        subscription_trial_end = $trialEnd,
+        cancel_at_period_end = $cancelEnd,
         stripe_customer_id = COALESCE($cus, stripe_customer_id),
         stripe_subscription_id = COALESCE($sub, stripe_subscription_id),
         updated_at = datetime('now')
     WHERE id = $tid
-  `).run({ $plan: plan, $status: status, $cus: customerId, $sub: subId, $tid: tenant.id });
+  `).run({ $plan: plan, $status: status, $trialEnd: trialEnd, $cancelEnd: cancelAtPeriodEnd, $cus: customerId, $sub: subId, $tid: tenant.id });
   logAudit(db, "tenant", tenant.id, `stripe_${event.type}`, {
     stripe_subscription_id: subId,
     plan,
     status,
+    trial_end: trialEnd,
+    cancel_at_period_end: cancelAtPeriodEnd,
     customer: customerId,
   });
   console.log(`[stripe] ${event.type}: tenant ${tenant.id} (${tenant.name}) → plan=${plan ?? "unchanged"}, status=${status}, sub=${subId ?? "?"}`);
@@ -178,6 +188,7 @@ function handleInvoicePaymentSucceeded(event: any): { handled: boolean; note: st
   db.query(`
     UPDATE tenants
     SET subscription_status = 'ACTIVE',
+        subscription_trial_end = NULL,
         subscription_period_start = COALESCE($start, subscription_period_start),
         subscription_period_end = COALESCE($end, subscription_period_end),
         updated_at = datetime('now')
@@ -360,8 +371,13 @@ function handleTransferEvent(event: any): { handled: boolean; note: string } {
 }
 
 // Provision a tenant from a completed Stripe checkout:
-// find-or-create user by email → find-or-create tenant → activate subscription → setup wizard
-function provisionTenantFromCheckout(email: string, session: any) {
+// find-or-create user by email → find-or-create tenant → activate subscription
+// (TRIAL when the subscription is trialing, ACTIVE when paid) → setup wizard
+async function provisionTenantFromCheckout(
+  email: string,
+  session: any,
+  subInfo?: { status?: string; trialEnd?: string | null }
+) {
   const db = getDb();
   const normEmail = email.trim().toLowerCase();
   const customerName = typeof session?.customer_details?.name === "string" && session.customer_details.name.trim()
@@ -392,27 +408,35 @@ function provisionTenantFromCheckout(email: string, session: any) {
   const periodStart = new Date().toISOString().slice(0, 10);
   const periodEnd = new Date(Date.now() + 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
 
+  // Trialing subscription (30-day free trial, card on file) → tenant TRIAL with
+  // a trial end date; truly paid subscription (no trial) → tenant ACTIVE.
+  const trialing = subInfo?.status === "trialing";
+  const status = trialing ? "TRIAL" : "ACTIVE";
+  const trialEnd = trialing ? (subInfo?.trialEnd ?? null) : null;
+
   let tenant = findTenantForUser(db, user.id);
   if (!tenant) {
     tenant = createTenantForUser(db, user.id, {
       name: user.company_name || "My Company",
-      subscription_status: "ACTIVE",
+      subscription_status: status,
       periodStart,
       periodEnd,
+      trialEnd,
     });
     logAudit(db, "tenant", tenant.id, "tenant_created", { name: tenant.name, owner_user_id: user.id, source: "stripe_webhook" });
-    logAudit(db, "tenant", tenant.id, "subscription_activated", { email: normEmail, period_start: periodStart, period_end: periodEnd });
+    logAudit(db, "tenant", tenant.id, "subscription_activated", { email: normEmail, period_start: periodStart, period_end: periodEnd, status, trial_end: trialEnd });
   } else {
     db.query(`
       UPDATE tenants
-      SET subscription_status = 'ACTIVE',
+      SET subscription_status = $status,
+          subscription_trial_end = $trialEnd,
           subscription_period_start = $start,
           subscription_period_end = $end,
           admin_email = $email,
           updated_at = datetime('now')
       WHERE id = $id
-    `).run({ $start: periodStart, $end: periodEnd, $email: normEmail, $id: tenant.id });
-    logAudit(db, "tenant", tenant.id, "subscription_activated", { email: normEmail, period_start: periodStart, period_end: periodEnd });
+    `).run({ $status: status, $trialEnd: trialEnd, $start: periodStart, $end: periodEnd, $email: normEmail, $id: tenant.id });
+    logAudit(db, "tenant", tenant.id, "subscription_activated", { email: normEmail, period_start: periodStart, period_end: periodEnd, status, trial_end: trialEnd });
     tenant = findTenantForUser(db, user.id)!;
   }
 
@@ -478,7 +502,25 @@ app.post("/api/webhooks/stripe", async (c) => {
         console.warn("[stripe] checkout.session.completed without customer_details.email");
         return c.json({ error: "Missing customer_details.email in checkout session" }, 400);
       }
-      const result = provisionTenantFromCheckout(email, session);
+      // Retrieve the subscription so we know whether this session started a
+      // 30-day trial (subscription.status === "trialing", no charge yet) or
+      // collected payment immediately (paid) — the tenant maps to TRIAL or
+      // ACTIVE accordingly.
+      let subInfo: { status?: string; trialEnd?: string | null } | undefined;
+      if (typeof session.subscription === "string") {
+        try {
+          const sub = await getStripe()!.subscriptions.retrieve(session.subscription);
+          subInfo = {
+            status: sub.status,
+            trialEnd: typeof sub.trial_end === "number"
+              ? new Date(sub.trial_end * 1000).toISOString().slice(0, 10)
+              : null,
+          };
+        } catch (err) {
+          console.warn(`[stripe] checkout.session.completed: could not retrieve subscription ${session.subscription}: ${String(err)}`);
+        }
+      }
+      const result = await provisionTenantFromCheckout(email, session, subInfo);
       return c.json({ success: true, event_type: type, ...result });
     }
 
@@ -648,11 +690,13 @@ app.post("/api/checkout/session", async (c) => {
 
   const baseParams: Stripe.Checkout.SessionCreateParams = {
     mode: "subscription",
-    // A card (or other payment method) is required at checkout — payment is
-    // collected immediately; there is no free trial.
+    // A card (or other payment method) is required at checkout — it's kept on
+    // file for the 30-day free trial and charged automatically when the trial
+    // ends (Stripe auto-bills the saved method; nothing is charged at checkout).
     payment_method_collection: "always",
     line_items: [{ price: priceId, quantity: 1 }],
     subscription_data: {
+      trial_period_days: 30,
       metadata: {
         plan,
         ...(tenantId !== undefined ? { tenant_id: String(tenantId) } : {}),
@@ -736,10 +780,25 @@ app.post("/api/checkout/confirm", async (c) => {
     return c.json({ error: `Could not retrieve checkout session: ${String(err)}` }, 400);
   }
 
-  // Gate: only activate when Stripe reports the payment was collected.
+  // Retrieve the subscription (when present) for real status + billing-period
+  // dates. A trialing subscription (30-day free trial, card on file) activates
+  // the tenant as TRIAL; a paid subscription activates it as ACTIVE.
+  let sub: Stripe.Subscription | null = null;
+  const subId0 = typeof session.subscription === "string" ? session.subscription : null;
+  if (subId0) {
+    try {
+      sub = await stripe.subscriptions.retrieve(subId0);
+    } catch (err) {
+      console.warn(`[checkout] confirm: subscription retrieve failed (${subId0}): ${String(err)}`);
+    }
+  }
+
+  // Gate: only activate when the subscription is trialing (no charge yet, card
+  // on file) OR Stripe reports the payment was collected.
+  const trialing = sub?.status === "trialing";
   const paid = session.payment_status === "paid" ||
     (session.payment_status === "no_payment_required" && session.subscription != null);
-  if (!paid) {
+  if (!trialing && !paid) {
     return c.json({ error: "not_paid", message: "This checkout session has not been paid yet." }, 402);
   }
 
@@ -757,24 +816,21 @@ app.post("/api/checkout/confirm", async (c) => {
     return c.json({ error: "session_does_not_belong_to_user" }, 403);
   }
 
-  // Retrieve the subscription for real billing-period dates when available.
+  // Real billing-period dates from the subscription when available.
   let periodStart: string | null = null;
   let periodEnd: string | null = null;
   let subPlan: string | null = null;
-  let subId: string | null = typeof session.subscription === "string" ? session.subscription : null;
+  let subId: string | null = subId0;
   let customerId: string | null = typeof session.customer === "string" ? session.customer : null;
+  let trialEnd: string | null = null;
   const metaPlan = session.metadata?.plan ? String(session.metadata.plan).toLowerCase() : null;
-  if (subId) {
-    try {
-      const sub = await stripe.subscriptions.retrieve(subId);
-      if (sub?.current_period_start) periodStart = new Date(sub.current_period_start * 1000).toISOString().slice(0, 10);
-      if (sub?.current_period_end) periodEnd = new Date(sub.current_period_end * 1000).toISOString().slice(0, 10);
-      subPlan = planFromSubscription(sub) ?? metaPlan;
-      subId = sub.id ? String(sub.id) : subId;
-      customerId = typeof sub.customer === "string" ? sub.customer : customerId;
-    } catch (err) {
-      console.warn(`[checkout] confirm: subscription retrieve failed (${subId}): ${String(err)}`);
-    }
+  if (sub) {
+    if (sub?.current_period_start) periodStart = new Date(sub.current_period_start * 1000).toISOString().slice(0, 10);
+    if (sub?.current_period_end) periodEnd = new Date(sub.current_period_end * 1000).toISOString().slice(0, 10);
+    if (trialing && typeof sub.trial_end === "number") trialEnd = new Date(sub.trial_end * 1000).toISOString().slice(0, 10);
+    subPlan = planFromSubscription(sub) ?? metaPlan;
+    subId = sub.id ? String(sub.id) : subId0;
+    customerId = typeof sub.customer === "string" ? sub.customer : customerId;
   }
 
   // Fallback period dates: today → +30d (monthly) / +365d (annual).
@@ -786,9 +842,11 @@ app.post("/api/checkout/confirm", async (c) => {
     periodEnd = new Date(Date.now() + days * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
   }
 
+  const nextStatus = trialing ? "TRIAL" : "ACTIVE";
   db.query(`
     UPDATE tenants
-    SET subscription_status = 'ACTIVE',
+    SET subscription_status = $status,
+        subscription_trial_end = $trialEnd,
         subscription_plan = COALESCE($plan, subscription_plan),
         subscription_period_start = COALESCE($start, subscription_period_start),
         subscription_period_end = COALESCE($end, subscription_period_end),
@@ -797,6 +855,8 @@ app.post("/api/checkout/confirm", async (c) => {
         updated_at = datetime('now')
     WHERE id = $tid
   `).run({
+    $status: nextStatus,
+    $trialEnd: trialEnd,
     $plan: plan,
     $start: periodStart,
     $end: periodEnd,
@@ -808,27 +868,144 @@ app.post("/api/checkout/confirm", async (c) => {
     source: "checkout_confirm",
     session_id: sessionId,
     plan,
+    status: nextStatus,
+    trial_end: trialEnd,
     period_start: periodStart,
     period_end: periodEnd,
     stripe_customer_id: customerId,
     stripe_subscription_id: subId,
   });
-  console.log(`[checkout] confirm: tenant ${tenant.id} activated (plan=${plan ?? "unchanged"}, session ${sessionId})`);
+  console.log(`[checkout] confirm: tenant ${tenant.id} → ${nextStatus} (plan=${plan ?? "unchanged"}, session ${sessionId})`);
 
   const wizard = findWizard(db, tenant.id);
   const updated = findTenantForUser(db, user.user_id)!;
   return c.json({
-    status: "active",
+    status: nextStatus.toLowerCase(),
     tenant: {
       id: updated.id,
       name: updated.name,
       subscription_status: updated.subscription_status,
       subscription_plan: updated.subscription_plan ?? null,
+      subscription_trial_end: updated.subscription_trial_end ?? null,
       subscription_period_start: updated.subscription_period_start,
       subscription_period_end: updated.subscription_period_end,
       payment_week_start_day: updated.payment_week_start_day,
       wizard_status: wizard?.status || "NOT_STARTED",
     },
+  });
+});
+
+// ── Billing (Customer Portal + Cancel) ───────────────────
+// All three endpoints sit under /api/billing/* which is in TENANT_DATA_PATHS,
+// so they require auth + an ACTIVE/TRIAL tenant (requireTenant middleware).
+
+/** Resolve the return origin for portal/cancel redirects — same origin the
+ * request came from, falling back to the canonical live app URL. */
+function billingReturnUrl(c: any, fallbackPath: string): string {
+  const reqOrigin = c.req.header("Origin");
+  const reqHost = c.req.header("Host");
+  const base = reqOrigin && /^https?:\/\//.test(reqOrigin)
+    ? reqOrigin.replace(/\/+$/, "")
+    : reqHost && !reqHost.includes("localhost") && !reqHost.includes("127.0.0.1")
+      ? `https://${reqHost}`
+      : "https://cleartopay.ctonew.app";
+  return `${base}${fallbackPath}`;
+}
+
+// POST /api/billing/portal — create a Stripe Customer Portal session so the
+// tenant can update their payment method / manage their subscription in
+// Stripe's hosted portal. Returns { url }. 409 when no Stripe customer exists.
+app.post("/api/billing/portal", async (c) => {
+  const user = c.get("user") as { user_id: number } | undefined;
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const db = getDb();
+  const tenant = findTenantForUser(db, user.user_id);
+  if (!tenant) return c.json({ error: "No tenant found for this user. Please contact support." }, 403);
+  if (!tenant.stripe_customer_id) {
+    return c.json({
+      error: "no_stripe_customer",
+      message: "No payment method is on file for this account yet. Complete checkout first to manage billing.",
+    }, 409);
+  }
+  const stripe = getStripe();
+  if (!stripe) return c.json({ error: "Stripe is not configured" }, 503);
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: tenant.stripe_customer_id,
+      return_url: billingReturnUrl(c, "/app/billing"),
+    });
+    logAudit(db, "tenant", tenant.id, "billing_portal_created", { customer: tenant.stripe_customer_id });
+    return c.json({ url: session.url });
+  } catch (err) {
+    console.error("[billing] portal session create failed:", err);
+    return c.json({ error: `Could not open the billing portal: ${String(err)}` }, 500);
+  }
+});
+
+// POST /api/billing/cancel — set the Stripe subscription to cancel_at_period_end
+// (the customer keeps access until the end of the current period) and flag the
+// tenant so the UI can show "subscription ends on <date>". The
+// customer.subscription.deleted webhook later flips the tenant to CANCELLED,
+// after which the paywall gate blocks access.
+app.post("/api/billing/cancel", async (c) => {
+  const user = c.get("user") as { user_id: number } | undefined;
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const db = getDb();
+  const tenant = findTenantForUser(db, user.user_id);
+  if (!tenant) return c.json({ error: "No tenant found for this user. Please contact support." }, 403);
+  if (!tenant.stripe_subscription_id) {
+    return c.json({
+      error: "no_stripe_subscription",
+      message: "No active Stripe subscription was found for this account.",
+    }, 409);
+  }
+  const stripe = getStripe();
+  if (!stripe) return c.json({ error: "Stripe is not configured" }, 503);
+  try {
+    const sub = await stripe.subscriptions.update(tenant.stripe_subscription_id, {
+      cancel_at_period_end: true,
+    });
+    const cancelAt = sub.current_period_end ? new Date(sub.current_period_end * 1000).toISOString().slice(0, 10) : null;
+    db.query(`
+      UPDATE tenants
+      SET cancel_at_period_end = 1,
+          updated_at = datetime('now')
+      WHERE id = $tid
+    `).run({ $tid: tenant.id });
+    logAudit(db, "tenant", tenant.id, "subscription_cancel_requested", {
+      stripe_subscription_id: tenant.stripe_subscription_id,
+      cancels_at: cancelAt,
+    });
+    console.log(`[billing] cancel: tenant ${tenant.id} → cancel_at_period_end (ends ${cancelAt ?? "?"})`);
+    return c.json({ success: true, cancel_at_period_end: true, cancels_on: cancelAt });
+  } catch (err) {
+    console.error("[billing] cancel failed:", err);
+    return c.json({ error: `Could not cancel the subscription: ${String(err)}` }, 500);
+  }
+});
+
+// GET /api/billing/status — everything the billing UI needs: plan, status,
+// next billing date (or trial end), cancellation state, and whether a Stripe
+// customer is on file (for the portal button).
+app.get("/api/billing/status", async (c) => {
+  const user = c.get("user") as { user_id: number } | undefined;
+  if (!user) return c.json({ error: "Unauthorized" }, 401);
+  const db = getDb();
+  const tenant = findTenantForUser(db, user.user_id);
+  if (!tenant) return c.json({ error: "No tenant found for this user. Please contact support." }, 403);
+  const status = tenant.subscription_status || "PENDING";
+  const trialEnd = tenant.subscription_trial_end ?? null;
+  const periodEnd = tenant.subscription_period_end ?? null;
+  return c.json({
+    plan: tenant.subscription_plan ?? null,
+    status,
+    period_start: tenant.subscription_period_start ?? null,
+    period_end: periodEnd,
+    trial_end: trialEnd,
+    next_billing_date: trialEnd && status === "TRIAL" ? trialEnd : periodEnd,
+    cancel_at_period_end: tenant.cancel_at_period_end === 1,
+    stripe_customer_present: Boolean(tenant.stripe_customer_id),
+    stripe_subscription_present: Boolean(tenant.stripe_subscription_id),
   });
 });
 

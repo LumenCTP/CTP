@@ -10,6 +10,7 @@ const navItems = [
   { to: "/app/reports", label: "Reports", icon: "📊" },
   { to: "/app/needs-review", label: "Needs Review", icon: "⚠" },
   { to: "/app/email-log", label: "Email Log", icon: "✉" },
+  { to: "/app/billing", label: "Billing", icon: "💳" },
   { to: "#help", label: "Help & Support", icon: "?" },
 ];
 

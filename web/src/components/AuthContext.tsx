@@ -12,6 +12,8 @@ interface User {
   tenant_name?: string | null;
   subscription_status?: string | null;
   subscription_plan?: string | null;
+  subscription_trial_end?: string | null;
+  cancel_at_period_end?: boolean;
   payment_week_start_day?: string | null;
   wizard_status?: string | null;
   // Partner-specific fields (populated from /api/partner/me when role === "partner")
@@ -79,6 +81,8 @@ function mergeTenant(user: Record<string, unknown>, tenant: Record<string, unkno
     tenant_name: (tenant?.name as string) ?? null,
     subscription_status: (tenant?.subscription_status as string) ?? null,
     subscription_plan: (tenant?.subscription_plan as string) ?? null,
+    subscription_trial_end: (tenant?.subscription_trial_end as string) ?? null,
+    cancel_at_period_end: (tenant?.cancel_at_period_end as boolean) ?? false,
     payment_week_start_day: (tenant?.payment_week_start_day as string) ?? "monday",
     wizard_status: (tenant?.wizard_status as string) ?? null,
   };
@@ -92,13 +96,14 @@ export function needsSetup(user: User | null): boolean {
 }
 
 // True when the user must pay before using the app: any non-admin, non-partner
-// tenant whose subscription_status is not ACTIVE (PENDING, TRIAL, PAST_DUE, ...)
-// is blocked behind the paywall. Admins and partners have their own portals and
-// are never gated on tenant payment.
+// tenant whose subscription_status is not ACTIVE or TRIAL (PENDING, PAST_DUE, ...)
+// is blocked behind the paywall. ACTIVE (paid) and TRIAL (30-day free trial,
+// card on file) tenants have full access. Admins and partners have their own
+// portals and are never gated on tenant payment.
 export function needsPayment(user: User | null): boolean {
   if (!user) return false;
   if (user.role === "admin" || user.role === "partner") return false;
-  return user.subscription_status !== "ACTIVE";
+  return user.subscription_status !== "ACTIVE" && user.subscription_status !== "TRIAL";
 }
 
 // Where an authenticated user should land: paywall for unpaid tenants, the

@@ -14,6 +14,7 @@ import DocumentDetail from "./pages/DocumentDetail";
 import Reports from "./pages/Reports";
 import NeedsReview from "./pages/NeedsReview";
 import EmailLog from "./pages/EmailLog";
+import Billing from "./pages/Billing";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
 import SetupWizard from "./pages/SetupWizard";
@@ -336,6 +337,7 @@ export default function App() {
               <Route path="reports" element={<Reports />} />
               <Route path="needs-review" element={<NeedsReview />} />
               <Route path="email-log" element={<EmailLog />} />
+              <Route path="billing" element={<Billing />} />
             </Route>
 
             {/* Partner portal — approved partners only */}

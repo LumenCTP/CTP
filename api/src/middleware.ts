@@ -13,6 +13,7 @@ export const TENANT_DATA_PATHS = [
   "/api/inbox/*",
   "/api/import/*",
   "/api/support/*",
+  "/api/billing", "/api/billing/*",
 ];
 // Queue processor endpoints are intentionally unauthenticated JWT-wise, but protected
 // by a shared secret (they are called by the internal scheduler/delivery worker).
@@ -124,6 +125,8 @@ export interface TenantRow {
   subscription_plan: string | null;
   subscription_period_start: string | null;
   subscription_period_end: string | null;
+  subscription_trial_end: string | null;
+  cancel_at_period_end: number;
   payment_week_start_day: string;
   admin_email: string | null;
   created_at: string;
@@ -160,12 +163,13 @@ export function findWizard(db: ReturnType<typeof getDb>, tenantId: number): Wiza
 export function createTenantForUser(
   db: ReturnType<typeof getDb>,
   userId: number,
-  opts?: { name?: string; subscription_status?: string; periodStart?: string; periodEnd?: string; subscription_plan?: string | null }
+  opts?: { name?: string; subscription_status?: string; periodStart?: string; periodEnd?: string; subscription_plan?: string | null; trialEnd?: string | null }
 ): TenantRow {
   const name = opts?.name || "My Company";
-  // New tenants start PENDING — they must complete payment at checkout before
-  // the app (and its data routes) unlock. The webhook / checkout-confirm path
-  // flips the tenant to ACTIVE once payment is collected.
+  // New tenants start PENDING — they must complete checkout (card on file for
+  // the 30-day trial, or an immediate charge) before the app (and its data
+  // routes) unlock. The webhook / checkout-confirm path flips the tenant to
+  // TRIAL (trialing subscription) or ACTIVE (paid) once checkout completes.
   const status = opts?.subscription_status || "PENDING";
   // Per-company slug: company name with all non-alphanumeric characters
   // removed, case preserved ("ABC Company" → "ABCCompany").
@@ -173,8 +177,8 @@ export function createTenantForUser(
   let slug = base, suffix = 2;
   while (db.query("SELECT id FROM tenants WHERE inbox_slug = $slug COLLATE NOCASE").get({ $slug: slug })) slug = `${base.slice(0, Math.max(1, 60 - String(suffix).length))}${suffix++}`;
   const result = db.query(`
-    INSERT INTO tenants (name, owner_user_id, subscription_status, subscription_period_start, subscription_period_end, inbox_slug, subscription_plan)
-    VALUES ($name, $uid, $status, $start, $end, $slug, $plan)
+    INSERT INTO tenants (name, owner_user_id, subscription_status, subscription_period_start, subscription_period_end, inbox_slug, subscription_plan, subscription_trial_end)
+    VALUES ($name, $uid, $status, $start, $end, $slug, $plan, $trialEnd)
   `).run({
     $name: name,
     $uid: userId,
@@ -183,6 +187,7 @@ export function createTenantForUser(
     $end: opts?.periodEnd ?? null,
     $slug: slug,
     $plan: opts?.subscription_plan ?? null,
+    $trialEnd: opts?.trialEnd ?? null,
   });
   const tenantId = Number(result.lastInsertRowid);
 
@@ -209,10 +214,12 @@ export async function requireTenant(c: any, next: any) {
   if (!tenant) {
     return c.json({ error: "No tenant found for this user. Please contact support." }, 403);
   }
-  // Paywall gate: only ACTIVE tenants may read/write data. PENDING (never
-  // paid), TRIAL (legacy), PAST_DUE (unpaid renewal) and anything else are all
-  // blocked with 402 — the SPA routes them to the paywall.
-  if (tenant.subscription_status !== "ACTIVE") {
+  // Paywall gate: ACTIVE (paid) and TRIAL (30-day free trial) tenants may
+  // read/write data. PENDING (never completed checkout), PAST_DUE (unpaid
+  // renewal) and anything else are blocked with 402 — the SPA routes them to
+  // the paywall.
+  const status = tenant.subscription_status;
+  if (status !== "ACTIVE" && status !== "TRIAL") {
     return c.json({
       error: "subscription_required",
       message: "Complete payment to activate your account",

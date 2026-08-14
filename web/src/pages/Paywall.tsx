@@ -15,9 +15,10 @@ const PLAN_STYLES: React.CSSProperties = {
 
 /**
  * Full-screen paywall shown to authenticated tenants whose subscription is not
- * ACTIVE (PENDING after signup, PAST_DUE after a failed renewal, or legacy
- * TRIAL). Every plan button goes to the marketing /checkout page on the same
- * origin — payment is collected immediately (no free trial).
+ * ACTIVE or TRIAL (PENDING after signup, PAST_DUE after a failed renewal, or
+ * CANCELLED). Every plan button goes to the marketing /checkout page on the
+ * same origin — checkout starts a 30-day free trial (card on file, no charge
+ * until the trial ends) or collects payment immediately for a paid plan.
  */
 export default function Paywall() {
   const { logout } = useAuth();
@@ -27,10 +28,11 @@ export default function Paywall() {
       <div className="auth-card" style={{ maxWidth: 640 }}>
         <div className="auth-header">
           <div className="auth-logo-slot"><Logo size={48} /></div>
-          <h2>Complete your purchase to activate your account</h2>
+          <h2>Complete checkout to activate your account</h2>
           <p className="auth-subtitle">
-            Your ClearToPay account is created — pick a plan and pay securely
-            with Stripe to unlock your compliance dashboard.
+            Your ClearToPay account is created — pick a plan and enter your card
+            at checkout to unlock your compliance dashboard. Your card won't be
+            charged until your 30-day free trial ends.
           </p>
         </div>
 
@@ -38,7 +40,7 @@ export default function Paywall() {
           <a href="/checkout?plan=monthly" style={PLAN_STYLES} className="plan-card-link">
             <span style={{ fontWeight: 700, color: "var(--text)", fontSize: 15 }}>Monthly</span>
             <span style={{ fontSize: 22, fontWeight: 800, color: "var(--text)" }}>$149<span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-muted)" }}>/mo</span></span>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Billed monthly. Cancel anytime.</span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Billed after your free trial. Cancel anytime.</span>
             <span
               style={{
                 marginTop: 8,
@@ -51,7 +53,7 @@ export default function Paywall() {
                 fontSize: 14,
               }}
             >
-              Pay $149 now
+              Start free trial — $149/mo
             </span>
           </a>
           <a href="/checkout?plan=annual" style={{ ...PLAN_STYLES, borderColor: "var(--accent, #2563eb)", position: "relative" }} className="plan-card-link">
@@ -72,7 +74,7 @@ export default function Paywall() {
             </span>
             <span style={{ fontWeight: 700, color: "var(--text)", fontSize: 15 }}>Annual</span>
             <span style={{ fontSize: 22, fontWeight: 800, color: "var(--text)" }}>$1,200<span style={{ fontSize: 13, fontWeight: 500, color: "var(--text-muted)" }}>/yr</span></span>
-            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Billed once a year. Save $588 vs. monthly.</span>
+            <span style={{ fontSize: 12, color: "var(--text-muted)" }}>Billed once a year after trial. Save $588 vs. monthly.</span>
             <span
               style={{
                 marginTop: 8,
@@ -85,13 +87,14 @@ export default function Paywall() {
                 fontSize: 14,
               }}
             >
-              Pay $1,200 now
+              Start free trial — $1,200/yr
             </span>
           </a>
         </div>
 
         <p style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", marginTop: 18 }}>
-          You'll be charged now — no free trial. Cancel anytime.
+          Your card is entered at checkout but you won't be charged until your 30-day
+          free trial ends. Cancel anytime.
         </p>
         <p style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", marginTop: 6 }}>
           Need help? Email <a href="mailto:support@cleartopay.com" style={{ color: "var(--blue)" }}>support@cleartopay.com</a>

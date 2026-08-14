@@ -363,6 +363,11 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "partners", "stripe_disconnected_at TEXT", "stripe_disconnected_at");
   ensureColumn(db, "tenants", "stripe_customer_id TEXT", "stripe_customer_id");
   ensureColumn(db, "tenants", "stripe_subscription_id TEXT", "stripe_subscription_id");
+  // Trial end date (Unix epoch stored as TEXT) — set when a trialing
+  // subscription is created via checkout (trial_period_days), cleared once the
+  // trial converts to a real paid subscription.
+  ensureColumn(db, "tenants", "subscription_trial_end TEXT", "subscription_trial_end");
+  ensureColumn(db, "tenants", "cancel_at_period_end INTEGER NOT NULL DEFAULT 0", "cancel_at_period_end");
   // payouts.status must accept 'failed' (Stripe Connect transfer failures).
   // SQLite can't ALTER a CHECK constraint, so rebuild the table (same pattern
   // as the email_log rebuild above). Nothing references payouts (commissions

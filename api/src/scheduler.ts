@@ -216,7 +216,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
   // recipients never get a scheduled refresh otherwise. Each tenant is wrapped
   // in try/catch so a single failure cannot kill the job.
   const activeTenants = db.query(
-    "SELECT id FROM tenants WHERE UPPER(subscription_status) = 'ACTIVE'"
+    "SELECT id FROM tenants WHERE UPPER(subscription_status) IN ('ACTIVE', 'TRIAL')"
   ).all() as Array<{ id: number }>;
   for (const tenant of activeTenants) {
     try {

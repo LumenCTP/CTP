@@ -67,9 +67,9 @@ export default function Register() {
       return;
     }
 
-    // Account created with a PENDING tenant — the customer must pay NOW to
-    // activate. Send them to the marketing /checkout page (same origin) with
-    // their chosen plan preselected; the checkout page shows the success note.
+    // Account created with a PENDING tenant — the customer completes checkout
+    // (card on file) to start the 30-day free trial. Send them to the marketing
+    // /checkout page (same origin) with their chosen plan preselected.
     window.location.href = `/checkout?plan=${plan}&registered=1`;
   }
 
@@ -168,8 +168,8 @@ export default function Register() {
             </div>
             <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 6 }}>
               {plan === "annual"
-                ? "Annual: $1,200/year — billed once a year, save $588 vs. monthly. You'll be charged today."
-                : "Monthly: $149/month — billed monthly, cancel anytime. You'll be charged today."}
+                ? "Annual: $1,200/year — billed once a year after your 30-day free trial, save $588 vs. monthly."
+                : "Monthly: $149/month — billed monthly after your 30-day free trial, cancel anytime."}
             </p>
           </div>
 
@@ -178,7 +178,8 @@ export default function Register() {
           </button>
 
           <p style={{ fontSize: 12, color: "var(--text-muted)", textAlign: "center", marginTop: -8 }}>
-            No free trial — payment is collected when you complete checkout.
+            Start your 30-day free trial — your card is entered at checkout but you won't
+            be charged until your trial ends.
           </p>
         </form>
 
