@@ -14,6 +14,7 @@ export const TENANT_DATA_PATHS = [
   "/api/import/*",
   "/api/support/*",
   "/api/billing", "/api/billing/*",
+  "/api/chat", "/api/chat/*",
 ];
 // Queue processor endpoints are intentionally unauthenticated JWT-wise, but protected
 // by a shared secret (they are called by the internal scheduler/delivery worker).

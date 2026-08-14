@@ -565,6 +565,33 @@ function runMigrations(db: Database): void {
     backfilled += applyDefaultRequiredDocs(db, client.id);
   }
   if (backfilled > 0) console.log(`[db] Backfilled default required documents for ${zeroConfigClients.length} client(s) (${backfilled} rows)`);
+
+  // ── In-App AI Chat Assistant (v1) ─────────────────────────
+  // Tenant-scoped chat_messages: one row per user/assistant exchange with
+  // per-exchange LLM usage so cost stays visible. status_cards holds the
+  // JSON {payment_status, vendor_name} verdict (JSON-in-TEXT, same pattern as
+  // outgoing_email_queue.attachments).
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS chat_messages (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      user_id INTEGER,
+      session_id TEXT NOT NULL,
+      role TEXT NOT NULL CHECK (role IN ('user','assistant')),
+      message TEXT NOT NULL,
+      status_cards TEXT,
+      escalate INTEGER NOT NULL DEFAULT 0,
+      model TEXT,
+      prompt_tokens INTEGER DEFAULT 0,
+      completion_tokens INTEGER DEFAULT 0,
+      cost_estimate REAL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+    );
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_tenant_session ON chat_messages(tenant_id, session_id);
+    CREATE INDEX IF NOT EXISTS idx_chat_messages_tenant_created ON chat_messages(tenant_id, created_at);
+  `);
+  console.log("[db] chat_messages table ready");
   console.log("[db] Migrations complete — all tables ready");
 }
 

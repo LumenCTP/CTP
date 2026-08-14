@@ -3,6 +3,7 @@ import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
 import TopBar from "./TopBar";
 import HelpWidget from "./HelpWidget";
+import ChatWidget from "./ChatWidget";
 
 export default function Layout() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(true);
@@ -20,6 +21,7 @@ export default function Layout() {
         </main>
       </div>
       <HelpWidget />
+      <ChatWidget />
     </div>
   );
 }

@@ -106,6 +106,7 @@ export default function Dashboard() {
             ))}
           </div>
           {!hasClients && <button type="button" className="onboarding-help-prompt" onClick={() => openHelp("I have questions about getting set up.", "onboarding")}>Questions about getting set up? Ask our Onboarding Officer.</button>}
+          <p className="onboarding-chat-hint">💬 Ask the AI assistant why a vendor is on hold or which vendors we've reached out to this week — click the <strong>Ask AI</strong> button.</p>
         </section>
       )}
 
@@ -127,6 +128,7 @@ export default function Dashboard() {
         <div className="clear-to-pay-heading">
           <div><h3 id="clear-to-pay-title">Clear-to-Pay Summary</h3><p>Vendor payment readiness for the current payment week.</p></div>
         </div>
+        {hasVendors && <p className="onboarding-chat-hint">💬 Ask the AI assistant why a vendor is on hold or which vendors we've reached out to this week — click the <strong>Ask AI</strong> button.</p>}
         {(["approved", "review", "hold"] as const).map((status) => {
           const labels = { approved: "Approved for Payment", review: "Review Before Payment", hold: "Hold Payment" };
           const vendors = clearToPay.filter((vendor) => vendor.payment_status === status);

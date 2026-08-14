@@ -19,6 +19,7 @@ import reportsRoutes from "./routes/reports";
 import auditRoutes from "./routes/audit";
 import emailsRoutes from "./routes/emails";
 import partnersRoutes from "./routes/partners";
+import chatRoutes from "./routes/chat";
 
 const app = new Hono();
 
@@ -66,6 +67,7 @@ app.route("/", reportsRoutes);
 app.route("/", auditRoutes);
 app.route("/", emailsRoutes);
 app.route("/", partnersRoutes);
+app.route("/", chatRoutes);
 
 // Initialize DB on startup
 getDb();
