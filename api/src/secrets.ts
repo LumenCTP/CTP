@@ -45,3 +45,17 @@ export const QUEUE_SECRET = loadOrCreateSecret("QUEUE_SECRET", ".queue-secret");
 // `process.env.TOKEN_SECRET || "cleartopay-secret-" + crypto.randomUUID()` in
 // middleware.ts, which rotated on every restart and invalidated all login tokens.
 export const TOKEN_SECRET = loadOrCreateSecret("TOKEN_SECRET", ".token-secret");
+
+// Masked startup fingerprint so operators can confirm both secrets stayed
+// stable across a restart without printing the values: a deterministic
+// 8-hex-char hash of each secret. Identical lines before/after a restart =
+// the same secrets are in use (env var, or the persisted git-ignored file).
+function maskedHash(secret: string): string {
+  let h = 0;
+  for (let i = 0; i < secret.length; i++) {
+    h = (h * 31 + secret.charCodeAt(i)) | 0;
+  }
+  return (h >>> 0).toString(16).padStart(8, "0");
+}
+console.log(`[secrets] QUEUE_SECRET resolved (env-first, else api/data/.queue-secret) — masked ${maskedHash(QUEUE_SECRET)}`);
+console.log(`[secrets] TOKEN_SECRET resolved (env-first, else api/data/.token-secret) — masked ${maskedHash(TOKEN_SECRET)}`);
