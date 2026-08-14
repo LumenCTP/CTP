@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { apiFetch } from "../../lib/api";
-import { money, LoadingBlock, ErrorBlock } from "./common";
+import { money, LoadingBlock, ErrorBlock, PageHeader } from "./common";
 
 interface AdminStats {
   total_partners: number;
@@ -14,6 +15,15 @@ interface AdminStats {
   approved_commissions: { count: number; amount: number };
   upcoming_payouts: number;
   lifetime_commissions_paid: number;
+}
+
+function todayLabel(): string {
+  return new Date().toLocaleDateString(undefined, {
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 export default function AdminDashboard() {
@@ -37,11 +47,20 @@ export default function AdminDashboard() {
       });
   }, []);
 
+  const header = (
+    <PageHeader
+      eyebrow="Partner Program"
+      title="Admin Dashboard"
+      subtitle="System-wide overview of partners, referrals, and commission revenue."
+      actions={<span className="date-chip">📅 {todayLabel()}</span>}
+    />
+  );
+
   if (loading) {
-    return <div className="dashboard"><h2 className="page-title">Admin Dashboard</h2><LoadingBlock label="Loading metrics…" /></div>;
+    return <div className="dashboard">{header}<LoadingBlock label="Loading metrics…" /></div>;
   }
   if (error || !stats) {
-    return <div className="dashboard"><h2 className="page-title">Admin Dashboard</h2><ErrorBlock message={error || "No data"} /></div>;
+    return <div className="dashboard">{header}<ErrorBlock message={error || "No data"} /></div>;
   }
 
   const countCards = [
@@ -61,11 +80,38 @@ export default function AdminDashboard() {
     { key: "lifetime", label: "Lifetime Commissions Paid", color: "#059669", value: money(stats.lifetime_commissions_paid) },
   ];
 
+  const everythingZero =
+    stats.total_partners === 0 &&
+    stats.pending_applications === 0 &&
+    stats.total_referrals === 0 &&
+    stats.referred_monthly_revenue === 0 &&
+    stats.pending_commissions.amount === 0 &&
+    stats.approved_commissions.amount === 0 &&
+    stats.upcoming_payouts === 0 &&
+    stats.lifetime_commissions_paid === 0;
+
   return (
     <div className="dashboard">
-      <h2 className="page-title">Admin Dashboard</h2>
-      <p className="page-subtitle">System-wide partner program overview.</p>
+      {header}
 
+      {everythingZero && (
+        <div className="welcome-banner">
+          <div className="welcome-banner-icon">🎉</div>
+          <div className="welcome-banner-body">
+            <h3>Your partner program is live and ready</h3>
+            <p>
+              No activity yet — this dashboard fills in automatically as partners apply,
+              get approved, and refer customers.
+            </p>
+          </div>
+          <div className="welcome-banner-actions">
+            <Link className="btn btn-primary btn-sm" to="/app/admin/partners">Review Partners</Link>
+            <Link className="btn btn-outline btn-sm" to="/app/admin/referrals">View Referrals</Link>
+          </div>
+        </div>
+      )}
+
+      <div className="section-heading">Partners &amp; Referrals</div>
       <div className="metrics-grid">
         {countCards.map((card) => (
           <div key={card.key} className="metric-card">
@@ -78,6 +124,7 @@ export default function AdminDashboard() {
         ))}
       </div>
 
+      <div className="section-heading">Revenue &amp; Commissions</div>
       <div className="partner-status-grid">
         {moneyCards.map((card) => (
           <div key={card.key} className="partner-status-card">

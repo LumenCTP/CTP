@@ -172,7 +172,7 @@ export default function AdminReferrals() {
             </thead>
             <tbody>
               {referrals.length === 0 ? (
-                <tr><td colSpan={9} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No referrals found.</td></tr>
+                <tr className="table-empty"><td colSpan={9}>No referrals found.</td></tr>
               ) : referrals.map((r) => (
                 <tr key={r.id} onClick={() => openEdit(r)} style={{ cursor: "pointer" }}>
                   <td className="td-name">{displayPartner(r)}</td>

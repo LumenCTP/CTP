@@ -168,7 +168,7 @@ export default function AdminPayouts() {
             </thead>
             <tbody>
               {payouts.length === 0 ? (
-                <tr><td colSpan={6} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No payouts recorded yet.</td></tr>
+                <tr className="table-empty"><td colSpan={6}>No payouts recorded yet.</td></tr>
               ) : payouts.map((po) => (
                 <tr key={po.id} onClick={() => setDetail(po)} style={{ cursor: "pointer" }}>
                   <td className="td-name">{po.partner_name || `Partner #${po.partner_id}`}</td>

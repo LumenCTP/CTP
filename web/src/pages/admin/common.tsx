@@ -7,7 +7,6 @@ export function money(n: number | string | null | undefined): string {
   if (!Number.isFinite(v)) return "—";
   return v.toLocaleString("en-US", { style: "currency", currency: "USD" });
 }
-
 export function fmtDate(value: string | null | undefined): string {
   if (!value) return "—";
   const d = new Date(value.includes("T") ? value : `${value}T00:00:00`);
@@ -122,4 +121,51 @@ export function LoadingBlock({ label }: { label: string }) {
 
 export function ErrorBlock({ message }: { message: string }) {
   return <div className="error-message">{message}</div>;
+}
+
+// ── Page header (eyebrow + title + subtitle + optional actions) ──
+
+export function PageHeader({
+  eyebrow, title, subtitle, actions,
+}: {
+  eyebrow?: string;
+  title: string;
+  subtitle?: string;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className="page-header-block">
+      {eyebrow && <div className="page-eyebrow">{eyebrow}</div>}
+      <div className="page-header-row">
+        <div style={{ minWidth: 0 }}>
+          <h2 className="page-title">{title}</h2>
+          {subtitle && <p className="page-subtitle">{subtitle}</p>}
+        </div>
+        {actions && <div className="page-header-actions">{actions}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Empty state (inviting placeholder for sparse data) ────
+
+export function EmptyState({
+  icon = "📭",
+  title,
+  description,
+  action,
+}: {
+  icon?: string;
+  title: string;
+  description?: string;
+  action?: ReactNode;
+}) {
+  return (
+    <div className="empty-state">
+      <div className="empty-state-icon">{icon}</div>
+      <h3 className="empty-state-title">{title}</h3>
+      {description && <p className="empty-state-desc">{description}</p>}
+      {action && <div className="empty-state-action">{action}</div>}
+    </div>
+  );
 }

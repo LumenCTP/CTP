@@ -208,7 +208,7 @@ export default function AdminPartners() {
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={8} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No partners found.</td></tr>
+                <tr className="table-empty"><td colSpan={8}>No partners found.</td></tr>
               ) : filtered.map((p) => (
                 <tr key={p.id} onClick={() => openDetail(p)} style={{ cursor: "pointer" }}>
                   <td className="td-name">{name(p)}</td>

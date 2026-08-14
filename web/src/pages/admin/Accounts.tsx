@@ -137,7 +137,7 @@ export default function AdminAccounts() {
             </thead>
             <tbody>
               {filteredAccounts.length === 0 ? (
-                <tr><td colSpan={8} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No accounts match this filter.</td></tr>
+                <tr className="table-empty"><td colSpan={8}>No accounts match this filter.</td></tr>
               ) : filteredAccounts.map((a) => (
                 <tr key={a.id}>
                   <td className="td-name">{a.name}</td>

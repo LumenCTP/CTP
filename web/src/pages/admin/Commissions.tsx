@@ -216,7 +216,7 @@ export default function AdminCommissions() {
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr><td colSpan={8} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No commissions found.</td></tr>
+                <tr className="table-empty"><td colSpan={8}>No commissions found.</td></tr>
               ) : filtered.map((c) => (
                 <tr
                   key={c.id}

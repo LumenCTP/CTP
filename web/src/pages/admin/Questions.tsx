@@ -194,7 +194,7 @@ export default function AdminQuestions() {
             </thead>
             <tbody>
               {accounts.length === 0 ? (
-                <tr><td colSpan={7} style={{ color: "var(--gray-500)", textAlign: "center", padding: 24 }}>No accounts yet.</td></tr>
+                <tr className="table-empty"><td colSpan={7}>No accounts yet.</td></tr>
               ) : accounts.map((a) => (
                 <tr
                   key={a.id}
