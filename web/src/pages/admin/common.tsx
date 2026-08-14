@@ -52,6 +52,9 @@ const STATUS_CLASSES: Record<string, string> = {
   not_started: "badge-rejected",
   in_progress: "badge-pending",
   completed: "badge-approved",
+  // support message statuses (admin questions view)
+  open: "badge-pending",
+  answered: "badge-approved",
 };
 
 export function Badge({ status }: { status: string | null | undefined }) {

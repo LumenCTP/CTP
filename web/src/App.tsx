@@ -35,6 +35,7 @@ import AdminCommissions from "./pages/admin/Commissions";
 import AdminPayouts from "./pages/admin/Payouts";
 import AdminAuditLog from "./pages/admin/AuditLog";
 import AdminAccounts from "./pages/admin/Accounts";
+import AdminQuestions from "./pages/admin/Questions";
 import AdminCashflow from "./pages/admin/Cashflow";
 
 function LoadingScreen() {
@@ -363,6 +364,7 @@ export default function App() {
                 <Route path="payouts" element={<AdminPayouts />} />
                 <Route path="audit" element={<AdminAuditLog />} />
                 <Route path="accounts" element={<AdminAccounts />} />
+                <Route path="questions" element={<AdminQuestions />} />
                 <Route path="cashflow" element={<AdminCashflow />} />
               </Route>
             </Route>

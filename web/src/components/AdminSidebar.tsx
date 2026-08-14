@@ -11,6 +11,7 @@ const adminNavItems = [
   { to: "/app/admin/payouts", label: "Payouts", icon: "🏦" },
   { to: "/app/admin/audit", label: "Audit Log", icon: "🕮" },
   { to: "/app/admin/accounts", label: "Clients", icon: "🏢" },
+  { to: "/app/admin/questions", label: "Questions", icon: "❓" },
   { to: "/app/admin/cashflow", label: "Cash Flow", icon: "📈" },
 ];
 

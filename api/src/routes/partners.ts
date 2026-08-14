@@ -748,7 +748,9 @@ app.get("/api/admin/audit-log", requireAuth, requireAdmin, (c) => {
 // LEFT JOIN and alias it to keep the response shape: { id, name,
 // subscription_status, subscription_plan, subscription_period_start,
 // payment_week_start_day, wizard_status, created_at, user_count,
-// vendor_count }.
+// vendor_count, owner_name, owner_email, unanswered_count }.
+// owner_* come from the tenant's owner user; unanswered_count is the number
+// of support questions still open (status = 'open') for that tenant.
 app.get("/api/admin/accounts", requireAuth, requireAdmin, (c) => {
   const db = getDb();
   const rows = db.query(`
@@ -756,7 +758,10 @@ app.get("/api/admin/accounts", requireAuth, requireAdmin, (c) => {
            t.subscription_period_start, t.payment_week_start_day,
            COALESCE(sw.status, 'NOT_STARTED') as wizard_status, t.created_at,
       (SELECT COUNT(*) FROM users u WHERE u.tenant_id = t.id) as user_count,
-      (SELECT COUNT(*) FROM vendors v WHERE v.tenant_id = t.id) as vendor_count
+      (SELECT COUNT(*) FROM vendors v WHERE v.tenant_id = t.id) as vendor_count,
+      (SELECT u.full_name FROM users u WHERE u.id = t.owner_user_id) as owner_name,
+      (SELECT u.email FROM users u WHERE u.id = t.owner_user_id) as owner_email,
+      (SELECT COUNT(*) FROM support_messages sm WHERE sm.tenant_id = t.id AND sm.status = 'open') as unanswered_count
     FROM tenants t
     LEFT JOIN setup_wizard sw ON sw.tenant_id = t.id
     ORDER BY t.created_at DESC

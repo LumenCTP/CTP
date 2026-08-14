@@ -5,6 +5,7 @@ import { startScheduler } from "./scheduler";
 import { TENANT_DATA_PATHS, requireAuth, requireTenant, isQueueRoute } from "./middleware";
 import authRoutes from "./auth";
 import supportRoutes from "./routes/support";
+import adminSupportRoutes from "./routes/admin-support";
 import stripeRoutes from "./routes/stripe";
 import setupRoutes from "./routes/setup";
 import healthRoutes from "./routes/health";
@@ -51,6 +52,7 @@ for (const pattern of TENANT_DATA_PATHS) {
 // Mount route modules (internal paths carry the full /api/... prefix)
 app.route("/", authRoutes);
 app.route("/", supportRoutes);
+app.route("/", adminSupportRoutes);
 app.route("/", stripeRoutes);
 app.route("/", setupRoutes);
 app.route("/", healthRoutes);
