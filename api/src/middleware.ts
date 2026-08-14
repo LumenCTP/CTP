@@ -1,6 +1,6 @@
 import { getDb } from "./db";
 import { companyNameToSlug } from "./lib/inbox";
-import { QUEUE_SECRET } from "./secrets";
+import { QUEUE_SECRET, TOKEN_SECRET } from "./secrets";
 
 // All tenant-owned data endpoints require both authentication and a tenant.
 // Keeping this as a path middleware prevents a newly-added data route from
@@ -28,7 +28,8 @@ export function requireQueueSecret(c: any): Response | null {
 }
 // ── Auth Token Helpers ──────────────────────────────────
 
-const TOKEN_SECRET = process.env.TOKEN_SECRET || "cleartopay-secret-" + crypto.randomUUID();
+// TOKEN_SECRET comes from api/src/secrets.ts — env-first, else a durable
+// git-ignored file (api/data/.token-secret) so tokens survive API restarts.
 const TOKEN_EXPIRY_MS = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 export async function createAuthToken(payload: Record<string, unknown>): Promise<string> {

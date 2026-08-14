@@ -8,5 +8,7 @@ api/data/documents/*
 api/data/reports/
 api/data/uploads/
 api/data/audits/
+api/data/.queue-secret
+api/data/.token-secret
 *.log
 .env

@@ -18,7 +18,7 @@ export default function SetPassword() {
     const data = await res.json();
     if (!res.ok) return setError(data.error || "Could not set password.");
     setDone(true);
-    setTimeout(() => navigate("/login", { state: { email } }), 700);
+    setTimeout(() => navigate("/app/login", { state: { email } }), 700);
   }
   return <div className="auth-page"><div className="auth-card">
     <div className="auth-header"><div className="auth-logo-slot"><Logo size={48} /></div><h2>Set your password</h2><p className="auth-subtitle">Finish setting up your ClearToPay account</p></div>
@@ -29,6 +29,6 @@ export default function SetPassword() {
       <div className="form-group"><label htmlFor="setup-confirm">Confirm password</label><input id="setup-confirm" type="password" required value={confirm} onChange={e => setConfirm(e.target.value)} autoComplete="new-password" /></div>
       <button type="submit" className="auth-btn">Set password</button>
     </form>}
-    <p className="auth-footer"><Link to="/login">Back to sign in</Link></p>
+    <p className="auth-footer"><Link to="/app/login">Back to sign in</Link></p>
   </div></div>;
 }

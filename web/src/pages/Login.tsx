@@ -51,7 +51,10 @@ export default function Login() {
 
     if (err) {
       setError(err);
-      setNeedsPassword(err === "Account needs password setup");
+      // Robust check: match the stable "password setup" fragment (case-insensitive)
+      // instead of the exact error string, so prefix/suffix wording changes on the
+      // server don't silently break the "Set up your password" flow.
+      setNeedsPassword(typeof err === "string" && err.toLowerCase().includes("password setup"));
     }
   }
 
@@ -166,7 +169,7 @@ export default function Login() {
         {!showForgot && (
           <p className="auth-footer">
             Don't have an account?{" "}
-            <Link to="/register">Create one</Link>
+            <Link to="/app/register">Create one</Link>
           </p>
         )}
       </div>

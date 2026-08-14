@@ -118,7 +118,7 @@ export default function SetupWizard() {
   }
 
   if (!user) {
-    return <Navigate to="/login" replace />;
+    return <Navigate to="/app/login" replace />;
   }
 
   if (user.wizard_status === "COMPLETED") {

@@ -144,6 +144,8 @@ app.post("/api/auth/register", async (c) => {
         full_name: profileName,
         company_name: company_name.trim(),
         email: email.trim().toLowerCase(),
+        inbox_slug: tenant.inbox_slug ?? null,
+        inbox_address: buildInboxAddress(tenant.inbox_slug ?? null),
       },
       tenant: {
         id: tenant.id,
@@ -205,6 +207,8 @@ app.post("/api/auth/login", async (c) => {
         company_name: user.company_name,
         email: user.email,
         role: user.role || "user",
+        inbox_slug: tenant?.inbox_slug ?? null,
+        inbox_address: buildInboxAddress(tenant?.inbox_slug ?? null),
       },
       tenant: tenant ? {
         id: tenant.id,

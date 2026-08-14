@@ -38,7 +38,7 @@ export default function ResetPassword() {
         {!token && !done && (
           <>
             <div className="auth-error">Invalid or expired reset link</div>
-            <p className="auth-footer"><Link to="/login">Back to sign in</Link></p>
+            <p className="auth-footer"><Link to="/app/login">Back to sign in</Link></p>
           </>
         )}
 
@@ -71,14 +71,14 @@ export default function ResetPassword() {
               </div>
               <button type="submit" className="auth-btn">Reset Password</button>
             </form>
-            <p className="auth-footer"><Link to="/login">Back to sign in</Link></p>
+            <p className="auth-footer"><Link to="/app/login">Back to sign in</Link></p>
           </>
         )}
 
         {done && (
           <>
             <div className="auth-success">Password reset! Sign in with your new password.</div>
-            <p className="auth-footer"><Link to="/login">Sign in</Link></p>
+            <p className="auth-footer"><Link to="/app/login">Sign in</Link></p>
           </>
         )}
       </div>
