@@ -4,7 +4,6 @@ import path from "node:path";
 import { existsSync, mkdirSync } from "node:fs";
 import { getDb } from "./db";
 import {
-  calculateClientCompliance,
   calculatePaymentWeek,
   calculateVendorCompliance,
   getTenantPaymentWeekStartDay,
@@ -67,8 +66,17 @@ export function gatherReportData(clientId: number): ReportData {
   const tenantRow = db.query("SELECT tenant_id FROM clients WHERE id = $id").get({ $id: clientId }) as { tenant_id: number } | undefined;
   if (!tenantRow?.tenant_id) throw new Error(`Client tenant not found: ${clientId}`);
 
-  // Ensure fresh compliance data
-  calculateClientCompliance(clientId, tenantRow.tenant_id);
+  // Ensure fresh compliance data in a SINGLE pass, retaining each vendor's
+  // result so the report loop below reuses it instead of recomputing
+  // compliance a second time (calculateVendorCompliance is the only function
+  // that upserts compliance_status, so DB side-effects are unchanged).
+  const complianceByVendor = new Map<number, VendorComplianceResult>();
+  const calcVendors = db
+    .query("SELECT id, client_id FROM vendors WHERE client_id = $client_id AND tenant_id = $tenant_id")
+    .all({ $client_id: clientId, $tenant_id: tenantRow.tenant_id }) as Array<{ id: number; client_id: number }>;
+  for (const cv of calcVendors) {
+    complianceByVendor.set(cv.id, calculateVendorCompliance(cv.id, cv.client_id, tenantRow.tenant_id));
+  }
 
   // The payment week window comes from the tenant's configured start day.
   const weekStartDay = getTenantPaymentWeekStartDay(db, tenantRow.tenant_id);
@@ -100,11 +108,12 @@ export function gatherReportData(clientId: number): ReportData {
   const missingDocs: ReportData["missing_docs"] = [];
 
   for (const v of vendorRows) {
-    const compliance: VendorComplianceResult = calculateVendorCompliance(
-      v.id,
-      clientId,
-      tenantRow.tenant_id
-    );
+    // Reuse the single-pass result; fall back to a direct compute only in the
+    // (shouldn't-happen) case the vendor was not in the calcVendors set.
+    let compliance = complianceByVendor.get(v.id);
+    if (!compliance) {
+      compliance = calculateVendorCompliance(v.id, clientId, tenantRow.tenant_id);
+    }
 
     const rv: ReportVendor = {
       vendor_id: v.id,
