@@ -3,7 +3,9 @@ import { serverError } from "../errors";
 import { getDb } from "../db";
 import { requireQueueSecret } from "../middleware";
 import { sendEmail, buildWeeklyReportEmail, buildRenewalReminderEmail, parseRecipients, parseAttachmentsJson, resolveEmailAttachments } from "../email";
-import { gatherReportData, generatePdfReport, generateExcelReport } from "../reports";
+import { gatherReportData, generatePdfReport, generateExcelReport, countDocumentRows } from "../reports";
+import { markWeeklySent } from "../scheduler";
+import { QUEUE_SECRET } from "../secrets";
 import { storagePut } from "../storage";
 
 const app = new Hono();
@@ -270,6 +272,112 @@ app.post("/api/emails/test-weekly/:client_id", async (c) => {
         approved_count: reportData.approved.length,
         review_count: reportData.review.length,
         hold_count: reportData.hold.length,
+        expiring_count: reportData.expiring_during_week.length,
+        missing_count: reportData.missing_docs.length,
+      },
+    });
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
+
+// POST /api/emails/run-weekly/:client_id — send the REAL weekly Clear-to-Pay
+// report for one client (backend for the future "Run Weekly Report Now"
+// button). Mirrors the Monday scheduler pipeline (scheduler.ts checkWeekly)
+// exactly, minus the all-client loop and the [TEST] subject prefix, and
+// records the delivery in weekly_email_log so the Monday run does not
+// double-send for this payment week.
+app.post("/api/emails/run-weekly/:client_id", async (c) => {
+  try {
+    const db = getDb();
+    const clientId = Number(c.req.param("client_id"));
+
+    const client = db.query("SELECT id, name, tenant_id FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: clientId, $tenant_id: c.get("tenant_id") as number }) as { id: number; name: string; tenant_id: number } | undefined;
+    if (!client) {
+      return c.json({ error: "Client not found" }, 404);
+    }
+
+    const config = db.query(
+      "SELECT weekly_report_recipients FROM client_email_config WHERE client_id = $client_id AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)"
+    ).get({ $client_id: clientId, $tenant_id: c.get("tenant_id") as number }) as { weekly_report_recipients: string | null } | undefined;
+    if (!config?.weekly_report_recipients) {
+      return c.json({ error: "No weekly report recipients configured. Set them up first." }, 400);
+    }
+
+    const recipients = parseRecipients(config.weekly_report_recipients);
+
+    // Same gather → generate → store → send pipeline the Monday scheduler uses.
+    const reportData = gatherReportData(clientId);
+
+    const timestamp = Date.now();
+    const clientSlug = client.name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
+    const tenantPrefix = `reports/tenant-${c.get("tenant_id") as number}`;
+
+    const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
+    const pdfDoc = generatePdfReport(reportData);
+    const pdfBuffers: Buffer[] = [];
+    for await (const chunk of pdfDoc) {
+      pdfBuffers.push(Buffer.from(chunk));
+    }
+    await storagePut(`${tenantPrefix}/${pdfFilename}`, Buffer.concat(pdfBuffers), "application/pdf");
+
+    const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
+    const xlsxBuffer = await generateExcelReport(reportData);
+    await storagePut(`${tenantPrefix}/${xlsxFilename}`, xlsxBuffer,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+    const attachments = [
+      { filename: pdfFilename, contentType: "application/pdf", storageKey: `${tenantPrefix}/${pdfFilename}` },
+      { filename: xlsxFilename, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", storageKey: `${tenantPrefix}/${xlsxFilename}` },
+    ];
+
+    const emailBody = buildWeeklyReportEmail(client.name, {
+      approved_count: reportData.approved.length,
+      review_count: reportData.review.length,
+      hold_count: reportData.hold.length,
+      expiring_count: reportData.expiring_during_week.length,
+      missing_count: reportData.missing_docs.length,
+      payment_week: reportData.payment_week,
+      report_date: reportData.report_date,
+    });
+
+    // Real subject — no [TEST] prefix, same wording as the Monday scheduler.
+    const subject = `Clear-to-Pay Weekly Report — ${reportData.payment_week.week_start} to ${reportData.payment_week.week_end}`;
+
+    await sendEmail(recipients, subject, emailBody, clientId, undefined, "weekly_report", attachments);
+
+    // Record the delivery so the Monday run skips this payment week
+    // (weeklyAlreadySent backstop in scheduler.ts).
+    markWeeklySent(db, client.tenant_id, reportData.payment_week.week_start, reportData.payment_week.week_end, {
+      approved: reportData.approved.length,
+      hold: reportData.hold.length,
+      review: reportData.review.length,
+    }, recipients.join(", "));
+
+    // Let the delivery worker pick up queued messages immediately (no-op when
+    // the Graph/SMTP path delivered directly). Same call the scheduler makes
+    // at the end of its weekly batch.
+    try {
+      const port = process.env.PORT || "3001";
+      await fetch(`http://127.0.0.1:${port}/api/emails/process-queue`, {
+        method: "POST",
+        headers: { "X-Queue-Secret": QUEUE_SECRET },
+      });
+    } catch (err) {
+      console.error("[run-weekly] Queue processing request error:", err);
+    }
+
+    return c.json({
+      success: true,
+      recipients,
+      subject,
+      attachments: attachments.map((a) => ({ filename: a.filename, contentType: a.contentType })),
+      summary: {
+        vendor_count: reportData.approved.length + reportData.review.length + reportData.hold.length,
+        document_row_count: countDocumentRows(reportData),
+        approved_vendors: reportData.approved.length,
+        review_vendors: reportData.review.length,
+        hold_vendors: reportData.hold.length,
         expiring_count: reportData.expiring_during_week.length,
         missing_count: reportData.missing_docs.length,
       },
