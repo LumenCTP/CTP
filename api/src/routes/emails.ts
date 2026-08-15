@@ -306,6 +306,11 @@ app.post("/api/emails/run-weekly/:client_id", async (c) => {
 
     const recipients = parseRecipients(config.weekly_report_recipients);
 
+    // dry_run=1 generates + stores the report (PDF/XLSX) but does NOT send email
+    // or record the weekly sent marker — used by verification/QA so the owner
+    // never receives a duplicate report from a test run.
+    const dryRun = c.req.query("dry_run") === "1" || c.req.query("dry_run") === "true";
+
     // Same gather → generate → store → send pipeline the Monday scheduler uses.
     const reportData = gatherReportData(clientId);
 
@@ -344,31 +349,36 @@ app.post("/api/emails/run-weekly/:client_id", async (c) => {
     // Real subject — no [TEST] prefix, same wording as the Monday scheduler.
     const subject = `Clear-to-Pay Weekly Report — ${reportData.payment_week.week_start} to ${reportData.payment_week.week_end}`;
 
-    await sendEmail(recipients, subject, emailBody, clientId, undefined, "weekly_report", attachments);
+    if (!dryRun) {
+      await sendEmail(recipients, subject, emailBody, clientId, undefined, "weekly_report", attachments);
 
-    // Record the delivery so the Monday run skips this payment week
-    // (weeklyAlreadySent backstop in scheduler.ts).
-    markWeeklySent(db, client.tenant_id, reportData.payment_week.week_start, reportData.payment_week.week_end, {
-      approved: reportData.approved.length,
-      hold: reportData.hold.length,
-      review: reportData.review.length,
-    }, recipients.join(", "));
+      // Record the delivery so the Monday run skips this payment week
+      // (weeklyAlreadySent backstop in scheduler.ts).
+      markWeeklySent(db, client.tenant_id, reportData.payment_week.week_start, reportData.payment_week.week_end, {
+        approved: reportData.approved.length,
+        hold: reportData.hold.length,
+        review: reportData.review.length,
+      }, recipients.join(", "));
 
-    // Let the delivery worker pick up queued messages immediately (no-op when
-    // the Graph/SMTP path delivered directly). Same call the scheduler makes
-    // at the end of its weekly batch.
-    try {
-      const port = process.env.PORT || "3001";
-      await fetch(`http://127.0.0.1:${port}/api/emails/process-queue`, {
-        method: "POST",
-        headers: { "X-Queue-Secret": QUEUE_SECRET },
-      });
-    } catch (err) {
-      console.error("[run-weekly] Queue processing request error:", err);
+      // Let the delivery worker pick up queued messages immediately (no-op when
+      // the Graph/SMTP path delivered directly). Same call the scheduler makes
+      // at the end of its weekly batch.
+      try {
+        const port = process.env.PORT || "3001";
+        await fetch(`http://127.0.0.1:${port}/api/emails/process-queue`, {
+          method: "POST",
+          headers: { "X-Queue-Secret": QUEUE_SECRET },
+        });
+      } catch (err) {
+        console.error("[run-weekly] Queue processing request error:", err);
+      }
+    } else {
+      console.log(`[run-weekly] DRY RUN for client ${clientId} — report generated/stored but NOT emailed`);
     }
 
     return c.json({
       success: true,
+      dry_run: dryRun,
       recipients,
       subject,
       attachments: attachments.map((a) => ({ filename: a.filename, contentType: a.contentType })),
