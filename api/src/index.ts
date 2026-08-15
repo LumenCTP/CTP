@@ -21,6 +21,7 @@ import auditRoutes from "./routes/audit";
 import emailsRoutes from "./routes/emails";
 import partnersRoutes from "./routes/partners";
 import chatRoutes from "./routes/chat";
+import opsRoutes from "./routes/ops";
 
 const app = new Hono();
 
@@ -70,6 +71,7 @@ app.route("/", auditRoutes);
 app.route("/", emailsRoutes);
 app.route("/", partnersRoutes);
 app.route("/", chatRoutes);
+app.route("/", opsRoutes);
 
 // Initialize DB on startup
 getDb();

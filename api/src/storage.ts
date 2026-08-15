@@ -157,7 +157,7 @@ async function r2Fetch(opts: {
   query?: Record<string, string>;
   body?: Uint8Array | Buffer | string;
   contentType?: string;
-}): Promise<Response> {
+}, signal?: AbortSignal): Promise<Response> {
   const accountId = process.env.CLOUDFLARE_ACCOUNT_ID!;
   const accessKeyId = process.env.CLOUDFLARE_R2_ACCESS_KEY_ID!;
   const secretAccessKey = process.env.CLOUDFLARE_R2_SECRET_ACCESS_KEY!;
@@ -219,6 +219,7 @@ async function r2Fetch(opts: {
   const init: RequestInit = {
     method: opts.method,
     headers: { ...headers, Authorization: authorization },
+    signal,
   };
   if (opts.body != null) init.body = payload;
   return fetch(url, init);
@@ -309,4 +310,22 @@ export async function storageList(prefix: string): Promise<string[]> {
   let m: RegExpExecArray | null;
   while ((m = re.exec(xml))) keys.push(m[1]);
   return keys;
+}
+
+/**
+ * Cheap reachability probe for the health endpoint. HEADs a fixed probe key:
+ * R2 returns 200 (exists) or 404 (missing) — either proves the bucket is
+ * reachable and the credentials work, without transferring any data. In local
+ * fallback mode the "bucket" is local disk and always reachable, so returns
+ * true. Runs with the caller's fetch timeout (health route passes a short one
+ * via AbortSignal).
+ */
+export async function storageProbe(signal?: AbortSignal): Promise<boolean> {
+  if (!isStorageConfigured()) return true; // local fallback — always reachable
+  try {
+    const res = await r2Fetch({ method: "HEAD", key: "__ctp_health_probe__" }, signal);
+    return res.status === 200 || res.status === 404;
+  } catch {
+    return false;
+  }
 }

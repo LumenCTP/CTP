@@ -16,6 +16,7 @@ import { ingestDocumentAttachment } from "./routes/documents";
 import { hasPriorYearW9 } from "./mapping";
 import { QUEUE_SECRET } from "./secrets";
 import { storagePut } from "./storage";
+import { runBackupAndRetain } from "./backups";
 
 // ── State ──────────────────────────────────────────────
 
@@ -74,10 +75,71 @@ function inboxPollTick(): void {
   }
 }
 
-// Track last-run dates to prevent duplicate sends within the same window
-let lastWeeklyCheckDate: string | null = null;   // ISO date string (YYYY-MM-DD) of the Monday we last processed
-let lastMonthlyCheckDate: string | null = null;   // ISO date string of the 1st we last processed
-let lastDailyRenewalDate: string | null = null;   // ISO date string of the last day we ran renewal checks
+// ── Persisted scheduler state ────────────────────────────
+// Last-run markers live in the scheduler_state table (see db.ts) so an API
+// restart can never re-fire the weekly/monthly/daily batches (double-send).
+// The in-memory cache is ONLY a fast path — every decision consults/updates
+// the DB row, so a restart always sees the true last-run value.
+const stateCache = new Map<string, string | null>();
+
+export function getSchedulerState(db: ReturnType<typeof getDb>, key: string): string | null {
+  if (stateCache.has(key)) return stateCache.get(key)!;
+  const row = db.query("SELECT value FROM scheduler_state WHERE key = ?").get(key) as { value: string } | undefined;
+  const v = row?.value ?? null;
+  stateCache.set(key, v);
+  return v;
+}
+
+export function setSchedulerState(db: ReturnType<typeof getDb>, key: string, value: string): void {
+  db.query(
+    `INSERT INTO scheduler_state (key, value, updated_at) VALUES (?, ?, datetime('now'))
+     ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')`,
+  ).run(key, value);
+  stateCache.set(key, value);
+}
+
+/**
+ * Wall-clock time in America/New_York (full-ICU Intl — DST-correct year-round).
+ * The weekly 7:00 AM ET window uses this instead of a hardcoded UTC offset,
+ * which drifted by an hour across DST transitions.
+ */
+export function nyWallClock(now: Date = new Date()): { year: number; month: number; day: number; hour: number; dow: number } {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23", weekday: "short",
+  }).formatToParts(now);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? "";
+  const dowMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const h = Number(get("hour"));
+  return {
+    year: Number(get("year")), month: Number(get("month")), day: Number(get("day")),
+    hour: h === 24 ? 0 : h, // ICU h23 quirk: midnight can render as "24"
+    dow: dowMap[get("weekday")] ?? -1,
+  };
+}
+
+// Weekly per-client dedup backstop: weekly_email_log is consulted BEFORE every
+// weekly report send and written AFTER a successful send, so a client can never
+// receive two reports for the same payment week — even if scheduler_state is
+// lost entirely (belt and braces).
+export function weeklyAlreadySent(db: ReturnType<typeof getDb>, tenantId: number, monday: string): boolean {
+  return !!db.query("SELECT id FROM weekly_email_log WHERE tenant_id = ? AND payment_week_start = ? LIMIT 1").get(tenantId, monday);
+}
+
+export function markWeeklySent(
+  db: ReturnType<typeof getDb>,
+  tenantId: number,
+  monday: string,
+  weekEnd: string,
+  counts: { approved: number; hold: number; review: number },
+  sentTo: string,
+): void {
+  db.query(
+    `INSERT INTO weekly_email_log (tenant_id, payment_week_start, payment_week_end, approved_count, hold_count, review_count, sent_to, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'sent')`,
+  ).run(tenantId, monday, weekEnd, counts.approved, counts.hold, counts.review, sentTo);
+}
 
 // ── Scheduler Tick ─────────────────────────────────────
 
@@ -88,6 +150,9 @@ async function tick(): Promise<void> {
   await checkWeekly(now, todayStr);
   await checkMonthly(now, todayStr);
   checkRenewals(now, todayStr);
+  // Nightly offsite backup (3:00–5:59 AM ET, once per day). Failures are logged
+  // by runBackupAndRetain and never crash the tick.
+  await checkBackup(now);
   // Daily: auto-create partner commissions for the current billing period
   // (idempotent per partner/tenant/period). Per-tenant failures never abort
   // the rest of the job.
@@ -109,22 +174,29 @@ async function tick(): Promise<void> {
 // ── Weekly Report Check ────────────────────────────────
 
 async function checkWeekly(now: Date, todayStr: string): Promise<void> {
-  // Day 1 = Monday, 11:00 AM UTC (= 7:00 AM ET / 6:00 AM EST)
-  if (now.getUTCDay() !== 1) return;
-  if (now.getUTCHours() < 11) return;
+  // Weekly Clear-to-Pay report window: Monday from 7:00 AM ET
+  // (America/New_York — DST-correct year-round, unlike the old hardcoded
+  // 11:00 UTC which became 6:00 AM EST in winter). The persisted marker plus
+  // the per-client weekly_email_log guard make the whole Monday window
+  // idempotent, so a restart after 7:00 AM ET cannot double-send.
+  const ny = nyWallClock(now);
+  if (ny.dow !== 1) return;
+  if (ny.hour < 7) return;
 
   // Determine the Monday of this week (the weekly email always goes out on
   // Monday morning per the product spec — independent of each tenant's
   // payment-week start day, which only shapes the report's week window).
   const { week_start: monday } = calculatePaymentWeek("monday");
 
-  // Prevent duplicate: only send once per Monday
-  if (lastWeeklyCheckDate === monday) return;
-
-  console.log(`[scheduler] Monday ${monday} 11:00 UTC (7am ET) — generating weekly reports`);
-  lastWeeklyCheckDate = monday;
-
   const db = getDb();
+
+  // Fast path + persisted marker: at most one weekly batch per Monday even
+  // across restarts. Written AFTER the batch completes; the per-client
+  // weekly_email_log rows below are the idempotency backstop, so a crash
+  // mid-batch re-runs only the clients that were not yet sent.
+  if (getSchedulerState(db, "last_weekly_check_date") === monday) return;
+
+  console.log(`[scheduler] Monday ${monday} 07:00 AM ET (America/New_York) — generating weekly reports`);
 
   // Get all clients with weekly recipients configured
   const configs = db.query(`
@@ -142,6 +214,15 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
 
   for (const config of configs) {
     try {
+      // Belt-and-braces per-client dedup: never email a client twice for the
+      // same payment week, even if scheduler_state is lost or the batch
+      // re-runs after a crash. weekly_email_log is the source of truth for
+      // what was actually delivered.
+      if (config.tenant_id != null && weeklyAlreadySent(db, config.tenant_id, monday)) {
+        console.log(`[scheduler] Weekly report already sent for client ${config.client_id} (tenant ${config.tenant_id}) for ${monday} — skipping`);
+        continue;
+      }
+
       console.log(`[scheduler] Generating weekly report for client ${config.client_id} (${config.client_name})`);
 
       const reportData = gatherReportData(config.client_id);
@@ -190,7 +271,15 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
       const recipients = parseRecipients(config.weekly_report_recipients);
       const subject = `Clear-to-Pay Weekly Report — ${reportData.payment_week.week_start} to ${reportData.payment_week.week_end}`;
 
-      sendEmail(recipients, subject, emailBody, config.client_id, undefined, "weekly_report", attachments);
+      await sendEmail(recipients, subject, emailBody, config.client_id, undefined, "weekly_report", attachments);
+      // Record the delivery in weekly_email_log (idempotency backstop).
+      if (config.tenant_id != null) {
+        markWeeklySent(db, config.tenant_id, monday, reportData.payment_week.week_end, {
+          approved: reportData.approved.length,
+          hold: reportData.hold.length,
+          review: reportData.review.length,
+        }, recipients.join(", "));
+      }
       console.log(`[scheduler] Weekly report sent for client ${config.client_id}`);
     } catch (err) {
       console.error(`[scheduler] Error generating weekly report for client ${config.client_id}:`, err);
@@ -241,6 +330,136 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
   } catch (err) {
     console.error("[scheduler] Queue processing request error:", err);
   }
+
+  // Persist the completed-week marker LAST: the batch is done only now, and the
+  // per-client weekly_email_log rows written above mean a crash at any earlier
+  // point re-runs only the unsent clients on the next tick.
+  setSchedulerState(db, "last_weekly_check_date", monday);
+}
+
+// ── Nightly Offsite Backup ──────────────────────────────
+
+async function checkBackup(now: Date): Promise<void> {
+  // Nightly window 03:00–05:59 AM ET with at-most-once-per-day semantics. If
+  // the 03:00 attempt fails, the marker is not set, so 04:00/05:00 retry;
+  // after a success (or at 06:00) the next attempt is tomorrow night.
+  const ny = nyWallClock(now);
+  if (ny.hour < 3 || ny.hour > 5) return;
+  const db = getDb();
+  const todayStr = `${ny.year}-${String(ny.month).padStart(2, "0")}-${String(ny.day).padStart(2, "0")}`;
+  if (getSchedulerState(db, "last_backup_date") === todayStr) return;
+
+  console.log(`[scheduler] Nightly backup ${todayStr} 03:00+ AM ET — starting`);
+  try {
+    const result = await runBackupAndRetain(now);
+    if (result.ok) setSchedulerState(db, "last_backup_date", todayStr);
+  } catch (err) {
+    console.error(`[scheduler] Nightly backup error: ${String(err)}`);
+  }
+}
+
+// ── Delivery-Failure Watchdog ───────────────────────────
+
+export interface DeliveryHealth {
+  emailErrorCount24h: number;
+  oldestEmailError: { sent_at: string; recipient_email: string; subject: string; error_message: string | null } | null;
+  staleQueueCount: number;
+  oldestStaleQueue: { created_at: string; recipient_email: string; subject: string; error_message: string | null } | null;
+}
+
+/** Queries delivery health signals: email_log errors (24h) + stale queue rows. */
+export function gatherDeliveryHealth(db: ReturnType<typeof getDb>): DeliveryHealth {
+  const emailErrors = db.query(`
+    SELECT sent_at, recipient_email, subject, error_message
+    FROM email_log
+    WHERE status = 'error' AND sent_at >= datetime('now', '-24 hours')
+    ORDER BY sent_at ASC LIMIT 1
+  `).get() as DeliveryHealth["oldestEmailError"];
+  const errorCount = db.query(
+    "SELECT COUNT(*) AS c FROM email_log WHERE status = 'error' AND sent_at >= datetime('now', '-24 hours')",
+  ).get() as { c: number };
+  const staleQueue = db.query(`
+    SELECT created_at, recipient_email, subject, error_message
+    FROM outgoing_email_queue
+    WHERE status IN ('queued', 'failed') AND created_at <= datetime('now', '-15 minutes')
+    ORDER BY created_at ASC LIMIT 1
+  `).get() as DeliveryHealth["oldestStaleQueue"];
+  const staleCount = db.query(
+    "SELECT COUNT(*) AS c FROM outgoing_email_queue WHERE status IN ('queued', 'failed') AND created_at <= datetime('now', '-15 minutes')",
+  ).get() as { c: number };
+  return {
+    emailErrorCount24h: errorCount.c,
+    oldestEmailError: emailErrors ?? null,
+    staleQueueCount: staleCount.c,
+    oldestStaleQueue: staleQueue ?? null,
+  };
+}
+
+/** True when the last alert for this category is absent or older than 1 hour. */
+export function shouldSendAlert(lastAlertAt: string | null, now: Date = new Date()): boolean {
+  if (!lastAlertAt) return true;
+  const last = new Date(lastAlertAt.endsWith("Z") ? lastAlertAt : lastAlertAt + "Z");
+  if (isNaN(last.getTime())) return true;
+  return now.getTime() - last.getTime() >= 60 * 60 * 1000;
+}
+
+// Internal alert recipient — owner by default; overridable so tests/other
+// environments never reach a real mailbox.
+const DELIVERY_ALERT_RECIPIENT = process.env.DELIVERY_ALERT_RECIPIENT || "bosleyjustin@yahoo.com";
+
+export function buildDeliveryAlertEmail(health: DeliveryHealth): { subject: string; body: string } {
+  const parts: string[] = [];
+  if (health.emailErrorCount24h > 0) {
+    parts.push(`• ${health.emailErrorCount24h} email delivery error(s) in the last 24 hours.`);
+    if (health.oldestEmailError) {
+      parts.push(`  Oldest: "${health.oldestEmailError.subject}" → ${health.oldestEmailError.recipient_email} at ${health.oldestEmailError.sent_at} UTC` +
+        (health.oldestEmailError.error_message ? ` (${health.oldestEmailError.error_message.slice(0, 300)})` : ""));
+    }
+  }
+  if (health.staleQueueCount > 0) {
+    parts.push(`• ${health.staleQueueCount} email(s) stuck in the outbound queue longer than 15 minutes.`);
+    if (health.oldestStaleQueue) {
+      parts.push(`  Oldest: "${health.oldestStaleQueue.subject}" → ${health.oldestStaleQueue.recipient_email} queued at ${health.oldestStaleQueue.created_at} UTC` +
+        (health.oldestStaleQueue.error_message ? ` (${health.oldestStaleQueue.error_message.slice(0, 300)})` : ""));
+    }
+  }
+  const body = parts.join("\n");
+  const subject = `[ClearToPay] Delivery failures — ${health.emailErrorCount24h} error(s), ${health.staleQueueCount} stale queued`;
+  return { subject, body };
+}
+
+/**
+ * Watchdog: sends at most one internal alert per category per hour (rate
+ * markers live in scheduler_state). Never throws — alerting must not take the
+ * scheduler down. Returns which alerts were sent so the ops endpoint can
+ * surface it.
+ */
+export async function checkDeliveryWatchdog(now: Date = new Date()): Promise<{ alertsSent: string[]; health: DeliveryHealth }> {
+  const db = getDb();
+  const health = gatherDeliveryHealth(db);
+  const alertsSent: string[] = [];
+
+  if (health.emailErrorCount24h > 0 && shouldSendAlert(getSchedulerState(db, "last_alert_email_errors"), now)) {
+    try {
+      const { subject, body } = buildDeliveryAlertEmail(health);
+      await sendEmail([DELIVERY_ALERT_RECIPIENT], subject, body, undefined, undefined, "internal_alert");
+      setSchedulerState(db, "last_alert_email_errors", now.toISOString());
+      alertsSent.push("email_errors");
+    } catch (err) {
+      console.error(`[watchdog] Alert send failed (email_errors): ${String(err)}`);
+    }
+  }
+  if (health.staleQueueCount > 0 && shouldSendAlert(getSchedulerState(db, "last_alert_queue_stale"), now)) {
+    try {
+      const { subject, body } = buildDeliveryAlertEmail(health);
+      await sendEmail([DELIVERY_ALERT_RECIPIENT], subject, body, undefined, undefined, "internal_alert");
+      setSchedulerState(db, "last_alert_queue_stale", now.toISOString());
+      alertsSent.push("queue_stale");
+    } catch (err) {
+      console.error(`[watchdog] Alert send failed (queue_stale): ${String(err)}`);
+    }
+  }
+  return { alertsSent, health };
 }
 
 // ── Monthly Report Check ───────────────────────────────
@@ -252,12 +471,13 @@ async function checkMonthly(now: Date, todayStr: string): Promise<void> {
 
   const monthKey = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}-01`;
 
-  if (lastMonthlyCheckDate === monthKey) return;
+  const db = getDb();
+  // Persisted marker (written BEFORE the batch, preserving the existing
+  // at-most-once-per-month semantics even across restarts).
+  if (getSchedulerState(db, "last_monthly_check_date") === monthKey) return;
 
   console.log(`[scheduler] 1st of month (${monthKey}) 06:00+ UTC — generating monthly reports`);
-  lastMonthlyCheckDate = monthKey;
-
-  const db = getDb();
+  setSchedulerState(db, "last_monthly_check_date", monthKey);
 
   const configs = db.query(`
     SELECT cec.client_id, cec.monthly_report_recipients, cl.name as client_name, cl.tenant_id as tenant_id
@@ -333,11 +553,11 @@ async function checkMonthly(now: Date, todayStr: string): Promise<void> {
 // ── Renewal Reminder Check ─────────────────────────────
 
 function checkRenewals(now: Date, todayStr: string): void {
-  // Only run once per day
-  if (lastDailyRenewalDate === todayStr) return;
-  lastDailyRenewalDate = todayStr;
-
   const db = getDb();
+  // Only run once per day — persisted across restarts. Written AFTER the scan
+  // completes (the scan itself is idempotent via renewal_reminders_sent, so a
+  // crash mid-scan just re-scans on the next tick without duplicating).
+  if (getSchedulerState(db, "last_daily_renewal_date") === todayStr) return;
 
   // Get all clients with renewal reminders enabled
   const configs = db.query(`
@@ -438,9 +658,14 @@ function checkRenewals(now: Date, todayStr: string): void {
       }
     }
   }
+
+  // Persist after the full scan completes.
+  setSchedulerState(db, "last_daily_renewal_date", todayStr);
 }
 
 // ── Start / Stop ───────────────────────────────────────
+
+let watchdogInterval: ReturnType<typeof setInterval> | null = null;
 
 export function startScheduler(): void {
   if (schedulerInterval) return; // Already running
@@ -453,14 +678,22 @@ export function startScheduler(): void {
   schedulerInterval = setInterval(tick, 60_000);
   inboxPollTick();
   inboxPollInterval = setInterval(inboxPollTick, 5 * 60_000);
+
+  // Delivery-failure watchdog every 30 minutes (internally rate-limited to at
+  // most one alert per category per hour).
+  watchdogInterval = setInterval(() => {
+    checkDeliveryWatchdog().catch((err) => console.error("[watchdog] Tick error:", err));
+  }, 30 * 60_000);
 }
 
 export function stopScheduler(): void {
   if (schedulerInterval) {
     clearInterval(schedulerInterval);
     if (inboxPollInterval) clearInterval(inboxPollInterval);
+    if (watchdogInterval) clearInterval(watchdogInterval);
     inboxPollInterval = null;
     schedulerInterval = null;
+    watchdogInterval = null;
     console.log("[scheduler] Email scheduler stopped");
   }
 }

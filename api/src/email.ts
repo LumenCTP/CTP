@@ -136,7 +136,7 @@ export async function sendEmail(
   htmlBody: string,
   clientId?: number,
   vendorId?: number,
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "inbox_rejection",
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "inbox_rejection" | "internal_alert",
   attachments?: EmailAttachment[],
 ): Promise<void> {
   const db = getDb();
@@ -253,7 +253,7 @@ async function deliverViaGraphMail(args: {
   htmlBody: string;
   clientId?: number;
   vendorId?: number;
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout";
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "internal_alert";
   attachments?: EmailAttachment[];
   db: ReturnType<typeof getDb>;
 }): Promise<void> {
@@ -304,7 +304,7 @@ async function deliverViaM365Smtp(args: {
   htmlBody: string;
   clientId?: number;
   vendorId?: number;
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout";
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "internal_alert";
   attachments?: EmailAttachment[];
   db: ReturnType<typeof getDb>;
 }): Promise<void> {

@@ -238,6 +238,29 @@ function runMigrations(db: Database): void {
 
     CREATE INDEX IF NOT EXISTS idx_outgoing_email_queue_status ON outgoing_email_queue(status);
 
+    -- Scheduler reliability (2026-08-15): persisted last-run markers so an API
+    -- restart can never re-fire the weekly/monthly/daily batches (double-send).
+    -- Also holds watchdog/backup rate-limit markers. Values are short TEXT.
+    CREATE TABLE IF NOT EXISTS scheduler_state (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+
+    -- Nightly offsite backup audit trail (2026-08-15): one row per backup run
+    -- (success or failure), mirrored to console output. R2 object lives under
+    -- the backups/ prefix of the storage bucket.
+    CREATE TABLE IF NOT EXISTS backup_log (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      backup_key TEXT,
+      size_bytes INTEGER,
+      status TEXT NOT NULL CHECK (status IN ('success','error')),
+      error_message TEXT,
+      retention_deleted INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_backup_log_created_at ON backup_log(created_at);
+
     CREATE TABLE IF NOT EXISTS support_messages (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       tenant_id INTEGER NOT NULL,
@@ -528,19 +551,19 @@ function runMigrations(db: Database): void {
   // Role-based access: 'user' (default), 'partner', 'admin'
   ensureColumn(db, "users", "role TEXT DEFAULT 'user'", "role");
 
-  // Extend email_log.email_type CHECK to include 'partner_payout' and
-  // 'inbox_rejection' (in addition to 'password_reset'). SQLite can't ALTER a
-  // CHECK constraint, so rebuild the table (same pattern as the documents table
+  // Extend email_log.email_type CHECK to include 'partner_payout',
+  // 'inbox_rejection' and 'internal_alert'. SQLite can't ALTER a CHECK
+  // constraint, so rebuild the table (same pattern as the documents table
   // rebuild above). Nothing references email_log, so the DROP is safe even with
   // foreign_keys = ON.
   const emailLogDdl = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_log'").get() as { sql: string } | undefined;
-  if (emailLogDdl && !emailLogDdl.sql.includes("'inbox_rejection'")) {
+  if (emailLogDdl && !emailLogDdl.sql.includes("'internal_alert'")) {
     db.exec(`
       CREATE TABLE email_log_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_id INTEGER,
         vendor_id INTEGER,
-        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout', 'inbox_rejection')),
+        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout', 'inbox_rejection', 'internal_alert')),
         recipient_email TEXT NOT NULL,
         subject TEXT NOT NULL,
         sent_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -554,7 +577,7 @@ function runMigrations(db: Database): void {
     db.exec("DROP TABLE email_log");
     db.exec("ALTER TABLE email_log_new RENAME TO email_log");
     db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_client_id ON email_log(client_id); CREATE INDEX IF NOT EXISTS idx_email_log_email_type ON email_log(email_type); CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);");
-    console.log("[db] Extended email_log.email_type CHECK to include partner_payout + inbox_rejection");
+    console.log("[db] Extended email_log.email_type CHECK to include partner_payout + inbox_rejection + internal_alert");
   }
 
   // Email attachments: JSON array of { filename, contentType, storageKey } on

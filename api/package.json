@@ -7,7 +7,8 @@
     "dev": "QUEUE_SECRET=db0457ca-9035-48b7-9c78-36f56d5fcbd1 bun run --watch src/index.ts",
     "seed": "bun run src/seed.ts",
     "e2e:stripe": "bun run scripts/e2e-stripe.ts",
-    "test:graph-mail": "bun run scripts/test-graph-mail.ts"
+    "test:graph-mail": "bun run scripts/test-graph-mail.ts",
+    "test:reliability": "bun run scripts/reliability-test.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.5",
