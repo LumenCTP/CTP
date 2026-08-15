@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import path from "node:path";
 import { companyNameToSlug } from "./lib/inbox";
+import { entityKey } from "./entities";
 // NOTE: relative import — the API process (bun run) has no node_modules symlink
 // for the "@clear-to-pay/shared" workspace package (only the web app does), so
 // package-name imports only work for type-only usage (stripped at runtime).
@@ -490,6 +491,27 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "vendors", "normalized_key TEXT", "normalized_key");
   ensureColumn(db, "clients", "normalized_key TEXT", "normalized_key");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_tenant_normalized ON clients(tenant_id, normalized_key) WHERE normalized_key IS NOT NULL; CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_client_normalized ON vendors(client_id, normalized_key) WHERE normalized_key IS NOT NULL;");
+
+  // ── Backfill normalized_key for rows created before the dedup columns were
+  // written on every creation path (CSV import / manual add used to skip it).
+  // Idempotent: only touches rows that still have NULL, and uses UPDATE OR
+  // IGNORE so a true duplicate (same name, no address, same client) keeps only
+  // its first row — the second stays NULL and is flagged rather than crashing
+  // the unique index. Runs on every startup; with no NULL rows it's a no-op.
+  const vendorNulls = db.query("SELECT id, name, address FROM vendors WHERE normalized_key IS NULL").all() as Array<{ id: number; name: string; address: string | null }>;
+  for (const v of vendorNulls) {
+    const key = entityKey(v.name, v.address);
+    if (!key) continue;
+    const r = db.query("UPDATE OR IGNORE vendors SET normalized_key = $key WHERE id = $id").run({ $key: key, $id: v.id });
+    if (r.changes === 0) console.warn(`[db] backfill: vendor ${v.id} ("${v.name}") has an identical normalized_key to another vendor under the same client — left NULL for manual resolution`);
+  }
+  const clientNulls = db.query("SELECT id, name, address FROM clients WHERE normalized_key IS NULL").all() as Array<{ id: number; name: string; address: string | null }>;
+  for (const cl of clientNulls) {
+    const key = entityKey(cl.name, cl.address);
+    if (!key) continue;
+    const r = db.query("UPDATE OR IGNORE clients SET normalized_key = $key WHERE id = $id").run({ $key: key, $id: cl.id });
+    if (r.changes === 0) console.warn(`[db] backfill: client ${cl.id} ("${cl.name}") has an identical normalized_key to another client under the same tenant — left NULL for manual resolution`);
+  }
 
   // Password reset tokens (forgot-password flow). SQLite lacks ALTER TABLE ...
   // ADD COLUMN IF NOT EXISTS, so ensureColumn checks PRAGMA table_info first.

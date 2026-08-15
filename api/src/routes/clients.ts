@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getDb, applyDefaultRequiredDocs } from "../db";
+import { entityKey } from "../entities";
 import { logAudit } from "../middleware";
 
 const app = new Hono();
@@ -81,20 +82,30 @@ app.post("/api/clients", async (c) => {
       return c.json({ error: "Name is required" }, 400);
     }
 
+    const trimmedName = name.trim();
+    const trimmedAddress = address && typeof address === "string" ? address.trim() : null;
+    // Every creation path writes the same dedup key (entities.ts) so the unique
+    // index can prevent exact duplicate clients here.
+    const key = entityKey(trimmedName, trimmedAddress);
+    if (key && db.query("SELECT id FROM clients WHERE tenant_id = $tenant_id AND normalized_key = $key").get({ $tenant_id: c.get("tenant_id") as number, $key: key })) {
+      return c.json({ error: "A client with this name already exists" }, 409);
+    }
+
     const result = db.query(`
-      INSERT INTO clients (tenant_id, name, contact_email, contact_phone, address)
-      VALUES ($tenant_id, $name, $contact_email, $contact_phone, $address)
+      INSERT INTO clients (tenant_id, name, contact_email, contact_phone, address, normalized_key)
+      VALUES ($tenant_id, $name, $contact_email, $contact_phone, $address, $key)
     `).run({
       $tenant_id: c.get("tenant_id") as number,
-      $name: name.trim(),
+      $name: trimmedName,
       $contact_email: contact_email?.trim() || null,
       $contact_phone: contact_phone?.trim() || null,
-      $address: address?.trim() || null,
+      $address: trimmedAddress,
+      $key: key,
     });
 
     const newId = Number(result.lastInsertRowid);
 
-    logAudit(db, "client", newId, "created", { name: name.trim(), contact_email, contact_phone, address });
+    logAudit(db, "client", newId, "created", { name: trimmedName, contact_email, contact_phone, address: trimmedAddress });
     // New clients start with the standard default requirement set (never overwrites
     // anything — the client is brand new).
     applyDefaultRequiredDocs(db, newId);

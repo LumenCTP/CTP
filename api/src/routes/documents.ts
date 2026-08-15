@@ -63,7 +63,7 @@ export async function ingestDocumentAttachment(opts: {
     // Auto-create client/vendor rows ONLY from real AI extraction with high
     // holder confidence. The honest fallback sets confidence 0 and
     // extraction_method 'filename', so it can never trigger this path.
-    if (extraction.document_type === "COI" && extraction.extraction_method === "ai" && extraction.certificate_holder_name_confidence >= 0.8) { const mapped = mapCOIToEntities(db, tenantId, extraction, documentId); if (mapped) { db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId}); calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId); } }
+    if (extraction.document_type === "COI" && extraction.extraction_method === "ai" && extraction.certificate_holder_name_confidence >= 0.8) { const mapped = mapCOIToEntities(db, tenantId, extraction, documentId); if (mapped) { db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId}); calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId); if (mapped.vendorPossibleDuplicate) { logAudit(db, "document", documentId, "possible_duplicate_vendor", { existing_vendor_id: mapped.vendorId, extracted_vendor_name: extraction.vendor_name, extracted_address: extraction.insured_address, note: "Document attached to existing same-name vendor; is_reviewed stays 0 until a human confirms" }); } } }
     else if (vendorId !== null && clientId !== null) calculateVendorCompliance(vendorId,clientId,tenantId);
     db.query("UPDATE ingestion_events SET status='ready',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
   }).catch((err) => { db.query("UPDATE ingestion_events SET status='error',error_message=$error,updated_at=datetime('now') WHERE document_id=$id").run({$error:String(err),$id:documentId}); });
@@ -449,6 +449,15 @@ app.put("/api/documents/:id/extraction", async (c) => {
         if (mapped) {
           vendorId = mapped.vendorId;
           clientId = mapped.clientId;
+          if (mapped.vendorPossibleDuplicate) {
+            // Possible duplicate: a same-name vendor already exists under this
+            // client (addresses differ or absent). Attach the document to the
+            // existing vendor but force it back into the needs-review surface
+            // (is_reviewed = 0) so a human must explicitly confirm this
+            // document belongs to that vendor before it can affect compliance.
+            db.query("UPDATE document_extractions SET is_reviewed = 0 WHERE id = $id").run({ $id: existing.id });
+            logAudit(db, "document", id, "possible_duplicate_vendor", { existing_vendor_id: mapped.vendorId, extracted_vendor_name: ext.vendor_name, extracted_address: ext.insured_address, note: "Document auto-attached to existing same-name vendor; forced back to needs-review" });
+          }
         }
       }
     }

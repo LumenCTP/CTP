@@ -1,4 +1,5 @@
 import { getDb } from "./db";
+import { entityKey } from "./entities";
 
 const db = getDb();
 
@@ -7,8 +8,8 @@ console.log("[seed] Seeding database...");
 // ── Clients ──────────────────────────────────────────
 
 const insertClient = db.query(`
-  INSERT INTO clients (name, contact_email, contact_phone, address)
-  VALUES ($name, $email, $phone, $address)
+  INSERT INTO clients (name, contact_email, contact_phone, address, normalized_key)
+  VALUES ($name, $email, $phone, $address, $key)
 `);
 
 const clients = [
@@ -17,7 +18,7 @@ const clients = [
 ];
 
 for (const c of clients) {
-  insertClient.run({ $name: c.name, $email: c.email, $phone: c.phone, $address: c.address });
+  insertClient.run({ $name: c.name, $email: c.email, $phone: c.phone, $address: c.address, $key: entityKey(c.name, c.address) });
 }
 console.log("[seed] Inserted 2 clients");
 
@@ -42,8 +43,8 @@ console.log("[seed] Inserted required document types for each client");
 // ── Vendors ─────────────────────────────────────────
 
 const insertVendor = db.query(`
-  INSERT INTO vendors (client_id, name, contact_name, contact_email, contact_phone)
-  VALUES ($client_id, $name, $contact_name, $contact_email, $contact_phone)
+  INSERT INTO vendors (client_id, name, contact_name, contact_email, contact_phone, normalized_key)
+  VALUES ($client_id, $name, $contact_name, $contact_email, $contact_phone, $key)
 `);
 
 const vendors = [
@@ -53,7 +54,7 @@ const vendors = [
 ];
 
 for (const v of vendors) {
-  insertVendor.run({ $client_id: v.client_id, $name: v.name, $contact_name: v.contact_name, $contact_email: v.contact_email, $contact_phone: v.contact_phone });
+  insertVendor.run({ $client_id: v.client_id, $name: v.name, $contact_name: v.contact_name, $contact_email: v.contact_email, $contact_phone: v.contact_phone, $key: entityKey(v.name, null) });
 }
 console.log("[seed] Inserted 3 vendors");
 

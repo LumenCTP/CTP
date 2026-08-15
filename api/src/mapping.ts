@@ -1,15 +1,40 @@
 import type { Database } from "bun:sqlite";
 import { applyDefaultRequiredDocs } from "./db";
+import { normalize, entityKey, normalizedNameForDedup } from "./entities";
 
-export function normalize(s: string | null): string | null {
-  if (s === null) return null;
-  const value = s.toLowerCase().trim().replace(/\s+/g, " ").replace(/[.,'\"]/g, "").replace(/[^a-z0-9 ]/g, "");
-  return value || null;
+// Re-export for backward compatibility with any importer of the old API.
+export { normalize, entityKey };
+
+export interface VendorMatchResult {
+  /** Resolved vendor id (existing, matched-by-name, or newly created), or null when no key could be built. */
+  vendorId: number | null;
+  /** True when this call INSERTED a new vendor row. */
+  created: boolean;
+  /**
+   * True when the vendor name normalized-name-matches an existing vendor under
+   * the same client but the addresses differ/are absent. The caller MUST NOT
+   * treat this as a clean creation — attach the document to the existing
+   * vendor (vendorId) and leave it in the needs-review surface (is_reviewed=0)
+   * so a human confirms before it drives compliance.
+   */
+  possibleDuplicate: boolean;
 }
 
-function entityKey(name: string | null, address: string | null): string | null {
-  const n = normalize(name), a = normalize(address);
-  return n && a ? `${n}::${a}` : null;
+/**
+ * Find an existing vendor under the same client whose normalized name
+ * (suffix-tolerant: "ABC Roofing" ≈ "ABC Roofing, LLC") matches the candidate.
+ * Address is deliberately ignored — this is the guard against creating ghost
+ * duplicate vendors from AI-extracted documents. Linear scan is fine at this
+ * scale (tens-hundreds of vendors per client, once per extracted document).
+ */
+export function findPossibleDuplicateVendor(db: Database, clientId: number, vendorName: string | null): { id: number; name: string } | null {
+  const dedupName = normalizedNameForDedup(vendorName);
+  if (!dedupName) return null;
+  const rows = db.query("SELECT id, name FROM vendors WHERE client_id = $cid").all({ $cid: clientId }) as Array<{ id: number; name: string }>;
+  for (const r of rows) {
+    if (normalizedNameForDedup(r.name) === dedupName) return r;
+  }
+  return null;
 }
 
 export function matchOrCreateClient(db: Database, tenantId: number, holderName: string | null, holderAddress: string | null): number | null {
@@ -24,22 +49,44 @@ export function matchOrCreateClient(db: Database, tenantId: number, holderName: 
   return clientId;
 }
 
-export function matchOrCreateVendor(db: Database, clientId: number, vendorName: string | null, vendorAddress: string | null): number | null {
+export function matchOrCreateVendor(db: Database, clientId: number, vendorName: string | null, vendorAddress: string | null): VendorMatchResult {
   const key = entityKey(vendorName, vendorAddress);
-  if (!key) return null;
+  if (!key) return { vendorId: null, created: false, possibleDuplicate: false };
   const found = db.query("SELECT id FROM vendors WHERE client_id=$cid AND normalized_key=$key").get({ $cid: clientId, $key: key }) as { id: number } | null;
-  if (found) return found.id;
+  if (found) return { vendorId: found.id, created: false, possibleDuplicate: false };
+  // Possible-duplicate guard: the client already has a vendor whose normalized
+  // name matches but whose address differs or is absent. NEVER silently create
+  // a second row — return the existing vendor so the caller can attach the
+  // document to it in the needs-review surface for a human to confirm.
+  const dup = findPossibleDuplicateVendor(db, clientId, vendorName);
+  if (dup) {
+    console.warn(`[mapping] POSSIBLE DUPLICATE VENDOR: "${vendorName}" normalized-name-matches existing vendor #${dup.id} "${dup.name}" (client ${clientId}); not creating a new vendor`);
+    return { vendorId: dup.id, created: false, possibleDuplicate: true };
+  }
   const client = db.query("SELECT tenant_id FROM clients WHERE id=$id").get({ $id: clientId }) as { tenant_id: number } | null;
-  if (!client) return null;
+  if (!client) return { vendorId: null, created: false, possibleDuplicate: false };
   const result = db.query("INSERT INTO vendors (name,address,normalized_key,client_id,tenant_id) VALUES ($name,$address,$key,$cid,$tid)").run({ $name: vendorName, $address: vendorAddress, $key: key, $cid: clientId, $tid: client.tenant_id });
-  return Number(result.lastInsertRowid);
+  return { vendorId: Number(result.lastInsertRowid), created: true, possibleDuplicate: false };
 }
 
-export function mapCOIToEntities(db: Database, tenantId: number, extraction: { certificate_holder: string | null; certificate_holder_address: string | null; vendor_name: string | null; insured_address: string | null }, _documentId: number): { clientId: number; vendorId: number } | null {
+export interface MappingResult {
+  clientId: number;
+  vendorId: number;
+  vendorCreated: boolean;
+  vendorPossibleDuplicate: boolean;
+}
+
+export function mapCOIToEntities(db: Database, tenantId: number, extraction: { certificate_holder: string | null; certificate_holder_address: string | null; vendor_name: string | null; insured_address: string | null }, _documentId: number): MappingResult | null {
   const clientId = matchOrCreateClient(db, tenantId, extraction.certificate_holder, extraction.certificate_holder_address);
   if (!clientId) return null;
-  const vendorId = matchOrCreateVendor(db, clientId, extraction.vendor_name, extraction.insured_address);
-  return vendorId ? { clientId, vendorId } : null;
+  const vendor = matchOrCreateVendor(db, clientId, extraction.vendor_name, extraction.insured_address);
+  if (!vendor.vendorId) return null;
+  return {
+    clientId,
+    vendorId: vendor.vendorId,
+    vendorCreated: vendor.created,
+    vendorPossibleDuplicate: vendor.possibleDuplicate,
+  };
 }
 
 export function parseW9FormDate(s: string | null): Date | null {

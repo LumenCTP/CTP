@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { getDb } from "../db";
+import { entityKey } from "../entities";
 import { logAudit } from "../middleware";
 
 const app = new Hono();
@@ -89,7 +90,7 @@ app.post("/api/vendors", async (c) => {
   try {
     const db = getDb();
     const body = await c.req.json();
-    const { client_id, name, contact_name, contact_email, contact_phone } = body;
+    const { client_id, name, contact_name, contact_email, contact_phone, address } = body;
 
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       return c.json({ error: "Vendor name is required" }, 400);
@@ -105,13 +106,24 @@ app.post("/api/vendors", async (c) => {
       return c.json({ error: "Client not found" }, 404);
     }
 
+    const trimmedName = name.trim();
+    const trimmedAddress = address && typeof address === "string" ? address.trim() : null;
+    // Every creation path writes the same dedup key (single source of truth in
+    // entities.ts) so the unique index can prevent exact duplicates here.
+    const key = entityKey(trimmedName, trimmedAddress);
+    if (key && db.query("SELECT id FROM vendors WHERE client_id = $client_id AND normalized_key = $key").get({ $client_id: client_id, $key: key })) {
+      return c.json({ error: "A vendor with this name already exists under this client" }, 409);
+    }
+
     const result = db.query(`
-      INSERT INTO vendors (tenant_id, client_id, name, contact_name, contact_email, contact_phone)
-      VALUES ($tenant_id, $client_id, $name, $contact_name, $contact_email, $contact_phone)
+      INSERT INTO vendors (tenant_id, client_id, name, address, normalized_key, contact_name, contact_email, contact_phone)
+      VALUES ($tenant_id, $client_id, $name, $address, $key, $contact_name, $contact_email, $contact_phone)
     `).run({
       $tenant_id: c.get("tenant_id") as number,
       $client_id: client_id,
-      $name: name.trim(),
+      $name: trimmedName,
+      $address: trimmedAddress,
+      $key: key,
       $contact_name: contact_name?.trim() || null,
       $contact_email: contact_email?.trim() || null,
       $contact_phone: contact_phone?.trim() || null,
@@ -125,7 +137,7 @@ app.post("/api/vendors", async (c) => {
       VALUES ($vendor_id, $client_id, 'needs_review', 'hold')
     `).run({ $vendor_id: newId, $client_id: client_id });
 
-    logAudit(db, "vendor", newId, "created", { client_id, name: name.trim(), contact_name, contact_email, contact_phone });
+    logAudit(db, "vendor", newId, "created", { client_id, name: trimmedName, address: trimmedAddress, contact_name, contact_email, contact_phone });
 
     // Return the new vendor with client name
     const vendor = db.query(`
@@ -157,7 +169,7 @@ app.put("/api/vendors/:id", async (c) => {
     }
 
     const body = await c.req.json();
-    const { client_id, name, contact_name, contact_email, contact_phone } = body;
+    const { client_id, name, contact_name, contact_email, contact_phone, address } = body;
 
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       return c.json({ error: "Vendor name is required" }, 400);
@@ -173,23 +185,34 @@ app.put("/api/vendors/:id", async (c) => {
       return c.json({ error: "Client not found" }, 404);
     }
 
+    const trimmedName = name.trim();
+    const trimmedAddress = address && typeof address === "string" ? address.trim() : null;
+    // Keep the dedup key in sync with the edited name/address, and refuse an
+    // edit that would collide with an existing vendor's key under this client.
+    const key = entityKey(trimmedName, trimmedAddress);
+    if (key && db.query("SELECT id FROM vendors WHERE client_id = $client_id AND normalized_key = $key AND id != $id").get({ $client_id: client_id, $key: key, $id: id })) {
+      return c.json({ error: "Another vendor with this name already exists under this client" }, 409);
+    }
+
     db.query(`
       UPDATE vendors
-      SET client_id = $client_id, name = $name, contact_name = $contact_name,
-          contact_email = $contact_email, contact_phone = $contact_phone,
+      SET client_id = $client_id, name = $name, address = $address, normalized_key = $key,
+          contact_name = $contact_name, contact_email = $contact_email, contact_phone = $contact_phone,
           updated_at = datetime('now')
       WHERE id = $id
     `).run({
       $id: id,
       $tenant_id: c.get("tenant_id") as number,
       $client_id: client_id,
-      $name: name.trim(),
+      $name: trimmedName,
+      $address: trimmedAddress,
+      $key: key,
       $contact_name: contact_name?.trim() || null,
       $contact_email: contact_email?.trim() || null,
       $contact_phone: contact_phone?.trim() || null,
     });
 
-    logAudit(db, "vendor", id, "updated", { client_id, name: name.trim(), contact_name, contact_email, contact_phone });
+    logAudit(db, "vendor", id, "updated", { client_id, name: trimmedName, address: trimmedAddress, contact_name, contact_email, contact_phone });
 
     // Return updated vendor
     const vendor = db.query(`
