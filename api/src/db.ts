@@ -421,6 +421,9 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
   ensureColumn(db, "tenants", "inbox_slug TEXT", "inbox_slug");
   ensureColumn(db, "tenants", "subscription_plan TEXT DEFAULT NULL", "subscription_plan");
+  // Per-tenant company logo (TopBar branding): object-storage key under
+  // logos/tenant-<id>.<ext>; NULL until the tenant uploads one.
+  ensureColumn(db, "tenants", "logo_key TEXT", "logo_key");
   db.exec(`CREATE TABLE IF NOT EXISTS inbox_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, raw_email_json TEXT NOT NULL, processed BOOLEAN NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')))`) ;
   ensureColumn(db, "inbox_queue", "error TEXT", "error");
   ensureColumn(db, "inbox_queue", "processed_at TEXT", "processed_at");

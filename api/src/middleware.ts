@@ -15,6 +15,7 @@ export const TENANT_DATA_PATHS = [
   "/api/support/*",
   "/api/billing", "/api/billing/*",
   "/api/chat", "/api/chat/*",
+  "/api/tenant", "/api/tenant/*",
 ];
 // Queue processor endpoints are intentionally unauthenticated JWT-wise, but protected
 // by a shared secret (they are called by the internal scheduler/delivery worker).
@@ -133,6 +134,7 @@ export interface TenantRow {
   created_at: string;
   updated_at: string;
   inbox_slug: string | null;
+  logo_key: string | null;
 }
 
 export interface WizardRow {

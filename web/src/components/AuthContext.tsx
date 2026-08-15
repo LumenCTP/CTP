@@ -6,6 +6,7 @@ interface User {
   company_name: string;
   inbox_slug?: string | null;
   inbox_address?: string | null;
+  logo_url?: string | null;
   email: string;
   role?: string | null;
   tenant_id?: number | null;
@@ -85,6 +86,7 @@ function mergeTenant(user: Record<string, unknown>, tenant: Record<string, unkno
     cancel_at_period_end: (tenant?.cancel_at_period_end as boolean) ?? false,
     payment_week_start_day: (tenant?.payment_week_start_day as string) ?? "monday",
     wizard_status: (tenant?.wizard_status as string) ?? null,
+    logo_url: (user.logo_url as string) ?? null,
   };
 }
 

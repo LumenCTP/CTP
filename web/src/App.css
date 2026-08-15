@@ -183,6 +183,55 @@ body {
 .topbar-brand {
   display: flex;
   align-items: center;
+  gap: 10px;
+  min-width: 0;
+}
+.topbar-welcome {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--gray-800);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 300px;
+}
+.topbar-logo-img {
+  width: 30px;
+  height: 30px;
+  object-fit: contain;
+  border-radius: 6px;
+  flex-shrink: 0;
+}
+.logo-upload-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  color: var(--gray-500);
+  background: var(--gray-100);
+  border: 1px solid var(--gray-200);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease;
+}
+.logo-upload-btn:hover {
+  color: var(--blue);
+  border-color: var(--blue);
+  background: var(--blue-light);
+}
+.logo-upload-btn.uploading {
+  opacity: 0.55;
+  pointer-events: none;
+}
+.logo-upload-error {
+  font-size: 0.8rem;
+  color: var(--red);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 220px;
 }
 
 .topbar-spacer {
@@ -528,6 +577,14 @@ body {
   }
 
   .topbar .topbar-badge {
+    display: none;
+  }
+
+  .topbar-welcome {
+    max-width: 140px;
+  }
+
+  .logo-upload-error {
     display: none;
   }
 }

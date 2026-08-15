@@ -212,6 +212,7 @@ app.post("/api/auth/login", async (c) => {
         role: user.role || "user",
         inbox_slug: tenant?.inbox_slug ?? null,
         inbox_address: buildInboxAddress(tenant?.inbox_slug ?? null),
+        logo_url: tenant?.logo_key ? "/api/tenant/logo" : null,
       },
       tenant: tenant ? {
         id: tenant.id,
@@ -415,6 +416,7 @@ app.get("/api/auth/me", async (c) => {
     wizard_status: wizard?.status ?? null,
     inbox_slug: tenant?.inbox_slug ?? null,
     inbox_address: buildInboxAddress(tenant?.inbox_slug ?? null),
+    logo_url: tenant?.logo_key ? "/api/tenant/logo" : null,
   });
 });
 
