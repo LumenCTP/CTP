@@ -551,7 +551,7 @@ export function buildRenewalReminderEmail(
     </table>
 
     <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
-      Please submit the updated ${documentType} at your earliest convenience to avoid any payment delays.
+      Please submit the updated document so your client can review its compliance records.
     </p>
 
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
@@ -561,6 +561,10 @@ export function buildRenewalReminderEmail(
 
   <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">
     This is an automated reminder from ClearToPay Compliance on behalf of your client.
+  </p>
+
+  <p style="margin: 8px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">
+    The dates shown are based on information on file and may require confirmation. ClearToPay does not verify coverage or make payment decisions. Your client remains responsible for its requirements and payment decisions.
   </p>
 </body>
 </html>`;

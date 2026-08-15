@@ -390,6 +390,8 @@ export default function Reports() {
                 </div>
               </div>
 
+              <p style={{ margin: "12px 0 0", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted, #6b7280)" }}>Statuses below are informational flags based on documents on file and your configured criteria. Review source documents and verify coverage with your insurance agent or broker before making payment or coverage decisions.</p>
+
               {/* Download links for "both" format */}
               {format === "both" && (
                 <div className="download-links">

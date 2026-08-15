@@ -579,8 +579,13 @@ export default function SetupWizard() {
                 style={{ marginTop: 2 }}
               />
               <span>
-                I confirm I have set my company's compliance criteria and understand
-                ClearToPay administers my requirements rather than setting them.
+                I confirm that I selected my company's document and coverage
+                criteria. I understand that ClearToPay only flags records against
+                those criteria and does not set or verify coverage adequacy.
+                AI-extracted information may contain errors, so I will review
+                source documents and consult my insurance agent or broker as
+                appropriate before relying on a status or making a payment
+                decision.
               </span>
             </label>
             <div style={{ display: "flex", gap: 8 }}>

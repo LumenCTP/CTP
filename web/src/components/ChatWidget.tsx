@@ -236,6 +236,10 @@ export default function ChatWidget() {
               {sending ? "…" : "Send"}
             </button>
           </div>
+
+          <div className="chat-disclaimer" style={{ padding: "8px 12px", fontSize: 11, lineHeight: 1.45, color: "var(--text-muted, #6b7280)", borderTop: "1px solid var(--border, #e5e7eb)", background: "var(--bg-soft, #f8fafc)" }}>
+            AI responses may contain errors and are informational only. ClearToPay does not verify coverage adequacy or approve payment. Review source documents and consult your insurance agent or broker before relying on a response.
+          </div>
         </div>
       )}
     </>

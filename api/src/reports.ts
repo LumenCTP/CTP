@@ -525,7 +525,8 @@ export async function generateExcelReport(data: ReportData): Promise<Buffer> {
   buildSummarySheet(summarySheet, data);
 
   // ── Approved Sheet ──
-  buildVendorSheet(wb.addWorksheet("Approved"), data.approved, "Approved for Payment", COLORS.green, [
+  const approvedSheet = wb.addWorksheet("Approved");
+  buildVendorSheet(approvedSheet, data.approved, "Approved for Payment", COLORS.green, [
     { header: "Vendor Name", key: "vendor_name", width: 30 },
     { header: "Contact Name", key: "contact_name", width: 22 },
     { header: "Contact Email", key: "contact_email", width: 28 },
@@ -533,7 +534,8 @@ export async function generateExcelReport(data: ReportData): Promise<Buffer> {
   ]);
 
   // ── Review Sheet ──
-  buildVendorSheet(wb.addWorksheet("Review"), data.review, "Review Before Payment", COLORS.amber, [
+  const reviewSheet = wb.addWorksheet("Review");
+  buildVendorSheet(reviewSheet, data.review, "Review Before Payment", COLORS.amber, [
     { header: "Vendor Name", key: "vendor_name", width: 30 },
     { header: "Contact Name", key: "contact_name", width: 22 },
     { header: "Contact Email", key: "contact_email", width: 28 },
@@ -542,7 +544,8 @@ export async function generateExcelReport(data: ReportData): Promise<Buffer> {
   ]);
 
   // ── Hold Sheet ──
-  buildVendorSheet(wb.addWorksheet("Hold"), data.hold, "Hold Payment", COLORS.red, [
+  const holdSheet = wb.addWorksheet("Hold");
+  buildVendorSheet(holdSheet, data.hold, "Hold Payment", COLORS.red, [
     { header: "Vendor Name", key: "vendor_name", width: 30 },
     { header: "Contact Name", key: "contact_name", width: 22 },
     { header: "Contact Email", key: "contact_email", width: 28 },
@@ -551,12 +554,31 @@ export async function generateExcelReport(data: ReportData): Promise<Buffer> {
   ]);
 
   // ── Expiring Sheet ──
-  buildExpiringSheet(wb.addWorksheet("Expiring"), data.expiring_during_week);
+  const expiringSheet = wb.addWorksheet("Expiring");
+  buildExpiringSheet(expiringSheet, data.expiring_during_week);
 
   // ── Missing Sheet ──
-  buildMissingSheet(wb.addWorksheet("Missing"), data.missing_docs);
+  const missingSheet = wb.addWorksheet("Missing");
+  buildMissingSheet(missingSheet, data.missing_docs);
+
+  // ── Administrative notice on every worksheet ──
+  for (const sheet of [summarySheet, approvedSheet, reviewSheet, holdSheet, expiringSheet, missingSheet]) {
+    addReportNotice(sheet, data.report_date);
+  }
 
   return Buffer.from(await wb.xlsx.writeBuffer());
+}
+
+function addReportNotice(sheet: ExcelJS.Worksheet, reportDate: string) {
+  const notice = `This report reflects documents on file and client-configured criteria as of ${formatDate(reportDate)}. It is an administrative aid only, not legal or insurance advice. AI-extracted data may contain errors. ClearToPay does not verify coverage adequacy or approve payment; the client is responsible for final payment and coverage decisions.`;
+  const row = sheet.rowCount + 2;
+  const lastCol = Math.max(sheet.columnCount, 1);
+  sheet.mergeCells(row, 1, row, lastCol);
+  const cell = sheet.getCell(row, 1);
+  cell.value = notice;
+  cell.font = { name: "Helvetica", size: 8, italic: true, color: { argb: "FF6b7280" } };
+  cell.alignment = { wrapText: true };
+  sheet.getRow(row).height = 45;
 }
 
 function buildSummarySheet(

@@ -86,6 +86,8 @@ app.post("/api/reports/clear-to-pay", async (c) => {
       reportData.hold.forEach(v => addVendor("Hold", v));
       reportData.expiring_during_week.forEach(e => rows.push(["Expiring", e.vendor_name, "", "", "", e.document_type, e.expiration_date, ""].map(esc).join(",")));
       reportData.missing_docs.forEach(m => rows.push(["Missing", m.vendor_name, "", "", "", "", "", m.missing_types.join("; ")].map(esc).join(",")));
+      rows.push([]);
+      rows.push([`This report reflects documents on file and client-configured criteria as of ${reportData.report_date}. It is an administrative aid only, not legal or insurance advice. AI-extracted data may contain errors. ClearToPay does not verify coverage adequacy or approve payment; the client is responsible for final payment and coverage decisions.`].map(esc).join(","));
       const csv = Buffer.from(rows.join("\r\n") + "\r\n", "utf8");
       await storagePut(reportKey(csvFilename), csv, "text/csv; charset=utf-8");
       return new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${csvFilename}"` } });

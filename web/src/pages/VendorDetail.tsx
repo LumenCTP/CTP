@@ -84,6 +84,7 @@ export default function VendorDetail() {
           <p><strong>Updated</strong><br />{date(vendor.updated_at)}</p>
         </div>
         <div className="card-header" style={{ marginTop: 20, padding: 0 }}><h3>Payment Readiness</h3></div>
+        <p style={{ margin: "0 0 10px", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted, #6b7280)" }}>Statuses below are informational flags based on documents on file and your configured criteria. Review source documents and verify coverage with your insurance agent or broker before making payment or coverage decisions.</p>
         <p style={{ marginBottom: 10 }}><strong>Compliance:</strong> {statusBadge(vendor.compliance_status)}</p>
         <p><strong>Payment:</strong> {statusBadge(vendor.payment_status)}</p>
         <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={recalculate} disabled={recalculating}>{recalculating ? "Recalculating…" : "Recalculate Compliance"}</button>

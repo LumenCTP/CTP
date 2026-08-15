@@ -124,6 +124,8 @@ function sortDocs(docs: DocRow[]): DocRow[] {
   });
 }
 
+const AUDIT_TEXT_FOOTER = `\nThis file is part of an administrative audit package and may not include every relevant document or issue. Review the source documents and package contents before relying on or sharing it. ClearToPay does not verify coverage adequacy or provide legal or insurance advice.\n`;
+
 // PAGE-ONE summary — the first file in the audit package (client info, date
 // range, vendor count, unique doc count, missing/expired summary).
 function generateAuditSummary(opts: {
@@ -160,6 +162,10 @@ function generateAuditSummary(opts: {
   lines.push(``);
   lines.push(
     `This package reflects the compliance documents on file and the criteria configured for ${opts.clientName} as of ${opts.dateStr}. It is an administrative tool, not legal advice. ClearToPay does not determine coverage adequacy; final payment and coverage decisions are the client's responsibility.`,
+  );
+  lines.push(``);
+  lines.push(
+    `This file is part of an administrative audit package and may not include every relevant document or issue. Review the source documents and package contents before relying on or sharing it. ClearToPay does not verify coverage adequacy or provide legal or insurance advice.`,
   );
   lines.push(``);
   return lines.join("\n");
@@ -199,6 +205,10 @@ function generateVendorSummary(
       lines.push(`     Has unreviewed documents`);
     }
   }
+  lines.push(``);
+  lines.push(
+    `This file is part of an administrative audit package and may not include every relevant document or issue. Review the source documents and package contents before relying on or sharing it. ClearToPay does not verify coverage adequacy or provide legal or insurance advice.`,
+  );
   lines.push(``);
   return lines.join("\n");
 }
@@ -557,12 +567,12 @@ export async function generateAuditPackage(req: AuditRequest, tenantId: number):
       `Client: ${client.name}\n\n`;
     zipEntries.push({
       name: `${rootDir}/missing_documents.txt`,
-      data: Buffer.from(header + allMissingLines.join(""), "utf-8"),
+      data: Buffer.from(header + allMissingLines.join("") + AUDIT_TEXT_FOOTER, "utf-8"),
     });
   } else {
     zipEntries.push({
       name: `${rootDir}/missing_documents.txt`,
-      data: Buffer.from(`MISSING REQUIRED DOCUMENTS REPORT\n========================================\nGenerated: ${dateStr}\nClient: ${client.name}\n\nNo missing documents found.\n`, "utf-8"),
+      data: Buffer.from(`MISSING REQUIRED DOCUMENTS REPORT\n========================================\nGenerated: ${dateStr}\nClient: ${client.name}\n\nNo missing documents found.\n${AUDIT_TEXT_FOOTER}`, "utf-8"),
     });
   }
 
@@ -574,12 +584,12 @@ export async function generateAuditPackage(req: AuditRequest, tenantId: number):
       `Client: ${client.name}\n\n`;
     zipEntries.push({
       name: `${rootDir}/expired_documents.txt`,
-      data: Buffer.from(header + allExpiredLines.join(""), "utf-8"),
+      data: Buffer.from(header + allExpiredLines.join("") + AUDIT_TEXT_FOOTER, "utf-8"),
     });
   } else {
     zipEntries.push({
       name: `${rootDir}/expired_documents.txt`,
-      data: Buffer.from(`EXPIRED DOCUMENTS REPORT\n========================================\nGenerated: ${dateStr}\nClient: ${client.name}\n\nNo expired documents found.\n`, "utf-8"),
+      data: Buffer.from(`EXPIRED DOCUMENTS REPORT\n========================================\nGenerated: ${dateStr}\nClient: ${client.name}\n\nNo expired documents found.\n${AUDIT_TEXT_FOOTER}`, "utf-8"),
     });
   }
 

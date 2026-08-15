@@ -128,6 +128,7 @@ export default function Dashboard() {
         <div className="clear-to-pay-heading">
           <div><h3 id="clear-to-pay-title">Clear-to-Pay Summary</h3><p>Vendor payment readiness for the current payment week.</p></div>
         </div>
+        <p style={{ margin: "0 0 12px", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted, #6b7280)" }}>Statuses below are informational flags based on documents on file and your configured criteria. Review source documents and verify coverage with your insurance agent or broker before making payment or coverage decisions.</p>
         {hasVendors && <p className="onboarding-chat-hint">💬 Ask the AI assistant why a vendor is on hold or which vendors we've reached out to this week — click the <strong>Ask AI</strong> button.</p>}
         {(["approved", "review", "hold"] as const).map((status) => {
           const labels = { approved: "Approved for Payment", review: "Review Before Payment", hold: "Hold Payment" };
