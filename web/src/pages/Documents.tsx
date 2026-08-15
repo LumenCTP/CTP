@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { openFileInNewTab } from "../lib/files";
+import { confidencePercent } from "../lib/confidence";
 import { useEffect, useState, useCallback, useRef } from "react";
 import { useAuth } from "../components/AuthContext";
 import type {
@@ -619,7 +620,7 @@ function DocumentRow({
     }
   }
 
-  const score = doc.ai_confidence_score;
+  const scorePct = confidencePercent(doc.ai_confidence_score);
   const displayDocType = doc.extracted_document_type || doc.document_type;
 
   return (
@@ -648,11 +649,11 @@ function DocumentRow({
               borderRadius: "9999px",
               fontSize: "0.8rem",
               fontWeight: 600,
-              color: confidenceColor(score),
-              background: confidenceBg(score),
+              color: confidenceColor(scorePct),
+              background: confidenceBg(scorePct),
             }}
           >
-            {score != null ? `${score}%` : "—"}
+            {scorePct != null ? `${scorePct}%` : "—"}
           </span>
         </td>
         <td>{reviewBadge(doc.is_reviewed)}</td>

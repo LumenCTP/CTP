@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { apiFetch } from "../lib/api";
 import { openFileInNewTab } from "../lib/files";
+import { confidencePercent } from "../lib/confidence";
 import type { ExtractionUpdateBody } from "@clear-to-pay/shared";
 
 interface ReviewItem {
@@ -64,9 +65,10 @@ interface ClientOption {
   name: string;
 }
 
-function confidenceColor(score: number): string {
-  if (score >= 85) return "var(--green)";
-  if (score >= 70) return "var(--amber)";
+function confidenceColor(score: number | null | undefined): string {
+  const pct = confidencePercent(score) ?? 0;
+  if (pct >= 85) return "var(--green)";
+  if (pct >= 70) return "var(--amber)";
   return "var(--red)";
 }
 
@@ -328,14 +330,14 @@ export default function NeedsReview() {
                         fontWeight: 600,
                         color: confidenceColor(item.ai_confidence_score),
                         background:
-                          item.ai_confidence_score >= 85
+                          confidencePercent(item.ai_confidence_score)! >= 85
                             ? "var(--green-light)"
-                            : item.ai_confidence_score >= 70
+                            : confidencePercent(item.ai_confidence_score)! >= 70
                               ? "var(--amber-light)"
                               : "var(--red-light)",
                       }}
                     >
-                      {item.ai_confidence_score}%
+                      {confidencePercent(item.ai_confidence_score) ?? 0}%
                     </span>
                   </td>
                   <td className="text-muted text-sm">
@@ -406,7 +408,7 @@ export default function NeedsReview() {
                       color: confidenceColor(reviewingItem.ai_confidence_score),
                     }}
                   >
-                    {reviewingItem.ai_confidence_score}%
+                    {confidencePercent(reviewingItem.ai_confidence_score) ?? 0}%
                   </span>
                 </p>
 

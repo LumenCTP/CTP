@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import type { ComplianceDetailResponse, DocumentListItem, VendorDetail as VendorDetailType } from "@clear-to-pay/shared";
 import { apiFetch } from "../lib/api";
+import { confidencePercent } from "../lib/confidence";
 
 function statusBadge(status: string | undefined) {
   const safe = status || "needs_review";
@@ -93,7 +94,7 @@ export default function VendorDetail() {
         <h3>Compliance by Document Type</h3>
         {!compliance?.details.length ? <p className="text-muted">No document requirements configured for this client.</p> : <div className="table-wrapper"><table className="data-table"><thead><tr><th>Document Type</th><th>Status</th><th>Expiration Date</th><th>Has Unreviewed</th></tr></thead><tbody>{compliance.details.map((d) => <tr key={d.document_type}><td className="td-name">{d.document_id ? <Link to={`/app/documents/${d.document_id}`}>{d.document_type}</Link> : d.document_type}</td><td>{statusBadge(d.status)}</td><td>{date(d.expiration_date)}</td><td>{d.has_unreviewed ? "⚠ Yes" : "✓ No"}</td></tr>)}</tbody></table></div>}
         <h3 style={{ marginTop: 28 }}>Documents</h3>
-        {!documents.length ? <p className="text-muted">No documents uploaded for this vendor.</p> : <div className="table-wrapper"><table className="data-table"><thead><tr><th>Filename</th><th>Document Type</th><th>Expiration</th><th>Reviewed</th><th>AI Confidence</th><th>Ingestion</th></tr></thead><tbody>{documents.map((doc) => <tr key={doc.id}><td className="td-name"><Link to={`/app/documents/${doc.id}`}>{doc.original_filename}</Link></td><td>{doc.extracted_document_type || doc.document_type || "—"}</td><td>{date(doc.expiration_date)}</td><td>{doc.is_reviewed ? <span className="badge badge-approved">Reviewed</span> : <span className="badge badge-needs_review">Needs Review</span>}</td><td>{doc.ai_confidence_score != null ? `${doc.ai_confidence_score}%` : "—"}</td><td>{ingestionBadge(doc.ingestion_status)}</td></tr>)}</tbody></table></div>}
+        {!documents.length ? <p className="text-muted">No documents uploaded for this vendor.</p> : <div className="table-wrapper"><table className="data-table"><thead><tr><th>Filename</th><th>Document Type</th><th>Expiration</th><th>Reviewed</th><th>AI Confidence</th><th>Ingestion</th></tr></thead><tbody>{documents.map((doc) => <tr key={doc.id}><td className="td-name"><Link to={`/app/documents/${doc.id}`}>{doc.original_filename}</Link></td><td>{doc.extracted_document_type || doc.document_type || "—"}</td><td>{date(doc.expiration_date)}</td><td>{doc.is_reviewed ? <span className="badge badge-approved">Reviewed</span> : <span className="badge badge-needs_review">Needs Review</span>}</td><td>{confidencePercent(doc.ai_confidence_score) != null ? `${confidencePercent(doc.ai_confidence_score)}%` : "—"}</td><td>{ingestionBadge(doc.ingestion_status)}</td></tr>)}</tbody></table></div>}
       </section>
     </div>
   </div>;

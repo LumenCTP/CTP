@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { fetchFileObjectUrl, openFileInNewTab } from "../lib/files";
+import { confidencePercent } from "../lib/confidence";
 import { ALL_DOCUMENT_TYPES, type DocumentDetail as DocumentDetailType, type ExtractionUpdateBody } from "@clear-to-pay/shared";
 
 const emptyForm = { vendor_name: "", insurance_carrier: "", policy_number: "", effective_date: "", expiration_date: "", certificate_holder: "", certificate_holder_address: "", producer_name: "", producer_contact: "", producer_email: "", producer_phone: "", document_type: "" };
@@ -100,7 +101,7 @@ export default function DocumentDetail() {
     <div className="page-header"><div><Link to="/app/documents" className="back-link">← Documents</Link><h2 className="page-title">Review Document</h2><p className="page-subtitle">{doc.original_filename}</p></div>{statusBadge(doc.ingestion_status)}</div>
     <div className="document-detail-layout">
       <section className="document-viewer-card"><h3>Document Viewer</h3>{fileError && !fileUrl ? <div className="error-message">{fileError}</div> : fileLoading && !fileUrl ? <div className="loading">Loading document…</div> : isImage ? <img className="document-preview-image" src={fileUrl ?? undefined} alt={doc.original_filename} /> : <div className="document-pdf-placeholder"><span>📄</span><strong>PDF document</strong><button className="btn btn-primary" type="button" onClick={() => { setFileError(null); openFileInNewTab(`/api/documents/${id}/file`, doc.original_filename).catch((e) => setFileError(e instanceof Error ? e.message : String(e))); }} disabled={fileLoading}>{fileLoading ? "Loading…" : "Open / Download PDF"}</button></div>}</section>
-      <form className="card extraction-form-card" onSubmit={save}><div className="card-header"><h3>Extracted Data</h3><span className="confidence-score">AI confidence: {doc.ai_confidence_score != null ? `${doc.ai_confidence_score}%` : "—"}</span></div>
+      <form className="card extraction-form-card" onSubmit={save}><div className="card-header"><h3>Extracted Data</h3><span className="confidence-score">AI confidence: {confidencePercent(doc.ai_confidence_score) != null ? `${confidencePercent(doc.ai_confidence_score)}%` : "—"}</span></div>
         <p style={{ margin: "0 0 12px", fontSize: 12, lineHeight: 1.5, color: "#92400e", background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 6, padding: "8px 10px" }}>AI-extracted fields may be incomplete or incorrect. Compare every field with the source document before marking the extraction reviewed. 'Reviewed' confirms data-entry review only; it is not approval of coverage or payment.</p>
         <div className="extraction-fields">
           {([ ["vendor_name","Vendor Name","text"],["insurance_carrier","Insurance Carrier","text"],["policy_number","Policy Number","text"],["effective_date","Effective Date","date"],["expiration_date","Expiration Date","date"],["certificate_holder","Certificate Holder","text"],["certificate_holder_address","Certificate Holder Address","text"]] as const).map(([key,label,type]) => <label className="form-group" key={key}>{label}<input className="form-input" type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>)}

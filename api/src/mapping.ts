@@ -42,6 +42,20 @@ export function matchOrCreateClient(db: Database, tenantId: number, holderName: 
   if (!key) return null;
   const found = db.query("SELECT id FROM clients WHERE tenant_id=$tid AND normalized_key=$key").get({ $tid: tenantId, $key: key }) as { id: number } | null;
   if (found) return found.id;
+  // Possible-duplicate guard (mirrors findPossibleDuplicateVendor): a tenant
+  // may have the same client entered WITHOUT an address (normalized_key is
+  // name-only, e.g. from CSV/manual entry), while the COI carries the full
+  // holder address. The composite lookup above misses it, so NEVER silently
+  // create a second client row — fall back to a name-only match and attach the
+  // document to the existing client for a human to confirm in needs-review.
+  const nameOnly = normalize(holderName);
+  if (nameOnly && nameOnly !== key) {
+    const byName = db.query("SELECT id FROM clients WHERE tenant_id=$tid AND normalized_key=$nameOnly").get({ $tid: tenantId, $nameOnly: nameOnly }) as { id: number } | null;
+    if (byName) {
+      console.warn(`[mapping] POSSIBLE DUPLICATE CLIENT: "${holderName}" normalized-name-matches existing client #${byName.id}; attaching to existing client instead of creating a new one`);
+      return byName.id;
+    }
+  }
   const result = db.query("INSERT INTO clients (name,address,normalized_key,tenant_id) VALUES ($name,$address,$key,$tid)").run({ $name: holderName, $address: holderAddress, $key: key, $tid: tenantId });
   const clientId = Number(result.lastInsertRowid);
   // Auto-discovered clients start with the standard default requirement set.
