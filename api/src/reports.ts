@@ -459,6 +459,12 @@ function renderSection<T>(
   rowMapper: (item: T) => string[],
   _accentColor: string
 ) {
+  // IMPORTANT: reset doc.x to the left margin before anything else. The
+  // cell-drawing text() calls leave doc.x at the last cell's x position, so
+  // without this reset every section after the first would be shifted right
+  // (headings wrap, rows clip off the right edge of the page).
+  doc.x = doc.page.margins.left;
+
   // Check if we need a new page (rough estimate: need ~120pt for header + first row)
   if (doc.y > doc.page.height - 140) {
     doc.addPage();
