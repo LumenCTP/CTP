@@ -212,6 +212,11 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
     tenant_id: number | null;
   }>;
 
+  // Track which clients had their compliance computed by the report loop so
+  // the whole-tenant refresh below can skip tenants that were fully refreshed
+  // (one compliance pass per vendor per run, instead of a client pass plus a
+  // second whole-tenant pass over the same vendors).
+  const coveredClientIds = new Set<number>();
   for (const config of configs) {
     try {
       // Belt-and-braces per-client dedup: never email a client twice for the
@@ -226,6 +231,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
       console.log(`[scheduler] Generating weekly report for client ${config.client_id} (${config.client_name})`);
 
       const reportData = gatherReportData(config.client_id);
+      coveredClientIds.add(config.client_id);
       const timestamp = Date.now();
       const clientSlug = config.client_name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
 
@@ -302,20 +308,49 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
 
   // Whole-book refresh: recalculate accurate compliance for EVERY active tenant,
   // not just clients with weekly report recipients configured. Clients without
-  // recipients never get a scheduled refresh otherwise. Each tenant is wrapped
-  // in try/catch so a single failure cannot kill the job.
+  // recipients never get a scheduled refresh otherwise. To avoid recomputing
+  // vendors the report loop above already refreshed, only each tenant's
+  // UNCOVERED clients are computed here (one compliance pass per vendor per
+  // run). Each tenant is wrapped in try/catch so a single failure cannot kill
+  // the job.
   const activeTenants = db.query(
     "SELECT id FROM tenants WHERE UPPER(subscription_status) IN ('ACTIVE', 'TRIAL')"
   ).all() as Array<{ id: number }>;
   for (const tenant of activeTenants) {
     try {
-      const summary = calculateAllCompliance(tenant.id);
-      console.log(`[scheduler] Weekly compliance refresh for tenant ${tenant.id}: ${summary.vendor_count} vendors (approved=${summary.approved}, review=${summary.review}, hold=${summary.hold})`);
+      const tenantClients = db.query("SELECT id FROM clients WHERE tenant_id = $tid").all({ $tid: tenant.id }) as Array<{ id: number }>;
+      const uncovered = tenantClients.filter((cl) => !coveredClientIds.has(cl.id));
+      // Defensive: vendors with NULL client_id are only reachable via a
+      // whole-tenant scan. If any exist, fall back to calculateAllCompliance so
+      // the old behavior is preserved exactly. (None exist in the data today.)
+      const nullClientVendors = db.query("SELECT COUNT(*) as c FROM vendors WHERE tenant_id = $tid AND client_id IS NULL").get({ $tid: tenant.id }) as { c: number };
+      if (uncovered.length === 0 && nullClientVendors.c === 0) {
+        console.log(`[scheduler] Tenant ${tenant.id} already fully refreshed by weekly report run — skipping whole-tenant recompute`);
+        continue;
+      }
+      let approved = 0;
+      let review = 0;
+      let hold = 0;
+      let vendorCount = 0;
+      if (nullClientVendors.c > 0) {
+        const summary = calculateAllCompliance(tenant.id);
+        approved = summary.approved;
+        review = summary.review;
+        hold = summary.hold;
+        vendorCount = summary.vendor_count;
+      }
+      for (const cl of uncovered) {
+        const summary = calculateClientCompliance(cl.id, tenant.id);
+        approved += summary.approved;
+        review += summary.review;
+        hold += summary.hold;
+        vendorCount += summary.vendor_count;
+      }
+      console.log(`[scheduler] Weekly compliance refresh for tenant ${tenant.id}: ${vendorCount} vendors (approved=${approved}, review=${review}, hold=${hold})`);
     } catch (err) {
       console.error(`[scheduler] Error refreshing compliance for tenant ${tenant.id}:`, err);
     }
   }
-
   // The delivery worker can pick these queued messages up immediately after the
   // weekly batch is created. The endpoint is local-only by convention and still
   // requires the shared queue secret.
