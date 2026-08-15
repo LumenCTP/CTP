@@ -555,14 +555,20 @@ function DocumentRow({
 }) {
   const [detail, setDetail] = useState<any>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [viewError, setViewError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
 
   async function loadDetail() {
     if (detail) {
+      setDetailError(null);
       onToggle();
       return;
     }
     setDetailLoading(true);
+    setDetailError(null);
     try {
       const res = await apiFetch(`/api/documents/${doc.id}`);
       if (!res.ok) throw new Error("Failed");
@@ -572,6 +578,44 @@ function DocumentRow({
       onToggle();
     } catch {
       setDetailLoading(false);
+      // Surface the failure inline so a fetch hiccup doesn't look like the row
+      // "does nothing" (M7).
+      setDetailError("Couldn't load the document details. Please try again.");
+    }
+  }
+
+  async function handleDelete() {
+    if (!window.confirm(`Delete "${doc.original_filename}" permanently? This cannot be undone.`)) return;
+    setDeleting(true);
+    setActionError(null);
+    try {
+      const res = await apiFetch(`/api/documents/${doc.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Couldn't delete the document");
+      }
+      onRefresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't delete the document");
+    } finally {
+      setDeleting(false);
+    }
+  }
+
+  async function handleRetry() {
+    setRetrying(true);
+    setActionError(null);
+    try {
+      const res = await apiFetch(`/api/documents/${doc.id}/retry-extraction`, { method: "POST" });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || "Couldn't retry extraction");
+      }
+      onRefresh();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Couldn't retry extraction");
+    } finally {
+      setRetrying(false);
     }
   }
 
@@ -628,40 +672,71 @@ function DocumentRow({
           >
             📄 View
           </button>
+          {doc.ingestion_status === "error" && (
+            <button
+              className="btn btn-sm btn-outline"
+              onClick={(e) => {
+                e.stopPropagation();
+                handleRetry();
+              }}
+              disabled={retrying}
+            >
+              {retrying ? "Retrying…" : "↻ Retry"}
+            </button>
+          )}
+          <button
+            className="btn btn-sm btn-outline"
+            style={{ color: "var(--red, #dc2626)", borderColor: "var(--red, #dc2626)" }}
+            onClick={(e) => {
+              e.stopPropagation();
+              handleDelete();
+            }}
+            disabled={deleting}
+          >
+            {deleting ? "Deleting…" : "🗑 Delete"}
+          </button>
           {viewError && <span className="text-muted text-sm" style={{ color: "var(--red)" }}>{viewError}</span>}
+          {actionError && <span className="text-muted text-sm" style={{ color: "var(--red)", display: "block" }}>{actionError}</span>}
           {detailLoading && <span className="text-muted text-sm">…</span>}
+          {detailError && !isExpanded && <span className="text-muted text-sm" style={{ color: "var(--red)", display: "block" }}>{detailError}</span>}
         </td>
       </tr>
 
       {/* Expanded extraction detail */}
-      {isExpanded && detail && (
+      {isExpanded && (
         <tr>
           <td colSpan={11} style={{ padding: "0" }}>
-            <div className="extraction-detail" style={{ padding: "16px 20px", background: "var(--gray-50)", borderTop: "1px solid var(--gray-200)" }}>
-              <h4 style={{ marginBottom: "12px", fontSize: "0.9rem", color: "var(--gray-700)" }}>
-                Extraction Details{" "}
-                <span className="text-muted text-sm">(latest)</span>
-              </h4>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "8px 16px", fontSize: "0.85rem" }}>
-                <DetailField label="Vendor Name" value={detail.extracted_vendor_name ?? detail.vendor_name} />
-                <DetailField label="Document Type" value={detail.extracted_document_type ?? detail.document_type} />
-                <DetailField label="Insurance Carrier" value={detail.insurance_carrier} />
-                <DetailField label="Policy Number" value={detail.policy_number} />
-                <DetailField label="Effective Date" value={detail.effective_date} />
-                <DetailField label="Expiration Date" value={detail.expiration_date} />
-                <DetailField label="Certificate Holder" value={detail.certificate_holder} />
-                <DetailField label="AI Confidence" value={score != null ? `${score}%` : "—"} />
-                <DetailField label="Sender Name" value={doc.sender_name} />
-                <DetailField label="Sender Email" value={doc.sender_email} />
-              </div>
-              {detail.extractions && detail.extractions.length > 1 && (
-                <div style={{ marginTop: "12px" }}>
-                  <p className="text-muted text-sm">
-                    {detail.extractions.length} extraction records (history retained)
-                  </p>
+            {detail ? (
+              <div className="extraction-detail" style={{ padding: "16px 20px", background: "var(--gray-50)", borderTop: "1px solid var(--gray-200)" }}>
+                <h4 style={{ marginBottom: "12px", fontSize: "0.9rem", color: "var(--gray-700)" }}>
+                  Extraction Details{" "}
+                  <span className="text-muted text-sm">(latest)</span>
+                </h4>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: "8px 16px", fontSize: "0.85rem" }}>
+                  <DetailField label="Vendor Name" value={detail.extracted_vendor_name ?? detail.vendor_name} />
+                  <DetailField label="Document Type" value={detail.extracted_document_type ?? detail.document_type} />
+                  <DetailField label="Insurance Carrier" value={detail.insurance_carrier} />
+                  <DetailField label="Policy Number" value={detail.policy_number} />
+                  <DetailField label="Effective Date" value={detail.effective_date} />
+                  <DetailField label="Expiration Date" value={detail.expiration_date} />
+                  <DetailField label="Certificate Holder" value={detail.certificate_holder} />
+                  <DetailField label="AI Confidence" value={score != null ? `${score}%` : "—"} />
+                  <DetailField label="Sender Name" value={doc.sender_name} />
+                  <DetailField label="Sender Email" value={doc.sender_email} />
                 </div>
-              )}
-            </div>
+                {detail.extractions && detail.extractions.length > 1 && (
+                  <div style={{ marginTop: "12px" }}>
+                    <p className="text-muted text-sm">
+                      {detail.extractions.length} extraction records (history retained)
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div style={{ padding: "12px 20px", background: "var(--gray-50)", borderTop: "1px solid var(--gray-200)", fontSize: "0.85rem", color: "var(--red, #dc2626)" }}>
+                Couldn't load the document details. <button className="btn btn-sm btn-outline" onClick={loadDetail}>Try again</button>
+              </div>
+            )}
           </td>
         </tr>
       )}

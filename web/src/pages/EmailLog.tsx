@@ -1,5 +1,5 @@
 import { apiFetch } from "../lib/api";
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, type CSSProperties } from "react";
 
 interface EmailLogEntry {
   id: number;
@@ -41,6 +41,21 @@ function emailTypeColor(type: string): string {
     case "renewal_reminder": return "#d97706";
     default: return "#6b7280";
   }
+}
+
+function statusBadge(status: string) {
+  const base: CSSProperties = { fontSize: "12px", fontWeight: 600 };
+  if (status === "sent") {
+    return <span style={{ ...base, color: "#059669" }}>✓ Sent</span>;
+  }
+  if (status === "queued") {
+    return <span style={{ ...base, color: "#d97706" }}>⏳ Queued</span>;
+  }
+  if (status === "error") {
+    return <span style={{ ...base, color: "#dc2626" }}>✗ Error</span>;
+  }
+  // Unknown statuses render their raw value in neutral — never mislabeled as error.
+  return <span style={{ ...base, color: "#6b7280" }}>{status}</span>;
 }
 
 export default function EmailLog() {
@@ -157,15 +172,7 @@ export default function EmailLog() {
                     {entry.subject}
                   </td>
                   <td>
-                    <span
-                      style={{
-                        fontSize: "12px",
-                        fontWeight: 600,
-                        color: entry.status === "sent" ? "#059669" : "#dc2626",
-                      }}
-                    >
-                      {entry.status === "sent" ? "✓ Sent" : "✗ Error"}
-                    </span>
+                    {statusBadge(entry.status)}
                   </td>
                 </tr>
               ))}

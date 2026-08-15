@@ -52,6 +52,22 @@ app.post("/api/reports/clear-to-pay", async (c) => {
     // Gather report data (recalculates compliance first)
     const reportData = gatherReportData(clientId);
 
+    // Summary payload — single-format responses carry it in a response header
+    // (X-Report-Summary, base64url JSON) so the SPA can show the five-count
+    // preview WITHOUT generating the report a second time ("both" still returns
+    // it as JSON in the body).
+    const summary = {
+      client_name: reportData.client_name,
+      report_date: reportData.report_date,
+      payment_week: reportData.payment_week,
+      approved_count: reportData.approved.length,
+      review_count: reportData.review.length,
+      hold_count: reportData.hold.length,
+      expiring_count: reportData.expiring_during_week.length,
+      missing_count: reportData.missing_docs.length,
+    };
+    const summaryHeader = Buffer.from(JSON.stringify(summary)).toString("base64url");
+
     const timestamp = Date.now();
     const clientSlug = client.name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
     const tenantId = c.get("tenant_id") as number;
@@ -72,6 +88,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
         headers: {
           "Content-Type": "application/pdf",
           "Content-Disposition": `attachment; filename="${pdfFilename}"`,
+          "X-Report-Summary": summaryHeader,
         },
       });
     }
@@ -90,7 +107,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
       rows.push([`This report reflects documents on file and client-configured criteria as of ${reportData.report_date}. It is an administrative aid only, not legal or insurance advice. AI-extracted data may contain errors. ClearToPay does not verify coverage adequacy or approve payment; the client is responsible for final payment and coverage decisions.`].map(esc).join(","));
       const csv = Buffer.from(rows.join("\r\n") + "\r\n", "utf8");
       await storagePut(reportKey(csvFilename), csv, "text/csv; charset=utf-8");
-      return new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${csvFilename}"` } });
+      return new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${csvFilename}"`, "X-Report-Summary": summaryHeader } });
     }
 
     if (format === "excel") {
@@ -105,6 +122,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
           "Content-Type":
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
           "Content-Disposition": `attachment; filename="${xlsxFilename}"`,
+          "X-Report-Summary": summaryHeader,
         },
       });
     }
@@ -129,16 +147,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
     return c.json({
       pdf_url: `/api/reports/download/${encodeURIComponent(pdfFilename)}`,
       excel_url: `/api/reports/download/${encodeURIComponent(xlsxFilename)}`,
-      summary: {
-        client_name: reportData.client_name,
-        report_date: reportData.report_date,
-        payment_week: reportData.payment_week,
-        approved_count: reportData.approved.length,
-        review_count: reportData.review.length,
-        hold_count: reportData.hold.length,
-        expiring_count: reportData.expiring_during_week.length,
-        missing_count: reportData.missing_docs.length,
-      },
+      summary,
     });
   } catch (err) {
     console.error("[reports] Error generating report:", err);

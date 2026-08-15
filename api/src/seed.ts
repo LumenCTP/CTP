@@ -1,6 +1,15 @@
 import { getDb } from "./db";
 import { entityKey } from "./entities";
 
+// Safety gate: this script writes fake demo data (Summit Construction, Apex
+// Electrical, …) into the SAME database file the API uses. It only runs when
+// explicitly enabled — a mistaken run against production would leak another
+// company's data into every tenant's views.
+if (process.env.ALLOW_SEED !== "1") {
+  console.log("[seed] Skipping — set ALLOW_SEED=1 to run the demo-data seed.");
+  process.exit(0);
+}
+
 const db = getDb();
 
 console.log("[seed] Seeding database...");

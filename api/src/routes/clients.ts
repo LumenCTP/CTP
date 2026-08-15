@@ -111,6 +111,23 @@ app.post("/api/clients", async (c) => {
     // anything — the client is brand new).
     applyDefaultRequiredDocs(db, newId);
 
+    // Every new client also gets a client_email_config row defaulting the
+    // weekly report recipients to the tenant owner's email. The Monday
+    // Clear-to-Pay email is the core product promise — a brand-new client must
+    // not silently receive nothing because the config row was missing. The
+    // owner can change recipients later in Clients → Email Settings.
+    const owner = db.query(`
+      SELECT u.email FROM tenants t JOIN users u ON u.id = t.owner_user_id WHERE t.id = $tid
+    `).get({ $tid: c.get("tenant_id") as number }) as { email: string } | undefined;
+    db.query(`
+      INSERT INTO client_email_config (client_id, weekly_report_recipients, monthly_report_recipients, renewal_reminders_enabled)
+      VALUES ($client_id, $weekly, NULL, 1)
+      ON CONFLICT(client_id) DO NOTHING
+    `).run({
+      $client_id: newId,
+      $weekly: owner?.email ?? null,
+    });
+
     const client = db.query("SELECT id, name, contact_email, contact_phone, address, created_at, updated_at FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: newId, $tenant_id: c.get("tenant_id") as number }) as any;
     const docs = db.query(
       "SELECT document_type, coverage_requirement FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
@@ -140,20 +157,31 @@ app.put("/api/clients/:id", async (c) => {
       return c.json({ error: "Name is required" }, 400);
     }
 
+    // Recompute the dedup key on rename (mirroring vendors' PUT) so the key
+    // never goes stale: a renamed client must be re-discoverable under its new
+    // name, and re-adding the OLD name must not be falsely rejected as a 409.
+    const trimmedName = name.trim();
+    const trimmedAddress = address && typeof address === "string" ? address.trim() : null;
+    const key = entityKey(trimmedName, trimmedAddress);
+    if (key && db.query("SELECT id FROM clients WHERE tenant_id = $tenant_id AND normalized_key = $key AND id != $id").get({ $tenant_id: c.get("tenant_id") as number, $key: key, $id: id })) {
+      return c.json({ error: "A client with this name already exists" }, 409);
+    }
+
     db.query(`
       UPDATE clients
-      SET name = $name, contact_email = $contact_email, contact_phone = $contact_phone, address = $address, updated_at = datetime('now')
+      SET name = $name, contact_email = $contact_email, contact_phone = $contact_phone, address = $address, normalized_key = $key, updated_at = datetime('now')
       WHERE id = $id
     `).run({
       $id: id,
       $tenant_id: c.get("tenant_id") as number,
-      $name: name.trim(),
+      $name: trimmedName,
       $contact_email: contact_email?.trim() || null,
       $contact_phone: contact_phone?.trim() || null,
-      $address: address?.trim() || null,
+      $address: trimmedAddress,
+      $key: key,
     });
 
-    logAudit(db, "client", id, "updated", { name: name.trim(), contact_email, contact_phone, address });
+    logAudit(db, "client", id, "updated", { name: trimmedName, contact_email, contact_phone, address });
 
     const client = db.query("SELECT id, name, contact_email, contact_phone, address, created_at, updated_at FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: id, $tenant_id: c.get("tenant_id") as number }) as any;
 

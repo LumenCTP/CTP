@@ -80,6 +80,14 @@ export default function DocumentDetail() {
       const body: ExtractionUpdateBody = { ...form, is_reviewed: reviewed };
       const res = await apiFetch(`/api/documents/${id}/extraction`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) { const data = await res.json(); throw new Error(data.error || "Save failed"); }
+      const data = await res.json();
+      if (data?.review_blocked) {
+        // The server kept the document in Needs Review (no vendor assignment
+        // yet). Stay on the page and explain — don't silently drop it.
+        setError("This document isn't assigned to a vendor yet, so it stays in Needs Review. Assign it to a vendor in Needs Review (or upload it with a vendor selected), then mark it reviewed.");
+        setSaving(false);
+        return;
+      }
       navigate("/app/documents");
     } catch (err) { setError(err instanceof Error ? err.message : "Save failed"); setSaving(false); }
   }
@@ -104,6 +112,11 @@ export default function DocumentDetail() {
           </div>
         </div>
         <label className="review-checkbox"><input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} /> I reviewed the extracted data against the source document.</label>
+        {!doc.vendor_id && (
+          <p style={{ margin: "10px 0 0", fontSize: 12, lineHeight: 1.5, color: "#92400e", background: "#fef3c7", border: "1px solid #fcd34d", borderRadius: 6, padding: "8px 10px" }}>
+            ⚠️ This document isn't assigned to a vendor yet, so marking it reviewed won't take effect — it stays in Needs Review until you assign it there (or upload it with a vendor selected).
+          </p>
+        )}
         {error && <div className="error-message">{error}</div>}<div className="form-actions"><Link className="btn btn-outline" to="/app/documents">Cancel</Link><button className="btn btn-primary" type="submit" disabled={saving}>{saving ? "Saving…" : "Save Review"}</button></div>
       </form>
     </div>

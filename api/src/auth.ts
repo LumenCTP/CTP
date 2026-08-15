@@ -9,7 +9,8 @@ import {
   createTenantForUser,
   logAudit,
 } from "./middleware";
-import { sendEmail, buildPasswordResetEmail } from "./email";
+import { sendEmail, buildPasswordResetEmail, buildSetupPasswordEmail } from "./email";
+import { getAppBaseUrl } from "./app-base-url";
 import { buildInboxAddress } from "./lib/inbox";
 import { logPartnerAudit } from "./routes/partners";
 
@@ -230,16 +231,53 @@ app.post("/api/auth/login", async (c) => {
 app.post("/api/auth/set-password", async (c) => {
   try {
     const body = await c.req.json();
-    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
     const newPassword = typeof body.new_password === "string" ? body.new_password : "";
-    if (!email || !email.includes("@") || newPassword.length < 6) {
-      return c.json({ error: "Valid email and a password of at least 6 characters are required" }, 400);
+    if (newPassword.length < 6) {
+      return c.json({ error: "Password must be at least 6 characters" }, 400);
     }
     const db = getDb();
-    const user = db.query("SELECT id FROM users WHERE email = $email").get({ $email: email }) as { id: number } | undefined;
-    if (!user) return c.json({ error: "User not found" }, 404);
+
+    // ── Path 1: authenticated session ──────────────────────────────────
+    // A signed-in user may set their own password (the JWT is the proof of
+    // identity). The write is scoped to the token's user, never to an
+    // arbitrary email from the body.
+    const authHeader = c.req.header("Authorization");
+    if (authHeader?.startsWith("Bearer ")) {
+      const user = await verifyAuthToken(authHeader.slice(7));
+      if (!user) {
+        return c.json({ error: "Unauthorized" }, 401);
+      }
+      const passwordHash = await Bun.password.hash(newPassword);
+      db.query("UPDATE users SET password_hash = $password_hash WHERE id = $id").run({
+        $password_hash: passwordHash,
+        $id: user.user_id,
+      });
+      return c.json({ success: true });
+    }
+
+    // ── Path 2: one-time emailed setup token ───────────────────────────
+    // Mirrors the forgot-password token mechanism: the token is only ever
+    // emailed to the account address, so knowing an email alone is no longer
+    // enough to claim the account. Tokens are single-use and expire in 1 hour.
+    const token = typeof body.token === "string" ? body.token.trim() : "";
+    if (!token) {
+      return c.json({ error: "A secure setup link is required to set your password. Use the link emailed to you, or request a new one." }, 401);
+    }
+    const user = db.query(
+      "SELECT id, email FROM users WHERE reset_token = $token AND reset_token_expires > $now"
+    ).get({ $token: token, $now: new Date().toISOString() }) as { id: number; email: string } | undefined;
+    if (!user) {
+      return c.json({ error: "Invalid or expired setup link. Request a new one." }, 400);
+    }
+    const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
+    if (email && email !== user.email) {
+      return c.json({ error: "This setup link belongs to a different email address." }, 400);
+    }
     const passwordHash = await Bun.password.hash(newPassword);
-    db.query("UPDATE users SET password_hash = $password_hash WHERE id = $id").run({ $password_hash: passwordHash, $id: user.id });
+    db.query("UPDATE users SET password_hash = $password_hash, reset_token = NULL, reset_token_expires = NULL WHERE id = $id").run({
+      $password_hash: passwordHash,
+      $id: user.id,
+    });
     return c.json({ success: true });
   } catch (err) {
     return serverError(c, err);
@@ -252,9 +290,27 @@ app.post("/api/auth/send-setup-link", async (c) => {
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
     if (!email) return c.json({ error: "Email is required" }, 400);
     const db = getDb();
-    const user = db.query("SELECT password_hash FROM users WHERE email = $email").get({ $email: email }) as { password_hash: string } | undefined;
-    if (!user) return c.json({ needs_password: false });
-    return c.json({ needs_password: user.password_hash === "webhook_placeholder" });
+    const user = db.query("SELECT id, full_name, password_hash FROM users WHERE email = $email").get({ $email: email }) as { id: number; full_name: string; password_hash: string } | undefined;
+    // Never reveal whether an email exists: a user that doesn't exist (or that
+    // already has a real password) gets the same non-sent response.
+    if (!user || user.password_hash !== "webhook_placeholder") {
+      return c.json({ needs_password: false, sent: false });
+    }
+    // Generate a one-time setup token (same mechanism as forgot-password),
+    // valid for 1 hour. The token is NEVER returned in the response — it is
+    // only delivered to the account's email address.
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const token = Buffer.from(bytes).toString("base64url");
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    db.query("UPDATE users SET reset_token = $token, reset_token_expires = $expires WHERE id = $id").run({
+      $token: token,
+      $expires: expiresAt,
+      $id: user.id,
+    });
+    const setupLink = `${getAppBaseUrl()}/app/set-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(email)}`;
+    await sendEmail([email], "Set up your ClearToPay password", buildSetupPasswordEmail(user.full_name, setupLink), undefined, undefined, "password_reset");
+    return c.json({ needs_password: true, sent: true });
   } catch (err) {
     return serverError(c, err);
   }
@@ -279,7 +335,7 @@ app.post("/api/auth/forgot-password", async (c) => {
         $expires: expiresAt,
         $id: user.id,
       });
-      const resetLink = `https://cleartopay.ctonew.app/app/reset-password?token=${encodeURIComponent(token)}`;
+      const resetLink = `${getAppBaseUrl()}/app/reset-password?token=${encodeURIComponent(token)}`;
       sendEmail([email], "Reset your ClearToPay password", buildPasswordResetEmail(user.full_name, resetLink), undefined, undefined, "password_reset");
     }
 

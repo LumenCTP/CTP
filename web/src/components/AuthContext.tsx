@@ -183,46 +183,56 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadSession]);
 
   const login = useCallback(async (email: string, password: string): Promise<string | null> => {
-    const res = await fetch("/api/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      return data.error || "Login failed";
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return data.error || "Login failed";
+      }
+      const merged = mergeTenant(data.user || {}, data.tenant);
+      setToken(data.token);
+      setUser(merged);
+      storeAuth(data.token, merged);
+      return null;
+    } catch {
+      // Network failure (API down / offline) — reject cleanly so callers can
+      // reset their submitting state and show an error instead of hanging.
+      return "Could not reach the server. Check your connection and try again.";
     }
-    const merged = mergeTenant(data.user || {}, data.tenant);
-    setToken(data.token);
-    setUser(merged);
-    storeAuth(data.token, merged);
-    return null;
   }, []);
 
   const register = useCallback(async (
     full_name: string, company_name: string, email: string, password: string, referral_code?: string, plan?: string
   ): Promise<string | null> => {
-    const res = await fetch("/api/auth/register", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        full_name,
-        company_name,
-        email,
-        password,
-        ...(referral_code ? { referral_code } : {}),
-        ...(plan ? { plan } : {}),
-      }),
-    });
-    const data = await res.json();
-    if (!res.ok) {
-      return data.error || "Registration failed";
+    try {
+      const res = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          full_name,
+          company_name,
+          email,
+          password,
+          ...(referral_code ? { referral_code } : {}),
+          ...(plan ? { plan } : {}),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return data.error || "Registration failed";
+      }
+      const merged = mergeTenant(data.user || {}, data.tenant);
+      setToken(data.token);
+      setUser(merged);
+      storeAuth(data.token, merged);
+      return null;
+    } catch {
+      return "Could not reach the server. Check your connection and try again.";
     }
-    const merged = mergeTenant(data.user || {}, data.tenant);
-    setToken(data.token);
-    setUser(merged);
-    storeAuth(data.token, merged);
-    return null;
   }, []);
 
   const logout = useCallback(() => {

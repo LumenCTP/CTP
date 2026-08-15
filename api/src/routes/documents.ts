@@ -9,7 +9,7 @@ import { logAudit, requireQueueSecret } from "../middleware";
 import { extractDocumentInfoFromBytes } from "../extract";
 import { mapCOIToEntities } from "../mapping";
 import { calculateVendorCompliance } from "../compliance";
-import { storageGetStream, storageKeyFromFilePath, storagePut } from "../storage";
+import { storageGetStream, storageGet, storageKeyFromFilePath, storagePut, storageDelete } from "../storage";
 import { validateAttachment } from "../attachments";
 import { sendEmail, buildInboxRejectionEmail, getTenantInboxAddress } from "../email";
 
@@ -60,20 +60,37 @@ export async function ingestDocumentAttachment(opts: {
   // Extraction runs on the in-memory bytes so it works whether the file is on
   // local disk (fallback mode) or only in R2.
   extractDocumentInfoFromBytes(opts.content, originalFilename).then((extraction) => {
-    // is_reviewed intentionally stays at its default 0 (Needs Review) for every
-    // new extraction — including high-confidence AI ones — until a human reviews
-    // it. The honest filename fallback therefore lands in Needs Review too, and
-    // no fabricated/filename-only data can ever drive compliance statuses.
-    db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,producer_name,producer_contact,producer_email,producer_phone,document_type,ai_confidence_score,extraction_method) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$prod_name,$prod_contact,$prod_email,$prod_phone,$type,$confidence,$method)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$prod_name:extraction.producer_name,$prod_contact:extraction.producer_contact,$prod_email:extraction.producer_email,$prod_phone:extraction.producer_phone,$type:extraction.document_type,$confidence:extraction.ai_confidence_score,$method:extraction.extraction_method});
-    db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
-    // Auto-create client/vendor rows ONLY from real AI extraction with high
-    // holder confidence. The honest fallback sets confidence 0 and
-    // extraction_method 'filename', so it can never trigger this path.
-    if (extraction.document_type === "COI" && extraction.extraction_method === "ai" && extraction.certificate_holder_name_confidence >= 0.8) { const mapped = mapCOIToEntities(db, tenantId, extraction, documentId); if (mapped) { db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId}); calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId); if (mapped.vendorPossibleDuplicate) { logAudit(db, "document", documentId, "possible_duplicate_vendor", { existing_vendor_id: mapped.vendorId, extracted_vendor_name: extraction.vendor_name, extracted_address: extraction.insured_address, note: "Document attached to existing same-name vendor; is_reviewed stays 0 until a human confirms" }); } } }
-    else if (vendorId !== null && clientId !== null) calculateVendorCompliance(vendorId,clientId,tenantId);
-    db.query("UPDATE ingestion_events SET status='ready',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
+    applyExtractionResult({ db, tenantId, documentId, extraction, vendorId, clientId });
   }).catch((err) => { db.query("UPDATE ingestion_events SET status='error',error_message=$error,updated_at=datetime('now') WHERE document_id=$id").run({$error:String(err),$id:documentId}); });
   return { id: documentId, original_filename: originalFilename, content_type: opts.contentType, file_size: opts.content.length };
+}
+
+// Shared post-extraction step (upload path AND retry-extraction path): persist
+// the extraction row, sync the parent document_type, auto-map COI entities,
+// recalculate compliance, and flip the ingestion status to 'ready'.
+function applyExtractionResult(opts: {
+  db: ReturnType<typeof getDb>;
+  tenantId: number;
+  documentId: number;
+  extraction: Awaited<ReturnType<typeof extractDocumentInfoFromBytes>>;
+  vendorId?: number | null;
+  clientId?: number | null;
+}): void {
+  const { db, tenantId, documentId, extraction } = opts;
+  let vendorId = opts.vendorId ?? null;
+  let clientId = opts.clientId ?? null;
+  // is_reviewed intentionally stays at its default 0 (Needs Review) for every
+  // new extraction — including high-confidence AI ones — until a human reviews
+  // it. The honest filename fallback therefore lands in Needs Review too, and
+  // no fabricated/filename-only data can ever drive compliance statuses.
+  db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,producer_name,producer_contact,producer_email,producer_phone,document_type,ai_confidence_score,extraction_method) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$prod_name,$prod_contact,$prod_email,$prod_phone,$type,$confidence,$method)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$prod_name:extraction.producer_name,$prod_contact:extraction.producer_contact,$prod_email:extraction.producer_email,$prod_phone:extraction.producer_phone,$type:extraction.document_type,$confidence:extraction.ai_confidence_score,$method:extraction.extraction_method});
+  db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
+  // Auto-create client/vendor rows ONLY from real AI extraction with high
+  // holder confidence. The honest fallback sets confidence 0 and
+  // extraction_method 'filename', so it can never trigger this path.
+  if (extraction.document_type === "COI" && extraction.extraction_method === "ai" && extraction.certificate_holder_name_confidence >= 0.8) { const mapped = mapCOIToEntities(db, tenantId, extraction, documentId); if (mapped) { db.query("UPDATE documents SET client_id=$cid, vendor_id=$vid WHERE id=$id AND tenant_id=$tid").run({$cid:mapped.clientId,$vid:mapped.vendorId,$id:documentId,$tid:tenantId}); calculateVendorCompliance(mapped.vendorId, mapped.clientId, tenantId); if (mapped.vendorPossibleDuplicate) { logAudit(db, "document", documentId, "possible_duplicate_vendor", { existing_vendor_id: mapped.vendorId, extracted_vendor_name: extraction.vendor_name, extracted_address: extraction.insured_address, note: "Document attached to existing same-name vendor; is_reviewed stays 0 until a human confirms" }); } } }
+  else if (vendorId !== null && clientId !== null) calculateVendorCompliance(vendorId,clientId,tenantId);
+  db.query("UPDATE ingestion_events SET status='ready',updated_at=datetime('now') WHERE document_id=$id").run({$id:documentId});
 }
 
 // POST /api/documents/upload — persist immediately, extract asynchronously
@@ -402,6 +419,67 @@ app.get("/api/documents/:id/file", async (c) => {
   }
 });
 
+// DELETE /api/documents/:id — permanently delete a document
+// Tenant-scoped. Removes the stored object (R2 or local disk) and the DB row;
+// extractions, ingestion events, and renewal-reminder marks cascade with the
+// row's ON DELETE CASCADE foreign keys.
+app.delete("/api/documents/:id", async (c) => {
+  try {
+    const db = getDb();
+    const id = Number(c.req.param("id"));
+    const tenantId = c.get("tenant_id") as number;
+    const doc = db.query(
+      "SELECT id, original_filename, file_path FROM documents WHERE id = $id AND tenant_id = $tenant_id"
+    ).get({ $id: id, $tenant_id: tenantId }) as { id: number; original_filename: string; file_path: string } | undefined;
+    if (!doc) {
+      return c.json({ error: "Document not found" }, 404);
+    }
+    // Remove the object from storage — best effort: a missing object must not
+    // block the DB delete (the client's goal is removing the document).
+    try {
+      await storageDelete(storageKeyFromFilePath(doc.file_path));
+    } catch (err) {
+      console.error(`[documents] storage delete failed for doc ${id}:`, err);
+    }
+    logAudit(db, "document", id, "deleted", { original_filename: doc.original_filename });
+    db.query("DELETE FROM documents WHERE id = $id AND tenant_id = $tenant_id").run({ $id: id, $tenant_id: tenantId });
+    return c.json({ success: true });
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
+
+// POST /api/documents/:id/retry-extraction — re-run AI extraction after a
+// failed ingestion (ingestion_status = 'error'). Reuses the stored file bytes
+// and the same post-extraction pipeline as the upload path.
+app.post("/api/documents/:id/retry-extraction", async (c) => {
+  try {
+    const db = getDb();
+    const id = Number(c.req.param("id"));
+    const tenantId = c.get("tenant_id") as number;
+    const doc = db.query(
+      "SELECT id, file_path, original_filename, vendor_id, client_id FROM documents WHERE id = $id AND tenant_id = $tenant_id"
+    ).get({ $id: id, $tenant_id: tenantId }) as { id: number; file_path: string; original_filename: string; vendor_id: number | null; client_id: number | null } | undefined;
+    if (!doc) {
+      return c.json({ error: "Document not found" }, 404);
+    }
+    const obj = await storageGet(storageKeyFromFilePath(doc.file_path));
+    if (!obj) {
+      return c.json({ error: "The document file could not be found. Please upload it again." }, 404);
+    }
+    db.query("UPDATE ingestion_events SET status='processing', error_message=NULL, updated_at=datetime('now') WHERE document_id=$id").run({ $id: id });
+    logAudit(db, "document", id, "extraction_retry", { original_filename: doc.original_filename });
+    extractDocumentInfoFromBytes(obj.data, doc.original_filename).then((extraction) => {
+      applyExtractionResult({ db, tenantId, documentId: id, extraction, vendorId: doc.vendor_id, clientId: doc.client_id });
+    }).catch((err) => {
+      db.query("UPDATE ingestion_events SET status='error', error_message=$error, updated_at=datetime('now') WHERE document_id=$id").run({ $error: String(err), $id: id });
+    });
+    return c.json({ success: true, ingestion_status: "processing" });
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
+
 // PUT /api/documents/:id/extraction — manually update extraction
 app.put("/api/documents/:id/extraction", async (c) => {
   try {
@@ -486,10 +564,9 @@ app.put("/api/documents/:id/extraction", async (c) => {
       updates.push("producer_phone = $producer_phone");
       params.$producer_phone = producer_phone?.trim() || null;
     }
-    if (is_reviewed !== undefined) {
-      updates.push("is_reviewed = $is_reviewed");
-      params.$is_reviewed = is_reviewed ? 1 : 0;
-    }
+    // is_reviewed is applied AFTER assignment resolution below (a document with
+    // no vendor assignment must stay in Needs Review — M2 guard).
+    let reviewForceZero = false;
 
     // Always update document_type on the parent document if it changed
     if (document_type !== undefined && document_type) {
@@ -562,6 +639,7 @@ app.put("/api/documents/:id/extraction", async (c) => {
             // existing vendor but force it back into the needs-review surface
             // (is_reviewed = 0) so a human must explicitly confirm this
             // document belongs to that vendor before it can affect compliance.
+            reviewForceZero = true;
             db.query("UPDATE document_extractions SET is_reviewed = 0 WHERE id = $id").run({ $id: existing.id });
             logAudit(db, "document", id, "possible_duplicate_vendor", { existing_vendor_id: mapped.vendorId, extracted_vendor_name: ext.vendor_name, extracted_address: ext.insured_address, note: "Document auto-attached to existing same-name vendor; forced back to needs-review" });
           }
@@ -574,6 +652,20 @@ app.put("/api/documents/:id/extraction", async (c) => {
     if (explicitIdsGiven || vendorId !== null || clientId !== null) {
       db.query("UPDATE documents SET client_id = $cid, vendor_id = $vid WHERE id = $id AND tenant_id = $tid")
         .run({ $cid: clientId, $vid: vendorId, $id: id, $tid: tenantId });
+    }
+
+    // ── is_reviewed guard (M2) ─────────────────────────────────────────────
+    // Apply the requested review flag now that the final assignment is known:
+    // a document with NO vendor assignment must stay is_reviewed = 0 (it would
+    // otherwise vanish from the Needs Review queue with no UI anywhere to
+    // assign it afterwards). The possible-duplicate force-zero also wins.
+    let reviewBlocked = false;
+    if (is_reviewed !== undefined && !reviewForceZero) {
+      const wantsReview = !!is_reviewed;
+      const canReview = vendorId !== null;
+      const finalReviewed = wantsReview && canReview ? 1 : 0;
+      if (wantsReview && !canReview) reviewBlocked = true;
+      db.query("UPDATE document_extractions SET is_reviewed = $rev, extracted_at = datetime('now') WHERE id = $id").run({ $rev: finalReviewed, $id: existing.id });
     }
 
     // Recalculate compliance with the engine — same call as the upload path — so
@@ -595,7 +687,7 @@ app.put("/api/documents/:id/extraction", async (c) => {
       "SELECT id, document_id, vendor_name, insurance_carrier, policy_number, effective_date, expiration_date, certificate_holder, document_type, producer_name, producer_contact, producer_email, producer_phone, ai_confidence_score, is_reviewed, extracted_at FROM document_extractions WHERE id = $id"
     ).get({ $id: existing.id }) as any;
 
-    return c.json({ ...updated, is_reviewed: !!updated.is_reviewed });
+    return c.json({ ...updated, is_reviewed: !!updated.is_reviewed, review_blocked: reviewBlocked });
   } catch (err) {
     return serverError(c, err);
   }

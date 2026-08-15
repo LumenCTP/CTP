@@ -1,5 +1,6 @@
 import { apiFetch } from "../lib/api";
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import type { DashboardStats } from "@clear-to-pay/shared";
 import { openHelp } from "../components/HelpWidget";
 import { useAuth } from "../components/AuthContext";
@@ -56,7 +57,12 @@ export default function Dashboard() {
         setStats(data);
         setClearToPay((readiness as { vendors?: ClearToPayVendor[] }).vendors ?? []);
         setDocumentCount(Array.isArray(documents) ? documents.length : (documents as { documents?: unknown[] }).documents?.length ?? 0);
-        setShowGuide(data.total_clients === 0);
+        // Show the onboarding guide whenever the tenant is effectively empty:
+        // no vendors AND no documents. That covers the zero-client state AND
+        // the normal signup path where the setup wizard auto-created the
+        // tenant's own client row (so total_clients >= 1 but there is still
+        // nothing configured) — step 1 is marked done by the steps list below.
+        setShowGuide(data.total_vendors === 0 && documentCount === 0);
         setLoading(false);
       })
       .catch((err) => {
@@ -86,10 +92,24 @@ export default function Dashboard() {
       <div className="dashboard-heading">
         <h2 className="page-title">Dashboard</h2>
         <div className="dashboard-heading-actions">
-          {hasClients && <button className="setup-guide-link" onClick={() => setShowGuide((visible) => !visible)}>{showGuide ? "Hide Setup Guide" : "Setup Guide"}</button>}
+          <button className="setup-guide-link" onClick={() => setShowGuide((visible) => !visible)}>{showGuide ? "Hide Setup Guide" : "Setup Guide"}</button>
           <button className="setup-guide-link" onClick={() => openHelp()}>Help & Support</button>
         </div>
       </div>
+
+      {/* Weekly report configuration banner (H5): the Monday Clear-to-Pay email
+          only fires when a client has weekly report recipients set. New clients
+          get the tenant owner's email as the default at client creation, but
+          tenants with clients created before that fix (or owners who cleared
+          the recipients) must see a prominent notice instead of silently
+          receiving nothing. */}
+      {stats && (stats.total_clients ?? 0) > 0 && stats.weekly_reports_configured === false && (
+        <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", borderLeft: "5px solid #d97706", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13.5, color: "#78350f", lineHeight: 1.5 }}>
+          <strong>⚠️ Your weekly Clear-to-Pay report isn't configured yet.</strong>{" "}
+          No weekly report will be emailed until at least one client has report recipients set.{" "}
+          <Link to="/app/clients" style={{ color: "#92400e", fontWeight: 700 }}>Add recipients in Clients → Email Settings</Link>
+        </div>
+      )}
 
       {showGuide && (
         <section className="onboarding-card" aria-labelledby="onboarding-title">

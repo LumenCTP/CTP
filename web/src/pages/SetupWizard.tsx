@@ -278,6 +278,16 @@ export default function SetupWizard() {
     }
   }
 
+  // Back navigation is persisted too (M5): a reload after clicking Back must
+  // resume at the step the user actually reached, not the last forward step.
+  async function goBack(stepKey: string, target: number) {
+    setError("");
+    setSubmitting(true);
+    const ok = await saveProgress({ current_step: stepKey });
+    setSubmitting(false);
+    if (ok) setStep(target);
+  }
+
   async function completeSetup() {
     setSubmitting(true);
     setError("");
@@ -413,7 +423,7 @@ export default function SetupWizard() {
               </p>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(1)} disabled={submitting}>
+              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => goBack("company_info", 1)} disabled={submitting}>
                 Back
               </button>
               <button type="submit" className="auth-btn" style={{ flex: 2 }} disabled={submitting}>
@@ -501,7 +511,7 @@ export default function SetupWizard() {
               Changes are saved when you click “Save &amp; Continue” — you can return to this step anytime.
             </p>
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(2)} disabled={savingDocs}>
+              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => goBack("payment_week", 2)} disabled={savingDocs || submitting}>
                 Back
               </button>
               <button type="button" className="auth-btn" style={{ flex: 2 }} onClick={saveComplianceStep} disabled={savingDocs}>
@@ -589,7 +599,7 @@ export default function SetupWizard() {
               </span>
             </label>
             <div style={{ display: "flex", gap: 8 }}>
-              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => setStep(3)} disabled={submitting}>
+              <button type="button" className="btn btn-outline" style={{ flex: 1 }} onClick={() => goBack("compliance", 3)} disabled={submitting}>
                 Back
               </button>
               <button type="button" className="auth-btn" style={{ flex: 2 }} onClick={completeSetup} disabled={submitting || !acknowledged}>

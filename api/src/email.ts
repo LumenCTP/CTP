@@ -3,6 +3,7 @@ import { storageGet } from "./storage";
 import { buildInboxAddress } from "./lib/inbox";
 import { smtpConfigured, sendViaSmtp, SMTP_CC_ADDRESS } from "./smtp";
 import { graphMailConfigured, sendViaGraphMail } from "./graph-mail";
+import { getAppBaseUrl } from "./app-base-url";
 import type { ReportData } from "./reports";
 
 // ── Email Identity ───────────────────────────────────────
@@ -421,7 +422,7 @@ export function buildWeeklyReportEmail(
     </p>
 
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
-      Log in to your <a href="https://cleartopay.ctonew.app" style="color: #1a56db;">ClearToPay dashboard</a> to view full details and manage your vendors.
+      Log in to your <a href="${getAppBaseUrl()}" style="color: #1a56db;">ClearToPay dashboard</a> to view full details and manage your vendors.
     </p>
   </div>
 
@@ -487,7 +488,7 @@ export function buildMonthlyReportEmail(
     </table>
 
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
-      Log in to your <a href="https://cleartopay.ctonew.app" style="color: #1a56db;">ClearToPay dashboard</a> to view detailed compliance data and manage your vendors.
+      Log in to your <a href="${getAppBaseUrl()}" style="color: #1a56db;">ClearToPay dashboard</a> to view detailed compliance data and manage your vendors.
     </p>
   </div>
 
@@ -673,6 +674,36 @@ export function buildPasswordResetEmail(fullName: string, resetLink: string): st
 </html>`;
 }
 
+// ── Password Setup Email Template (account created via checkout) ──────
+// Used when a Stripe-created account (webhook_placeholder password) needs its
+// owner to choose a real password. The link carries a one-time token that is
+// only delivered here — never returned by any API response.
+export function buildSetupPasswordEmail(fullName: string, setupLink: string): string {
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #1a56db; padding: 20px; border-radius: 8px 8px 0 0;">
+    <h1 style="color: #fff; margin: 0; font-size: 20px;">Set up your ClearToPay password</h1>
+  </div>
+  <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">Hi ${fullName},</p>
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      Your ClearToPay account is ready. Click the button below to choose a password and sign in.
+      This link expires in <strong>1 hour</strong>.
+    </p>
+    <p style="margin: 24px 0; text-align: center;">
+      <a href="${setupLink}" style="display: inline-block; background: #1a56db; color: #fff; padding: 12px 24px; border-radius: 6px; text-decoration: none; font-size: 14px;">Set Up Password</a>
+    </p>
+    <p style="margin: 0 0 12px; font-size: 13px; color: #6b7280;">If the button doesn't work, copy and paste this link into your browser:</p>
+    <p style="margin: 0 0 16px; font-size: 12px; color: #6b7280; word-break: break-all;">${setupLink}</p>
+    <p style="margin: 0; font-size: 13px; color: #6b7280;">If you didn't request this, you can safely ignore this email.</p>
+  </div>
+  <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">This email was sent by ClearToPay Compliance.</p>
+</body>
+</html>`;
+}
 // ── Partner Payout Email (monthly payout run) ───────────
 // Honest wording: the payout is being PROCESSED, not paid. Money is only
 // transferred in delegation B (Stripe Connect); until then the payout stays

@@ -48,6 +48,18 @@ app.get("/api/dashboard/stats", (c) => {
       WHERE de.is_reviewed = 0 AND d.tenant_id = $tenant_id
     `).get({ $tenant_id: tenantId }) as { count: number }).count;
 
+    // Weekly report recipients configured for at least one client? The Monday
+    // scheduler only emails clients with weekly_report_recipients set, so the
+    // dashboard can surface a "reports not configured" banner while it's false.
+    const weeklyConfigured = (db.query(`
+      SELECT COUNT(*) as count
+      FROM client_email_config cec
+      JOIN clients cl ON cl.id = cec.client_id
+      WHERE cl.tenant_id = $tenant_id
+        AND cec.weekly_report_recipients IS NOT NULL
+        AND cec.weekly_report_recipients != ''
+    `).get({ $tenant_id: tenantId }) as { count: number }).count;
+
     return c.json({
       total_clients: totalClients,
       total_vendors: totalVendors,
@@ -57,6 +69,7 @@ app.get("/api/dashboard/stats", (c) => {
       vendors_on_hold: vendorsOnHold,
       expiring_this_week: expiringThisWeek,
       needs_review: needsReview,
+      weekly_reports_configured: weeklyConfigured > 0,
     });
   } catch (err) {
     return serverError(c, err);

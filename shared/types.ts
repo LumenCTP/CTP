@@ -239,6 +239,7 @@ export interface DashboardStats {
   vendors_on_hold: number; // kept for backward compat
   expiring_this_week: number;
   needs_review: number;
+  weekly_reports_configured?: boolean;
 }
 
 // ── Compliance Detail ──────────────────────────────────
@@ -282,7 +283,7 @@ export interface ClientEmailConfig {
 }
 
 export type EmailType = "weekly_report" | "monthly_report" | "renewal_reminder";
-export type EmailStatus = "sent" | "error";
+export type EmailStatus = "sent" | "queued" | "error";
 
 export interface EmailLog {
   id: number;

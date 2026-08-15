@@ -134,15 +134,18 @@ export default function Reports() {
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
-        // Fetch summary via "both" to show preview
-        const bothRes = await apiFetch("/api/reports/clear-to-pay", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ client_id: selectedClientId, format: "both" }),
-        });
-        if (bothRes.ok) {
-          const data = await bothRes.json();
-          setResult(data);
+        // Summary preview comes from THIS response's X-Report-Summary header
+        // (base64url JSON) — generating the report a second time just for the
+        // preview was wasteful (L5).
+        const rawSummary = res.headers.get("X-Report-Summary");
+        if (rawSummary) {
+          try {
+            const b64 = rawSummary.replace(/-/g, "+").replace(/_/g, "/");
+            const json = new TextDecoder().decode(Uint8Array.from(atob(b64), (ch) => ch.charCodeAt(0)));
+            setResult({ summary: JSON.parse(json) });
+          } catch {
+            // Header unreadable — preview just won't show; the download still worked.
+          }
         }
       } else {
         // "both" format

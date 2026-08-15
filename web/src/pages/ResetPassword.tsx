@@ -9,6 +9,7 @@ export default function ResetPassword() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
+  const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(false);
 
   async function submit(e: FormEvent) {
@@ -16,14 +17,21 @@ export default function ResetPassword() {
     setError("");
     if (password.length < 6) return setError("Password must be at least 6 characters.");
     if (password !== confirm) return setError("Passwords do not match.");
-    const res = await apiFetch("/api/auth/reset-password", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ token, new_password: password }),
-    });
-    const data = await res.json();
-    if (!res.ok) return setError(data.error || "Invalid or expired reset link");
-    setDone(true);
+    setSubmitting(true);
+    try {
+      const res = await apiFetch("/api/auth/reset-password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token, new_password: password }),
+      });
+      const data = await res.json();
+      if (!res.ok) return setError(data.error || "Invalid or expired reset link");
+      setDone(true);
+    } catch {
+      setError("Could not reach the server. Check your connection and try again.");
+    } finally {
+      setSubmitting(false);
+    }
   }
 
   return (
@@ -69,7 +77,9 @@ export default function ResetPassword() {
                   autoComplete="new-password"
                 />
               </div>
-              <button type="submit" className="auth-btn">Reset Password</button>
+              <button type="submit" className="auth-btn" disabled={submitting}>
+                {submitting ? "Resetting..." : "Reset Password"}
+              </button>
             </form>
             <p className="auth-footer"><Link to="/app/login">Back to sign in</Link></p>
           </>

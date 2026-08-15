@@ -486,16 +486,17 @@ export async function generateAuditPackage(req: AuditRequest, tenantId: number):
           });
         } catch (err) {
           console.error(`[audit] Could not read file: ${storageKey}`, err);
-          // Include a note about the missing file
+          // Include a note about the missing file — client-visible, so it must
+          // never carry internal storage paths (owner confidentiality directive).
           docEntries.push({
             name: `${vendorDir}/${doc.original_filename}.error.txt`,
-            data: Buffer.from(`File could not be read: ${doc.file_path}`, "utf-8"),
+            data: Buffer.from("The source file for this document could not be read. Please contact support.", "utf-8"),
           });
         }
       } else {
         docEntries.push({
           name: `${vendorDir}/${doc.original_filename}.error.txt`,
-          data: Buffer.from(`File could not be read: ${doc.file_path}`, "utf-8"),
+          data: Buffer.from("The source file for this document could not be read. Please contact support.", "utf-8"),
         });
       }
     }
