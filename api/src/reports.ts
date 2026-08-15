@@ -243,6 +243,61 @@ function formatDate(dateStr: string): string {
   });
 }
 
+// ── Document-Level Row Expansion ─────────────────────────
+// The report must show EVERY required document type for EVERY vendor, not just
+// a vendor-level line. calculateVendorCompliance already attaches a PerTypeDetail
+// per required type to each ReportVendor (missing types included), so the
+// renderer just needs to flatten those details into one row per vendor per type.
+
+export interface DocLevelRow {
+  vendor_name: string;
+  document_type: string;
+  status_label: string;
+  expiration_label: string;
+  contact: string;
+}
+
+function docTypeStatusLabel(status: string): string {
+  switch (status) {
+    case "missing": return "Missing";
+    case "expired": return "Expired";
+    case "expiring_soon": return "Expiring Soon";
+    case "needs_review": return "Needs Review";
+    case "compliant": return "Compliant";
+    default: return status;
+  }
+}
+
+/** Flatten vendor-level rows into one row per vendor per required doc type. */
+export function expandDocumentRows(vendors: ReportVendor[]): DocLevelRow[] {
+  const rows: DocLevelRow[] = [];
+  for (const v of vendors) {
+    // A vendor whose client has NO required document types configured has an
+    // empty details array; still emit one visible row so the vendor never
+    // disappears from the report.
+    const details: PerTypeDetail[] = v.details.length > 0
+      ? v.details
+      : [{ document_type: "(no required documents configured)", status: "missing", document_id: null, expiration_date: null, is_reviewed: false, has_unreviewed: false }];
+    for (const d of details) {
+      rows.push({
+        vendor_name: v.vendor_name,
+        document_type: d.document_type,
+        status_label: docTypeStatusLabel(d.status),
+        expiration_label: d.expiration_date ? formatDate(d.expiration_date) : "—",
+        contact: v.contact_name || v.contact_email || "—",
+      });
+    }
+  }
+  return rows;
+}
+
+/** Total document-level rows across all three payment sections (Approved/Review/Hold). */
+export function countDocumentRows(data: ReportData): number {
+  return expandDocumentRows(data.approved).length
+    + expandDocumentRows(data.review).length
+    + expandDocumentRows(data.hold).length;
+}
+
 // ── PDF Generation ──────────────────────────────────────
 
 export function generatePdfReport(data: ReportData): PDFKit.PDFDocument {
@@ -323,17 +378,24 @@ export function generatePdfReport(data: ReportData): PDFKit.PDFDocument {
   doc.moveDown(0.8);
 
   // ── Section 1: Approved ──
+  // One row per vendor per required document type — every document a vendor
+  // has on file, and every required type (shown Missing) when there is none.
+  const docRowHeaders = ["Vendor Name", "Document Type", "Status", "Expiration Date", "Contact"];
+  const docRowMapper = (r: DocLevelRow): string[] => [
+    r.vendor_name,
+    r.document_type,
+    r.status_label,
+    r.expiration_label,
+    r.contact,
+  ];
+
   renderSection(
     doc,
     "1. Approved for Payment This Week",
     COLORS.green,
-    data.approved,
-    ["Vendor Name", "Contact", "Payment Status"],
-    (v) => [
-      v.vendor_name,
-      v.contact_name || v.contact_email || "—",
-      paymentStatusLabel(v.payment_status),
-    ],
+    expandDocumentRows(data.approved),
+    docRowHeaders,
+    docRowMapper,
     COLORS.green
   );
 
@@ -342,14 +404,9 @@ export function generatePdfReport(data: ReportData): PDFKit.PDFDocument {
     doc,
     "2. Review Before Payment",
     COLORS.amber,
-    data.review,
-    ["Vendor Name", "Contact", "Payment Status", "Reason"],
-    (v) => [
-      v.vendor_name,
-      v.contact_name || v.contact_email || "—",
-      paymentStatusLabel(v.payment_status),
-      v.reason || "—",
-    ],
+    expandDocumentRows(data.review),
+    docRowHeaders,
+    docRowMapper,
     COLORS.amber
   );
 
@@ -358,14 +415,9 @@ export function generatePdfReport(data: ReportData): PDFKit.PDFDocument {
     doc,
     "3. Hold Payment",
     COLORS.red,
-    data.hold,
-    ["Vendor Name", "Contact", "Payment Status", "Reason"],
-    (v) => [
-      v.vendor_name,
-      v.contact_name || v.contact_email || "—",
-      paymentStatusLabel(v.payment_status),
-      v.reason || "—",
-    ],
+    expandDocumentRows(data.hold),
+    docRowHeaders,
+    docRowMapper,
     COLORS.red
   );
 
@@ -418,7 +470,7 @@ function renderSection<T>(
     .fontSize(12)
     .fillColor(color)
     .font("Helvetica-Bold")
-    .text(title, { underline: false });
+    .text(title, { align: "left", underline: false });
 
   doc.moveDown(0.3);
 
@@ -442,13 +494,28 @@ function renderSection<T>(
 
   drawTableHeader(doc, headers, startX, headerY, colWidth, color);
 
-  // Table rows
+  // Table rows — WRAP instead of clip: each cell's height is measured at the
+  // column width, and the row advances by its tallest cell, so no cell is ever
+  // truncated with an ellipsis and multi-line values (long doc-type lists,
+  // long vendor names, emails) render in full.
   doc.font("Helvetica").fontSize(9);
   let rowY = headerY + 22;
-  const rowHeight = 20;
 
   for (const row of rows) {
-    if (rowY > doc.page.height - 80) {
+    const cells = rowMapper(row);
+
+    // Measure every cell with wrapping enabled; row height = tallest cell + padding.
+    let rowHeight = 14; // single-line floor
+    for (const cell of cells) {
+      const textHeight = cell ? doc.heightOfString(cell, { width: colWidth - 8 }) : 0;
+      if (textHeight > rowHeight) rowHeight = textHeight;
+    }
+    rowHeight += 4;
+
+    // Page-break check MUST be per-row against the row's ACTUAL height: if a
+    // row started inside the footer zone (y > page.height - 80) pdfkit would
+    // auto-addPage mid-draw, firing pageAdded → footer → addPage recursion.
+    if (rowY + rowHeight > doc.page.height - 80) {
       doc.addPage();
       rowY = doc.page.margins.top + 10;
       // Redraw header on new page
@@ -457,7 +524,6 @@ function renderSection<T>(
       doc.font("Helvetica").fontSize(9);
     }
 
-    const cells = rowMapper(row);
     for (let i = 0; i < cells.length; i++) {
       doc.fillColor(COLORS.dark).text(
         cells[i],
@@ -465,9 +531,7 @@ function renderSection<T>(
         rowY,
         {
           width: colWidth - 8,
-          height: rowHeight,
-          ellipsis: true,
-          lineBreak: false,
+          lineBreak: true,
         }
       );
     }
@@ -526,32 +590,15 @@ export async function generateExcelReport(data: ReportData): Promise<Buffer> {
 
   // ── Approved Sheet ──
   const approvedSheet = wb.addWorksheet("Approved");
-  buildVendorSheet(approvedSheet, data.approved, "Approved for Payment", COLORS.green, [
-    { header: "Vendor Name", key: "vendor_name", width: 30 },
-    { header: "Contact Name", key: "contact_name", width: 22 },
-    { header: "Contact Email", key: "contact_email", width: 28 },
-    { header: "Payment Status", key: "payment_status", width: 22 },
-  ]);
+  buildVendorSheet(approvedSheet, data.approved, COLORS.green);
 
   // ── Review Sheet ──
   const reviewSheet = wb.addWorksheet("Review");
-  buildVendorSheet(reviewSheet, data.review, "Review Before Payment", COLORS.amber, [
-    { header: "Vendor Name", key: "vendor_name", width: 30 },
-    { header: "Contact Name", key: "contact_name", width: 22 },
-    { header: "Contact Email", key: "contact_email", width: 28 },
-    { header: "Payment Status", key: "payment_status", width: 22 },
-    { header: "Reason", key: "reason", width: 40 },
-  ]);
+  buildVendorSheet(reviewSheet, data.review, COLORS.amber);
 
   // ── Hold Sheet ──
   const holdSheet = wb.addWorksheet("Hold");
-  buildVendorSheet(holdSheet, data.hold, "Hold Payment", COLORS.red, [
-    { header: "Vendor Name", key: "vendor_name", width: 30 },
-    { header: "Contact Name", key: "contact_name", width: 22 },
-    { header: "Contact Email", key: "contact_email", width: 28 },
-    { header: "Payment Status", key: "payment_status", width: 22 },
-    { header: "Reason", key: "reason", width: 40 },
-  ]);
+  buildVendorSheet(holdSheet, data.hold, COLORS.red);
 
   // ── Expiring Sheet ──
   const expiringSheet = wb.addWorksheet("Expiring");
@@ -638,11 +685,19 @@ function buildSummarySheet(
 function buildVendorSheet(
   sheet: ExcelJS.Worksheet,
   rows: ReportVendor[],
-  _title: string,
   color: string,
-  columns: Array<{ header: string; key: string; width: number }>
 ) {
-  sheet.columns = columns.map((c) => ({ ...c, key: c.key }));
+  // Document-level detail, mirroring the PDF: one row per vendor per required
+  // document type (missing required types included).
+  sheet.columns = [
+    { header: "Vendor Name", key: "vendor_name", width: 30 },
+    { header: "Document Type", key: "document_type", width: 24 },
+    { header: "Status", key: "status", width: 16 },
+    { header: "Expiration Date", key: "expiration_date", width: 18 },
+    { header: "Contact Name", key: "contact_name", width: 22 },
+    { header: "Contact Email", key: "contact_email", width: 28 },
+    { header: "Payment Status", key: "payment_status", width: 22 },
+  ];
 
   // Header styling
   const headerRow = sheet.getRow(1);
@@ -655,15 +710,22 @@ function buildVendorSheet(
     cell.font = { bold: true, size: 10, color: { argb: "FFFFFFFF" } };
   });
 
-  // Data rows
+  // Data rows — one per vendor per required doc type
   for (const v of rows) {
-    sheet.addRow({
-      vendor_name: v.vendor_name,
-      contact_name: v.contact_name || "",
-      contact_email: v.contact_email || "",
-      payment_status: paymentStatusLabel(v.payment_status),
-      reason: v.reason || "",
-    });
+    const details: PerTypeDetail[] = v.details.length > 0
+      ? v.details
+      : [{ document_type: "(no required documents configured)", status: "missing", document_id: null, expiration_date: null, is_reviewed: false, has_unreviewed: false }];
+    for (const d of details) {
+      sheet.addRow({
+        vendor_name: v.vendor_name,
+        document_type: d.document_type,
+        status: docTypeStatusLabel(d.status),
+        expiration_date: d.expiration_date ? formatDate(d.expiration_date) : "",
+        contact_name: v.contact_name || "",
+        contact_email: v.contact_email || "",
+        payment_status: paymentStatusLabel(v.payment_status),
+      });
+    }
   }
 
   // If empty, show a note
