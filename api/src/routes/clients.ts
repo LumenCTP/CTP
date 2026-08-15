@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { getDb, applyDefaultRequiredDocs } from "../db";
 import { entityKey } from "../entities";
 import { logAudit } from "../middleware";
@@ -36,7 +37,7 @@ app.get("/api/clients", (c) => {
 
     return c.json(result);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -67,7 +68,7 @@ app.get("/api/clients/:id", (c) => {
       required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })),
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -117,7 +118,7 @@ app.post("/api/clients", async (c) => {
 
     return c.json({ ...client, required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })) }, 201);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -162,7 +163,7 @@ app.put("/api/clients/:id", async (c) => {
 
     return c.json({ ...client, required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })) });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -183,7 +184,7 @@ app.delete("/api/clients/:id", (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -204,7 +205,7 @@ app.get("/api/clients/:id/documents-required", (c) => {
 
     return c.json(docs);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -254,7 +255,7 @@ app.post("/api/clients/:id/documents-required", async (c) => {
 
     return c.json(docs);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import path from "node:path";
 import { getDb } from "../db";
 import { gatherReportData, generatePdfReport, generateExcelReport } from "../reports";
@@ -139,7 +140,7 @@ app.post("/api/reports/clear-to-pay", async (c) => {
     });
   } catch (err) {
     console.error("[reports] Error generating report:", err);
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -176,7 +177,7 @@ app.get("/api/reports/download/:filename", async (c) => {
       },
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

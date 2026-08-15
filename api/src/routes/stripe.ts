@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import Stripe from "stripe";
 import { getDb } from "../db";
@@ -564,7 +565,7 @@ app.post("/api/webhooks/stripe", async (c) => {
     return c.json({ received: true, event_type: type });
   } catch (err) {
     console.error("[stripe] Webhook error:", err);
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -667,7 +668,7 @@ app.post("/api/checkout/session", async (c) => {
     priceId = (await ensurePlanPrice(stripe, plan))!;
   } catch (err) {
     console.error("[checkout] failed to ensure plan price:", err);
-    return c.json({ error: `Failed to set up pricing: ${String(err)}` }, 500);
+    return serverError(c, err);
   }
   if (!priceId) return c.json({ error: "Unknown plan" }, 400);
 
@@ -724,7 +725,7 @@ app.post("/api/checkout/session", async (c) => {
     return c.json({ url: session.url, session_id: session.id });
   } catch (err) {
     console.error("[checkout] session create failed:", err);
-    return c.json({ error: `Could not create checkout session: ${String(err)}` }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -777,7 +778,7 @@ app.post("/api/checkout/confirm", async (c) => {
       return c.json({ error: "session_not_found" }, 404);
     }
     console.error("[checkout] confirm: session retrieve failed:", err);
-    return c.json({ error: `Could not retrieve checkout session: ${String(err)}` }, 400);
+    return serverError(c, err, 400);
   }
 
   // Retrieve the subscription (when present) for real status + billing-period
@@ -938,7 +939,7 @@ app.post("/api/billing/portal", async (c) => {
     return c.json({ url: session.url });
   } catch (err) {
     console.error("[billing] portal session create failed:", err);
-    return c.json({ error: `Could not open the billing portal: ${String(err)}` }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -980,7 +981,7 @@ app.post("/api/billing/cancel", async (c) => {
     return c.json({ success: true, cancel_at_period_end: true, cancels_on: cancelAt });
   } catch (err) {
     console.error("[billing] cancel failed:", err);
-    return c.json({ error: `Could not cancel the subscription: ${String(err)}` }, 500);
+    return serverError(c, err);
   }
 });
 

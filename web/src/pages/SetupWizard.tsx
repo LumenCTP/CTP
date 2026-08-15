@@ -184,7 +184,7 @@ export default function SetupWizard() {
       body: JSON.stringify({ name: companyName.trim(), address: companyAddress.trim() }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Failed to create client record");
+    if (!res.ok) throw new Error(res.status >= 500 ? "Something went wrong. Please try again." : (data.error || "Failed to create client record"));
     setComplianceClientId(data.id);
     return data.id as number;
   }
@@ -202,7 +202,7 @@ export default function SetupWizard() {
       });
       if (!docsRes.ok) {
         const d = await docsRes.json();
-        throw new Error(d.error || "Failed to save compliance requirements");
+        throw new Error(docsRes.status >= 500 ? "Something went wrong. Please try again." : (d.error || "Failed to save compliance requirements"));
       }
       const setupRes = await apiFetch("/api/setup", {
         method: "POST",
@@ -217,7 +217,7 @@ export default function SetupWizard() {
       });
       if (!setupRes.ok) {
         const d = await setupRes.json();
-        throw new Error(d.error || "Failed to save setup progress");
+        throw new Error(setupRes.status >= 500 ? "Something went wrong. Please try again." : (d.error || "Failed to save setup progress"));
       }
       setStep(4);
     } catch (err) {
@@ -237,7 +237,7 @@ export default function SetupWizard() {
       });
       if (!res.ok) {
         const d = await res.json();
-        setError(d.error || "Failed to save your progress. Please try again.");
+        setError(res.status >= 500 ? "Something went wrong. Please try again." : (d.error || "Failed to save your progress. Please try again."));
         return false;
       }
       return true;
@@ -304,7 +304,7 @@ export default function SetupWizard() {
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error || "Failed to save setup. Please try again.");
+        setError(res.status >= 500 ? "Something went wrong. Please try again." : (data.error || "Failed to save setup. Please try again."));
         setSubmitting(false);
         return;
       }

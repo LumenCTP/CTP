@@ -87,7 +87,8 @@ async function importCsv(c: any, kind: "clients" | "vendors") {
         result.imported++;
       }
     } catch (err) {
-      result.errors.push({ row: rowNumber, error: err instanceof Error ? err.message : "Import failed" });
+      console.error(`[csv] row ${rowNumber} import failed:`, err);
+      result.errors.push({ row: rowNumber, error: "Import failed for this row" });
     }
   }
   return c.json(result);

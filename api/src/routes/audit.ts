@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { generateAuditPackage } from "../audit";
 import { storageGetStream } from "../storage";
 
@@ -42,7 +43,7 @@ app.post("/api/audit/generate", async (c) => {
     return c.json(result);
   } catch (err) {
     console.error("[audit] Error generating audit package:", err);
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -69,7 +70,7 @@ app.get("/api/audit/download/:filename", async (c) => {
       },
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

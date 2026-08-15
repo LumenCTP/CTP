@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { getDb } from "../db";
 import { requireQueueSecret } from "../middleware";
 import { sendEmail, buildWeeklyReportEmail, buildRenewalReminderEmail, parseRecipients, parseAttachmentsJson, resolveEmailAttachments } from "../email";
@@ -35,7 +36,7 @@ app.post("/api/emails/process-queue", async (c) => {
     }
     return c.json(out);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -67,7 +68,7 @@ app.post("/api/emails/mark-sent", async (c) => {
     }
     return c.json({ success: true, updated });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -84,7 +85,7 @@ app.post("/api/emails/mark-failed", async (c) => {
     const result = db.query("UPDATE outgoing_email_queue SET status = 'failed', error_message = $error WHERE id = $id").run({ $id: body.id as number, $error: body.error });
     return c.json({ success: true, updated: result.changes });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -117,7 +118,7 @@ app.get("/api/emails/config/:client_id", (c) => {
 
     return c.json(config);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -157,7 +158,7 @@ app.put("/api/emails/config/:client_id", async (c) => {
 
     return c.json(config);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -170,7 +171,8 @@ app.get("/api/emails/log", (c) => {
 
     let sql = `
       SELECT el.id, el.client_id, el.vendor_id, el.email_type, el.recipient_email,
-             el.subject, el.sent_at, el.status, el.error_message,
+             el.subject, el.sent_at, el.status,
+             (el.error_message IS NOT NULL AND el.error_message != '') AS delivery_failed,
              cl.name as client_name,
              v.name as vendor_name
       FROM email_log el
@@ -191,7 +193,7 @@ app.get("/api/emails/log", (c) => {
     const rows = db.query(sql).all(params);
     return c.json(rows);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -263,7 +265,7 @@ app.post("/api/emails/test-weekly/:client_id", async (c) => {
       success: true,
       recipients,
       subject,
-      attachments: attachments.map((a) => ({ filename: a.filename, contentType: a.contentType, storageKey: a.storageKey })),
+      attachments: attachments.map((a) => ({ filename: a.filename, contentType: a.contentType })),
       summary: {
         approved_count: reportData.approved.length,
         review_count: reportData.review.length,
@@ -273,7 +275,7 @@ app.post("/api/emails/test-weekly/:client_id", async (c) => {
       },
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -341,7 +343,7 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
       days_until_expiry: diffDays,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

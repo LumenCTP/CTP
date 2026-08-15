@@ -105,7 +105,7 @@ export default function ChatWidget() {
         body: JSON.stringify({ message, session_id: sid }),
       });
       if (!r.ok) {
-        let msg = `The assistant couldn't answer right now (${r.status}). Please try again in a moment.`;
+        let msg = "The assistant couldn't answer right now. Please try again in a moment.";
         try {
           const d = await r.json();
           if (d?.error === "rate_limited") {

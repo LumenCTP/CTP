@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { getDb } from "../db";
 import { requireAuth, requireAdmin, requirePartner, logAudit } from "../middleware";
 import { calculateCommissions, runPartnerPayouts } from "../commissions";
@@ -97,7 +98,7 @@ app.post("/api/partners/apply", async (c) => {
 
     return c.json({ partner: { id: partnerId, status: "pending", message: "Application submitted" } }, 201);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -165,7 +166,7 @@ app.put("/api/partners/:id/status", requireAuth, requireAdmin, async (c) => {
 
     return c.json({ success: true, partner: db.query("SELECT * FROM partners WHERE id = $id").get({ $id: id }) });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -186,7 +187,7 @@ app.put("/api/partners/:id/commission", requireAuth, requireAdmin, async (c) => 
 
     return c.json({ success: true, partner_id: id, commission_percentage: pct });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -271,7 +272,7 @@ app.post("/api/partners/:id/connect", requireAuth, async (c) => {
     return c.json({ url: link.url });
   } catch (err) {
     console.error("[partners] Stripe Connect onboarding error:", err);
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -373,7 +374,7 @@ app.post("/api/partner/referrals", requireAuth, requirePartner, async (c) => {
 
     return c.json({ referral: db.query("SELECT * FROM referrals WHERE id = $id").get({ $id: referralId }) }, 201);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -490,7 +491,7 @@ app.put("/api/referrals/:id", requireAuth, requireAdmin, async (c) => {
 
     return c.json({ success: true, referral: updated });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -538,7 +539,7 @@ app.post("/api/commissions", requireAuth, requireAdmin, async (c) => {
 
     return c.json({ commission: db.query("SELECT * FROM commissions WHERE id = $id").get({ $id: commissionId }) }, 201);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -583,7 +584,7 @@ app.put("/api/commissions/:id", requireAuth, requireAdmin, async (c) => {
 
     return c.json({ success: true, commission: db.query("SELECT * FROM commissions WHERE id = $id").get({ $id: id }) });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -620,7 +621,7 @@ app.post("/api/payouts", requireAuth, requireAdmin, async (c) => {
 
     return c.json({ payout: db.query("SELECT * FROM payouts WHERE id = $id").get({ $id: payoutId }) }, 201);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -663,7 +664,7 @@ app.post("/api/admin/commissions/run", requireAuth, requireAdmin, (c) => {
     const result = calculateCommissions();
     return c.json({ success: true, ...result, note: "Daily commission auto-creation (same as scheduler tick)" });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 app.post("/api/admin/payouts/run", requireAuth, requireAdmin, (c) => {
@@ -675,7 +676,7 @@ app.post("/api/admin/payouts/run", requireAuth, requireAdmin, (c) => {
       note: "End-of-month payout run (same as scheduler tick). Money is NOT transferred in this delegation — payout stays pending until Stripe Connect is wired.",
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { getDb } from "../db";
@@ -86,7 +87,7 @@ app.post("/api/documents/upload", async (c) => {
     if (vendorRaw && !Number.isInteger(vendorId)) return c.json({ error: "Invalid vendor_id" }, 400);
     const document = await ingestDocumentAttachment({db:getDb(),tenantId:c.get("tenant_id") as number,filename:file.name,content:new Uint8Array(await file.arrayBuffer()),contentType:file.type,senderName:form.get("sender_name")?.toString(),senderEmail:form.get("sender_email")?.toString(),clientId,vendorId});
     return c.json({document,ingestion_status:"processing"},201);
-  } catch (err) { console.error("[upload]",err); return c.json({error:String(err)},500); }
+  } catch (err) { console.error("[upload]",err); return serverError(c, err); }
 });
 
 // POST /api/inbox/ingest — receive attachments from an email-ingestion worker.
@@ -107,7 +108,7 @@ app.post("/api/inbox/ingest", async (c) => {
       documents.push(await ingestDocumentAttachment({db,tenantId,filename:a.filename,content,contentType:a.content_type,senderName:body.sender_name,senderEmail:body.sender_email,clientId,vendorId}));
     }
     return c.json({documents,ingested_count:documents.length},201);
-  } catch (err) { console.error("[inbox/ingest]",err); return c.json({error:String(err)},400); }
+  } catch (err) { console.error("[inbox/ingest]",err); return serverError(c, err, 400); }
 });
 
 // POST /api/inbox/receive — queue raw email from an external mailbox poller.
@@ -199,7 +200,7 @@ app.post("/api/inbox/receive", async (c) => {
     return c.json({ queued: true, queue_id: queueId, documents: results, ingested_count: ingested.length, rejected_count: rejected.length }, 200);
   } catch (err) {
     console.error("[inbox/receive]", err);
-    return c.json({ error: String(err) }, 400);
+    return serverError(c, err, 400);
   }
 });
 
@@ -232,7 +233,7 @@ app.post("/api/inbox/relay", async (c) => {
     const clientRaw=form.get("client_id"), vendorRaw=form.get("vendor_id"), clientId=clientRaw?Number(clientRaw):null, vendorId=vendorRaw?Number(vendorRaw):null;
     const documents=[]; for (const file of files) documents.push(await ingestDocumentAttachment({db:getDb(),tenantId:c.get("tenant_id") as number,filename:file.name,content:new Uint8Array(await file.arrayBuffer()),contentType:file.type,senderName:form.get("sender_name")?.toString() || form.get("from_name")?.toString(),senderEmail:form.get("sender_email")?.toString() || form.get("from")?.toString(),clientId,vendorId}));
     return c.json({documents,ingested_count:documents.length},201);
-  } catch (err) { console.error("[inbox/relay]",err); return c.json({error:String(err)},400); }
+  } catch (err) { console.error("[inbox/relay]",err); return serverError(c, err, 400); }
 });
 // GET /api/documents — list documents with filters
 app.get("/api/documents", (c) => {
@@ -247,7 +248,7 @@ app.get("/api/documents", (c) => {
         d.id, d.vendor_id, d.client_id,
         v.name AS vendor_name,
         c.name AS client_name,
-        d.document_type, d.file_path, d.original_filename,
+        d.document_type, d.original_filename,
         d.sender_name, d.sender_email,
         d.received_date, d.created_at, ie.status AS ingestion_status, d.content_type, d.file_size,
         de.ai_confidence_score,
@@ -265,7 +266,6 @@ app.get("/api/documents", (c) => {
         de.producer_contact,
         de.producer_email,
         de.producer_phone,
-        de.extraction_method,
         de.document_type AS extracted_document_type
       FROM documents d
       LEFT JOIN clients c ON d.client_id = c.id
@@ -301,7 +301,7 @@ app.get("/api/documents", (c) => {
 
     return c.json(result);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -316,7 +316,7 @@ app.get("/api/documents/:id", (c) => {
         d.id, d.vendor_id, d.client_id,
         v.name AS vendor_name,
         c.name AS client_name,
-        d.document_type, d.file_path, d.original_filename,
+        d.document_type, d.original_filename,
         d.sender_name, d.sender_email,
         d.received_date, d.created_at, ie.status AS ingestion_status, d.content_type, d.file_size,
         de.ai_confidence_score,
@@ -334,7 +334,6 @@ app.get("/api/documents/:id", (c) => {
         de.producer_contact,
         de.producer_email,
         de.producer_phone,
-        de.extraction_method,
         de.document_type AS extracted_document_type
       FROM documents d
       LEFT JOIN clients c ON d.client_id = c.id
@@ -352,7 +351,7 @@ app.get("/api/documents/:id", (c) => {
     const extractions = db.query(`
       SELECT id, document_id, vendor_name, insurance_carrier, policy_number,
              effective_date, expiration_date, certificate_holder, document_type,
-             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, producer_name, producer_contact, producer_email, producer_phone, is_reviewed, extraction_method, extracted_at
+             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, producer_name, producer_contact, producer_email, producer_phone, is_reviewed, extracted_at
       FROM document_extractions
       WHERE document_id = $document_id
       ORDER BY extracted_at DESC
@@ -364,7 +363,7 @@ app.get("/api/documents/:id", (c) => {
       extractions: extractions.map((e) => ({ ...e, is_reviewed: !!e.is_reviewed })),
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -399,7 +398,7 @@ app.get("/api/documents/:id/file", async (c) => {
       },
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -598,7 +597,7 @@ app.put("/api/documents/:id/extraction", async (c) => {
 
     return c.json({ ...updated, is_reviewed: !!updated.is_reviewed });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -612,7 +611,7 @@ app.get("/api/needs-review", (c) => {
         d.id, d.vendor_id, d.client_id,
         v.name AS vendor_name,
         c.name AS client_name,
-        d.document_type, d.file_path, d.original_filename,
+        d.document_type, d.original_filename,
         d.sender_name, d.sender_email,
         d.received_date, d.created_at,
         de.ai_confidence_score,
@@ -630,7 +629,6 @@ app.get("/api/needs-review", (c) => {
         de.producer_contact,
         de.producer_email,
         de.producer_phone,
-        de.extraction_method,
         de.document_type AS extracted_document_type,
         de.id AS extraction_id,
         de.vendor_name AS extracted_vendor_name
@@ -649,7 +647,7 @@ app.get("/api/needs-review", (c) => {
 
     return c.json(result);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

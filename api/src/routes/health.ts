@@ -12,7 +12,9 @@ app.get("/api/health", (c) => {
     db.query("SELECT 1").get();
     return c.json({ status: "ok", db: "connected" });
   } catch (err) {
-    return c.json({ status: "error", db: "disconnected", error: String(err) }, 500);
+    // Opaque failure shape — never expose the DB engine or the raw error.
+    console.error("[health] db check failed:", err);
+    return c.json({ status: "error" }, 500);
   }
 });
 

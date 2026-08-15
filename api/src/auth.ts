@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "./errors";
 import { getDb } from "./db";
 import {
   createAuthToken,
@@ -159,7 +160,7 @@ app.post("/api/auth/register", async (c) => {
       referred_partner: referredPartner,
     }, 201);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -222,7 +223,7 @@ app.post("/api/auth/login", async (c) => {
       } : null,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -241,7 +242,7 @@ app.post("/api/auth/set-password", async (c) => {
     db.query("UPDATE users SET password_hash = $password_hash WHERE id = $id").run({ $password_hash: passwordHash, $id: user.id });
     return c.json({ success: true });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -255,7 +256,7 @@ app.post("/api/auth/send-setup-link", async (c) => {
     if (!user) return c.json({ needs_password: false });
     return c.json({ needs_password: user.password_hash === "webhook_placeholder" });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -285,7 +286,7 @@ app.post("/api/auth/forgot-password", async (c) => {
     // Always return success — never reveal whether the email exists.
     return c.json({ success: true });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 app.post("/api/auth/reset-password", async (c) => {
@@ -310,7 +311,7 @@ app.post("/api/auth/reset-password", async (c) => {
     });
     return c.json({ success: true });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 app.post("/api/auth/logout", (c) => {

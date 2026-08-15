@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { getDb } from "../db";
 import { entityKey } from "../entities";
 import { logAudit } from "../middleware";
@@ -37,7 +38,7 @@ app.get("/api/vendors", (c) => {
     const vendors = db.query(sql).all(params);
     return c.json(vendors);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -81,7 +82,7 @@ app.get("/api/vendors/:id", (c) => {
       latest_extraction_date: latestExtraction?.latest_date ?? null,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -153,7 +154,7 @@ app.post("/api/vendors", async (c) => {
 
     return c.json(vendor, 201);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -229,7 +230,7 @@ app.put("/api/vendors/:id", async (c) => {
 
     return c.json(vendor);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -250,7 +251,7 @@ app.delete("/api/vendors/:id", (c) => {
 
     return c.json({ success: true });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

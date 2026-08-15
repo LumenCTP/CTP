@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { getDb } from "../db";
 import { calculatePaymentWeek, getTenantPaymentWeekStartDay } from "../compliance";
 
@@ -58,7 +59,7 @@ app.get("/api/dashboard/stats", (c) => {
       needs_review: needsReview,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -118,7 +119,7 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
 
     return c.json({ vendors });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { getDb } from "../db";
 import { calculateVendorCompliance, calculateClientCompliance, calculateAllCompliance } from "../compliance";
 
@@ -33,7 +34,7 @@ app.post("/api/compliance/recalculate", async (c) => {
 
     return c.json(summary);
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -68,7 +69,7 @@ app.get("/api/vendors/:id/compliance-detail", (c) => {
       details: result.details,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

@@ -12,3 +12,6 @@ api/data/.queue-secret
 api/data/.token-secret
 *.log
 .env
+api/data/ctp.db
+api/data/ctp.db-shm
+api/data/ctp.db-wal

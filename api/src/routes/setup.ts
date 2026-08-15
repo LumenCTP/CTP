@@ -1,4 +1,5 @@
 import { Hono } from "hono";
+import { serverError } from "../errors";
 import { getDb } from "../db";
 import { requireAuth, requireTenant, findWizard, logAudit } from "../middleware";
 import { buildInboxAddress, companyNameToSlug } from "../lib/inbox";
@@ -43,7 +44,7 @@ app.get("/api/setup", requireAuth, requireTenant, (c) => {
         : null,
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 
@@ -185,7 +186,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
       },
     });
   } catch (err) {
-    return c.json({ error: String(err) }, 500);
+    return serverError(c, err);
   }
 });
 

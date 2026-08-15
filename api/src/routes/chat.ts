@@ -151,11 +151,9 @@ app.post("/api/chat/ask", async (c) => {
     payment_status: validated.payment_status,
     vendor_name: validated.vendor_name,
     escalate: validated.escalate,
-    usage: {
-      prompt_tokens: usage.prompt_tokens,
-      completion_tokens: usage.completion_tokens,
-      cost_estimate_usd: usage.cost_estimate_usd,
-    },
+    // NOTE: usage (prompt/completion tokens, cost) is intentionally NOT
+    // returned — it is persisted to chat_messages for internal monitoring
+    // only (owner confidentiality directive: no internal mechanics to clients).
   });
 });
 

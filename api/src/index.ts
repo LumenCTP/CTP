@@ -3,6 +3,7 @@ import { cors } from "hono/cors";
 import { getDb } from "./db";
 import { startScheduler } from "./scheduler";
 import { TENANT_DATA_PATHS, requireAuth, requireTenant, isQueueRoute } from "./middleware";
+import { serverError } from "./errors";
 import authRoutes from "./auth";
 import supportRoutes from "./routes/support";
 import adminSupportRoutes from "./routes/admin-support";
@@ -23,10 +24,11 @@ import chatRoutes from "./routes/chat";
 
 const app = new Hono();
 
-// Global JSON error handler — ensures all errors return JSON, not plaintext
+// Global JSON error handler — ensures all errors return JSON, not plaintext,
+// and that the raw error never crosses the API boundary (owner confidentiality
+// directive: clients get a generic message; the full error is logged server-side).
 app.onError((err, c) => {
-  console.error("Unhandled error:", err);
-  return c.json({ error: err.message || "Internal server error" }, 500);
+  return serverError(c, err);
 });
 
 // Global 404 handler — returns JSON instead of Hono's plaintext default

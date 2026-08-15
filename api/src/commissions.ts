@@ -148,7 +148,7 @@ export function calculateCommissions(now: Date = new Date()): CommissionRunResul
       result.created++;
       console.log(`[commissions] ${period}: created commission #${commissionId} partner ${row.partner_id} tenant ${row.tenant_id} amount $${amount}`);
     } catch (err) {
-      result.errors.push(`tenant ${row.tenant_id}: ${String(err)}`);
+      result.errors.push(`tenant ${row.tenant_id}: operation failed — see server logs`);
       console.error(`[commissions] Error creating commission for tenant ${row.tenant_id}:`, err);
     }
   }
@@ -299,7 +299,7 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
       // Seam for delegation B: real Stripe Connect transfer lives here.
       attemptPayoutTransfer(payoutId);
     } catch (err) {
-      result.errors.push(`partner ${partner.partner_id}: ${String(err)}`);
+      result.errors.push(`partner ${partner.partner_id}: operation failed — see server logs`);
       console.error(`[payouts] Error processing payout for partner ${partner.partner_id}:`, err);
     }
   }
