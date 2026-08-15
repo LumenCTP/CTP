@@ -97,25 +97,67 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
       status: string; payment_status: string;
     }>;
 
+    if (rows.length === 0) {
+      return c.json({ vendors: [] });
+    }
+
+    // Batch the per-vendor lookups: 3 queries TOTAL (required docs by client,
+    // present docs by vendor, earliest expiring by vendor), keyed on the
+    // tenant-filtered rows above, joined in memory. All IDs are derived from
+    // the tenant-scoped outer query; tenant_id filters are kept on every one.
+    const clientIds = [...new Set(rows.map((r) => r.client_id))];
+    const vendorIds = rows.map((r) => r.vendor_id);
+    const $clientIds = JSON.stringify(clientIds);
+    const $vendorIds = JSON.stringify(vendorIds);
+
+    const requiredRows = db.query(`
+      SELECT client_id, document_type FROM client_required_documents
+      WHERE client_id IN (SELECT value FROM json_each($client_ids))
+        AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)
+      ORDER BY client_id, document_type
+    `).all({ $client_ids: $clientIds, $tenant_id: tenantId }) as Array<{ client_id: number; document_type: string }>;
+
+    const presentRows = db.query(`
+      SELECT DISTINCT d.vendor_id, d.document_type
+      FROM documents d
+      WHERE d.vendor_id IN (SELECT value FROM json_each($vendor_ids))
+        AND d.tenant_id = $tenant_id
+    `).all({ $vendor_ids: $vendorIds, $tenant_id: tenantId }) as Array<{ vendor_id: number; document_type: string }>;
+
+    const expiringRows = db.query(`
+      SELECT d.vendor_id, de.expiration_date, COALESCE(de.document_type, d.document_type) AS document_type
+      FROM document_extractions de
+      JOIN documents d ON d.id = de.document_id
+      WHERE d.vendor_id IN (SELECT value FROM json_each($vendor_ids))
+        AND d.tenant_id = $tenant_id
+        AND de.expiration_date IS NOT NULL
+      ORDER BY de.expiration_date ASC, d.id ASC
+    `).all({ $vendor_ids: $vendorIds, $tenant_id: tenantId }) as Array<{ vendor_id: number; expiration_date: string; document_type: string }>;
+
+    const requiredByClient = new Map<number, string[]>();
+    for (const r of requiredRows) {
+      const arr = requiredByClient.get(r.client_id);
+      if (arr) arr.push(r.document_type);
+      else requiredByClient.set(r.client_id, [r.document_type]);
+    }
+    const presentByVendor = new Map<number, Set<string>>();
+    for (const r of presentRows) {
+      const s = presentByVendor.get(r.vendor_id);
+      if (s) s.add(r.document_type);
+      else presentByVendor.set(r.vendor_id, new Set([r.document_type]));
+    }
+    const expiringByVendor = new Map<number, { expiration_date: string; document_type: string }>();
+    for (const r of expiringRows) {
+      if (!expiringByVendor.has(r.vendor_id)) {
+        expiringByVendor.set(r.vendor_id, { expiration_date: r.expiration_date, document_type: r.document_type });
+      }
+    }
+
     const vendors = rows.map((row) => {
-      const required = db.query(
-        "SELECT document_type FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
-      ).all({ $client_id: row.client_id }) as Array<{ document_type: string }>;
-      const present = db.query(`
-        SELECT DISTINCT d.document_type
-        FROM documents d
-        WHERE d.vendor_id = $vendor_id AND d.tenant_id = $tenant_id
-      `).all({ $vendor_id: row.vendor_id, $tenant_id: tenantId }) as Array<{ document_type: string }>;
-      const presentTypes = new Set(present.map((doc) => doc.document_type));
-      const missingDocuments = required.map((doc) => doc.document_type).filter((type) => !presentTypes.has(type));
-      const expiring = db.query(`
-        SELECT de.expiration_date, COALESCE(de.document_type, d.document_type) AS document_type
-        FROM document_extractions de
-        JOIN documents d ON d.id = de.document_id
-        WHERE d.vendor_id = $vendor_id AND d.tenant_id = $tenant_id
-          AND de.expiration_date IS NOT NULL
-        ORDER BY de.expiration_date ASC LIMIT 1
-      `).get({ $vendor_id: row.vendor_id, $tenant_id: tenantId }) as { expiration_date: string; document_type: string } | null;
+      const requiredTypes = requiredByClient.get(row.client_id) ?? [];
+      const presentTypes = presentByVendor.get(row.vendor_id) ?? new Set<string>();
+      const missingDocuments = requiredTypes.filter((type) => !presentTypes.has(type));
+      const expiring = expiringByVendor.get(row.vendor_id) ?? null;
 
       return {
         vendor_id: row.vendor_id,

@@ -24,17 +24,26 @@ app.get("/api/clients", (c) => {
       created_at: string; updated_at: string;
     }>;
 
-    // Fetch required document types for each client
-    const result = clients.map((client) => {
-      const docs = db.query(
-        "SELECT document_type, coverage_requirement FROM client_required_documents WHERE client_id = $client_id ORDER BY document_type"
-      ).all({ $client_id: client.id }) as Array<{ document_type: string; coverage_requirement: string | null }>;
-      return {
-        ...client,
-        required_documents: docs.map((d) => ({ document_type: d.document_type, coverage_requirement: d.coverage_requirement })),
-      };
-    });
-
+    // Fetch required document types for all clients in ONE batched query
+    // (client_ids are all tenant-scoped from the query above), joined in memory.
+    const clientIds = clients.map((cl) => cl.id);
+    const docsRows = clientIds.length > 0 ? db.query(`
+      SELECT client_id, document_type, coverage_requirement
+      FROM client_required_documents
+      WHERE client_id IN (SELECT value FROM json_each($client_ids))
+        AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)
+      ORDER BY client_id, document_type
+    `).all({ $client_ids: JSON.stringify(clientIds), $tenant_id: c.get("tenant_id") as number }) as Array<{ client_id: number; document_type: string; coverage_requirement: string | null }> : [];
+    const docsByClient = new Map<number, Array<{ document_type: string; coverage_requirement: string | null }>>();
+    for (const d of docsRows) {
+      const arr = docsByClient.get(d.client_id);
+      if (arr) arr.push({ document_type: d.document_type, coverage_requirement: d.coverage_requirement });
+      else docsByClient.set(d.client_id, [{ document_type: d.document_type, coverage_requirement: d.coverage_requirement }]);
+    }
+    const result = clients.map((client) => ({
+      ...client,
+      required_documents: docsByClient.get(client.id) ?? [],
+    }));
     return c.json(result);
   } catch (err) {
     return serverError(c, err);
