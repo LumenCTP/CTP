@@ -78,38 +78,21 @@ function getToday(): string {
 }
 
 /**
- * Determine per-document-type compliance.
+ * Determine per-document-type compliance from pre-fetched document rows
+ * (already filtered to the vendor/tenant and ordered by received_date DESC).
  * Returns status and the document driving it (if any).
  */
 function evaluateDocType(
-  db: ReturnType<typeof getDb>,
-  vendorId: number,
-  requiredType: string,
-  today: string,
-  tenantId: number,
-): PerTypeDetail {
-  // Get all documents of this type for the vendor, with their extractions
-  const rows = db
-    .query(
-      `
-    SELECT d.id, d.document_type,
-           de.expiration_date, de.is_reviewed, de.ai_confidence_score
-    FROM documents d
-    LEFT JOIN document_extractions de ON de.document_id = d.id
-    WHERE d.vendor_id = $vendor_id
-      AND d.document_type = $doc_type
-      AND d.tenant_id = $tenant_id
-    ORDER BY d.received_date DESC
-  `,
-    )
-    .all({ $vendor_id: vendorId, $doc_type: requiredType, $tenant_id: tenantId }) as Array<{
+  rows: Array<{
     id: number;
     document_type: string;
     expiration_date: string | null;
     is_reviewed: number | null;
     ai_confidence_score: number | null;
-  }>;
-
+  }>,
+  requiredType: string,
+  today: string,
+): PerTypeDetail {
   if (rows.length === 0) {
     return {
       document_type: requiredType,
@@ -311,9 +294,40 @@ export function calculateVendorCompliance(
     };
   }
 
+  // Fetch ALL of the vendor's documents (any type) in one query, ordered by
+  // received_date DESC — the same order the per-type query used — then group
+  // rows by document_type in JS so the per-type status logic below is fed
+  // byte-identical inputs (one query per vendor instead of one per type).
+  const allDocRows = db
+    .query(
+      `
+    SELECT d.id, d.document_type,
+           de.expiration_date, de.is_reviewed, de.ai_confidence_score
+    FROM documents d
+    LEFT JOIN document_extractions de ON de.document_id = d.id
+    WHERE d.vendor_id = $vendor_id
+      AND d.tenant_id = $tenant_id
+    ORDER BY d.received_date DESC
+  `,
+    )
+    .all({ $vendor_id: vendorId, $tenant_id: tenantId }) as Array<{
+    id: number;
+    document_type: string;
+    expiration_date: string | null;
+    is_reviewed: number | null;
+    ai_confidence_score: number | null;
+  }>;
+
+  const rowsByType = new Map<string, typeof allDocRows>();
+  for (const r of allDocRows) {
+    const arr = rowsByType.get(r.document_type);
+    if (arr) arr.push(r);
+    else rowsByType.set(r.document_type, [r]);
+  }
+
   // Evaluate each required type
   const details: PerTypeDetail[] = requiredTypes.map((rt) =>
-    evaluateDocType(db, vendorId, rt.document_type, today, tenantId),
+    evaluateDocType(rowsByType.get(rt.document_type) ?? [], rt.document_type, today),
   );
 
   // Roll up compliance status (worst non-missing status wins)
