@@ -122,6 +122,12 @@ function runMigrations(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_compliance_status_status ON compliance_status(status);
     CREATE INDEX IF NOT EXISTS idx_audit_logs_entity_type_id ON audit_logs(entity_type, entity_id);
     CREATE INDEX IF NOT EXISTS idx_client_required_documents_client_id ON client_required_documents(client_id);
+    -- Tenant-scoped access patterns (every tenant data query filters by tenant_id)
+    CREATE INDEX IF NOT EXISTS idx_documents_tenant_id ON documents(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_vendors_tenant_id ON vendors(tenant_id);
+    -- Compliance engine: per-type document lookups + expiring-during-week scans
+    CREATE INDEX IF NOT EXISTS idx_documents_vendor_doctype ON documents(vendor_id, document_type);
+    CREATE INDEX IF NOT EXISTS idx_document_extractions_expiration_date ON document_extractions(expiration_date);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_compliance_status_vendor_id_unique ON compliance_status(vendor_id);
     CREATE UNIQUE INDEX IF NOT EXISTS idx_client_required_docs_unique ON client_required_documents(client_id, document_type);
 
