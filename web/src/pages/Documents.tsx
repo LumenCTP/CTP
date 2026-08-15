@@ -506,7 +506,7 @@ export default function Documents() {
       {docs.length === 0 ? (
         <p className="page-subtitle">No documents found. Upload one above to get started.</p>
       ) : (
-        <div className="table-wrapper">
+        <div className="table-wrapper mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -626,22 +626,22 @@ function DocumentRow({
   return (
     <>
       <tr style={{ cursor: "pointer" }} onClick={loadDetail}>
-        <td className="td-name" style={{ maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        <td className="td-name" data-label="Filename" style={{ maxWidth: "200px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
           <a className="document-name-link" href={`/app/documents/${doc.id}`} onClick={(e) => e.stopPropagation()}>
             {doc.original_filename}
           </a>
         </td>
-        <td className="text-muted text-sm">
+        <td className="text-muted text-sm" data-label="Type">
           {doc.content_type ? doc.content_type.split("/")[1]?.toUpperCase() || doc.content_type : "—"}
         </td>
-        <td className="text-muted text-sm">{formatSize(doc.file_size)}</td>
-        <td>{doc.vendor_id && doc.vendor_name ? <Link to={`/app/vendors/${doc.vendor_id}`}>{doc.vendor_name}</Link> : "—"}</td>
-        <td>{doc.client_name || "—"}</td>
-        <td>
+        <td className="text-muted text-sm" data-label="Size">{formatSize(doc.file_size)}</td>
+        <td data-label="Vendor">{doc.vendor_id && doc.vendor_name ? <Link to={`/app/vendors/${doc.vendor_id}`}>{doc.vendor_name}</Link> : "—"}</td>
+        <td data-label="Client">{doc.client_name || "—"}</td>
+        <td data-label="Doc Type">
           <span className="doc-tag">{displayDocType}</span>
         </td>
-        <td>{ingestionBadge(doc.ingestion_status)}</td>
-        <td>
+        <td data-label="Ingestion">{ingestionBadge(doc.ingestion_status)}</td>
+        <td data-label="Confidence">
           <span
             style={{
               display: "inline-block",
@@ -656,8 +656,8 @@ function DocumentRow({
             {scorePct != null ? `${scorePct}%` : "—"}
           </span>
         </td>
-        <td>{reviewBadge(doc.is_reviewed)}</td>
-        <td className="text-muted text-sm">
+        <td data-label="Review">{reviewBadge(doc.is_reviewed)}</td>
+        <td className="text-muted text-sm" data-label="Date">
           {doc.received_date ? new Date(doc.received_date).toLocaleDateString() : "—"}
         </td>
         <td className="td-actions">

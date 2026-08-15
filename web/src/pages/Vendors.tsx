@@ -340,7 +340,7 @@ export default function Vendors() {
           No vendors yet. Add your first vendor to get started.
         </p>
       ) : (
-        <div className="table-wrapper">
+        <div className="table-wrapper mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -355,11 +355,11 @@ export default function Vendors() {
             <tbody>
               {vendors.map((vendor) => (
                 <tr key={vendor.id}>
-                  <td className="td-name"><Link to={`/app/vendors/${vendor.id}`}>{vendor.name}</Link></td>
-                  <td>{vendor.client_name}</td>
-                  <td>{vendor.contact_email || "—"}</td>
-                  <td>{statusBadge(vendor.compliance_status)}</td>
-                  <td>{statusBadge(vendor.payment_status)}</td>
+                  <td className="td-name" data-label="Name"><Link to={`/app/vendors/${vendor.id}`}>{vendor.name}</Link></td>
+                  <td data-label="Client">{vendor.client_name}</td>
+                  <td data-label="Email">{vendor.contact_email || "—"}</td>
+                  <td data-label="Compliance">{statusBadge(vendor.compliance_status)}</td>
+                  <td data-label="Payment">{statusBadge(vendor.payment_status)}</td>
                   <td className="td-actions">
                     <button
                       className="btn btn-sm btn-outline"

@@ -292,7 +292,7 @@ export default function NeedsReview() {
           ✓ All documents have been reviewed. Nothing needs attention.
         </div>
       ) : (
-        <div className="table-wrapper">
+        <div className="table-wrapper mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -308,19 +308,19 @@ export default function NeedsReview() {
             <tbody>
               {items.map((item) => (
                 <tr key={item.id}>
-                  <td className="td-name" style={{ maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                  <td className="td-name" data-label="Filename" style={{ maxWidth: "220px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                     <a className="document-name-link" href={`/app/documents/${item.id}`}>
                       {item.original_filename}
                     </a>
                   </td>
-                  <td>{item.extracted_vendor_name ?? item.vendor_name ?? "—"}</td>
-                  <td>{item.client_name ?? "—"}</td>
-                  <td>
+                  <td data-label="Vendor">{item.extracted_vendor_name ?? item.vendor_name ?? "—"}</td>
+                  <td data-label="Client">{item.client_name ?? "—"}</td>
+                  <td data-label="Doc Type">
                     <span className="doc-tag">
                       {item.extracted_document_type ?? item.document_type}
                     </span>
                   </td>
-                  <td>
+                  <td data-label="Confidence">
                     <span
                       style={{
                         display: "inline-block",
@@ -340,7 +340,7 @@ export default function NeedsReview() {
                       {confidencePercent(item.ai_confidence_score) ?? 0}%
                     </span>
                   </td>
-                  <td className="text-muted text-sm">
+                  <td className="text-muted text-sm" data-label="Date">
                     {item.received_date
                       ? new Date(item.received_date).toLocaleDateString()
                       : "—"}

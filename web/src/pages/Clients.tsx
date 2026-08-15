@@ -357,7 +357,7 @@ export default function Clients() {
       {clients.length === 0 ? (
         <p className="page-subtitle">No clients yet. Add your first client to get started.</p>
       ) : (
-        <div className="table-wrapper">
+        <div className="table-wrapper mobile-cards">
           <table className="data-table">
             <thead>
               <tr>
@@ -371,10 +371,10 @@ export default function Clients() {
             <tbody>
               {clients.map((client) => (
                 <tr key={client.id}>
-                  <td className="td-name">{client.name}</td>
-                  <td>{client.contact_email || "—"}</td>
-                  <td>{client.contact_phone || "—"}</td>
-                  <td>
+                  <td className="td-name" data-label="Name">{client.name}</td>
+                  <td data-label="Email">{client.contact_email || "—"}</td>
+                  <td data-label="Phone">{client.contact_phone || "—"}</td>
+                  <td data-label="Required Docs">
                     <div className="docs-tags">
                       {client.required_documents.length > 0
                         ? client.required_documents.map((d) => (

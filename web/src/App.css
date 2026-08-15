@@ -704,6 +704,8 @@ body {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
   overflow-x: auto;
+  /* Never let a wide table blow out its card — the wrapper scrolls instead. */
+  max-width: 100%;
 }
 
 .data-table {
@@ -1434,7 +1436,10 @@ body {
 .badge.ingestion-ready { background:#d1fae5; color:#065f46; }
 .badge.ingestion-processing, .badge.ingestion-uploaded { background:#fef3c7; color:#92400e; }
 .badge.ingestion-error { background:#fee2e2; color:#991b1b; }
-@media (max-width: 800px) { .document-detail-layout { grid-template-columns:1fr; } }
+@media (max-width: 800px) {
+  .document-detail-layout { grid-template-columns: minmax(0, 1fr); }
+  .document-viewer-card, .extraction-form-card { min-width: 0; }
+}
 .help-fab{position:fixed;right:22px;bottom:22px;border:0;border-radius:999px;background:#2563eb;color:#fff;font-size:14px;font-weight:600;z-index:1000;box-shadow:0 4px 14px #0003;cursor:pointer;padding:12px 18px;display:inline-flex;align-items:center;gap:6px}.help-panel{position:fixed;right:22px;bottom:84px;width:350px;height:450px;background:var(--surface,#fff);border:1px solid var(--border,#e2e8f0);border-radius:14px;box-shadow:0 12px 35px #0003;z-index:1001;display:flex;flex-direction:column;overflow:hidden}.help-header{padding:14px 16px;background:#2563eb;color:#fff;display:flex;justify-content:space-between;align-items:center}.help-header button{background:none;border:0;color:#fff;font-size:24px;cursor:pointer}.help-messages{flex:1;overflow-y:auto;padding:14px}.help-empty{color:var(--text-muted);font-size:13px;text-align:center;margin-top:130px}.help-bubble{padding:9px 11px;border-radius:12px;margin:7px 0;max-width:85%;font-size:13px;white-space:pre-wrap}.help-bubble.client{margin-left:auto;background:#2563eb;color:#fff}.help-bubble.agent{margin-right:auto;background:#f1f5f9;color:#1e293b}.help-bubble small{display:block;margin-top:5px;color:#64748b;font-size:10px}.help-input{display:flex;gap:8px;padding:10px;border-top:1px solid var(--border,#e2e8f0)}.help-input textarea{flex:1;resize:none;border:1px solid var(--border,#d1d5db);border-radius:8px;padding:8px;font:inherit}.help-input button{background:#2563eb;color:#fff;border:0;border-radius:8px;padding:0 12px;cursor:pointer}.help-input button:disabled{opacity:.5}.onboarding-help-prompt{display:block;margin:16px auto 0;border:0;background:none;color:#2563eb;cursor:pointer;font-size:13px}
 
 /* ── Partner Portal ─────────────────────────────────── */
@@ -2133,3 +2138,356 @@ body {
 .onboarding-chat-hint strong {
   color: var(--blue);
 }
+
+/* ── Mobile (phone) polish ────────────────────────────
+   All rules below are scoped to small screens; desktop (≥768px) is untouched. */
+
+/* Hard safety net: the app shell must never scroll sideways, no matter what a
+   page renders. Nested scroll containers (.table-wrapper) still scroll. */
+@media (max-width: 767px) {
+  .main-content {
+    overflow-x: clip;
+  }
+}
+
+/* Touch targets: 44px minimum for buttons, links, nav items, row actions,
+   and form controls on phones (WCAG-ish mobile target sizing). */
+@media (max-width: 767px) {
+  .btn,
+  .btn-sm,
+  .auth-btn,
+  .menu-toggle,
+  .logout-btn,
+  .sidebar-link,
+  .sidebar .sidebar-link,
+  .readiness-section-header,
+  .radio-label,
+  .checkbox-label,
+  .chat-prompt-chip {
+    min-height: 44px;
+  }
+
+  .btn,
+  .btn-sm,
+  .auth-btn {
+    padding-top: 9px;
+    padding-bottom: 9px;
+  }
+
+  .menu-toggle {
+    width: 44px;
+    height: 44px;
+    flex: 0 0 44px;
+  }
+
+  .logout-btn {
+    min-width: 44px;
+    height: 44px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .logo-upload-btn {
+    width: 32px;
+    height: 32px;
+  }
+
+  .sidebar-link {
+    padding-top: 12px;
+    padding-bottom: 12px;
+  }
+
+  /* Form controls: 44px tall + 16px font so iOS doesn't zoom on focus. */
+  .form-input,
+  .form-select,
+  .auth-form .form-group input,
+  select.form-input {
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .auth-btn {
+    font-size: 1rem;
+  }
+
+  /* Inline links inside tables/detail pages become tappable targets. */
+  .document-name-link,
+  .back-link,
+  .td-name a,
+  .readiness-table a {
+    display: inline-block;
+    padding: 10px 0;
+  }
+
+  /* Page headers: let action groups wrap and fill the row. */
+  .page-header {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .page-header > div:last-child {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .page-header > div:last-child .btn {
+    flex: 1 1 auto;
+    justify-content: center;
+  }
+
+  /* Filter bars stack label + control full-width on phones. */
+  .filter-bar {
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .filter-bar .form-select {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .filter-bar > label {
+    width: 100%;
+  }
+
+  .filter-bar > label[style*="margin-left"] {
+    margin-left: 0 !important;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  /* Top bar: tighten gaps so the greeting + controls fit 375px. */
+  .topbar {
+    gap: 10px;
+    padding-left: 10px;
+    padding-right: 12px;
+  }
+
+  .topbar-welcome {
+    max-width: 110px;
+    font-size: 0.9rem;
+  }
+
+  /* Modals become bottom sheets that fit and scroll the phone viewport. */
+  .modal-overlay {
+    padding: 0;
+    align-items: flex-end;
+  }
+
+  .modal {
+    max-height: 92vh;
+    max-width: 100%;
+    overflow-y: auto;
+    border-radius: 16px 16px 0 0;
+  }
+
+  .modal-footer {
+    position: sticky;
+    bottom: 0;
+    border-radius: 0;
+  }
+
+  /* Dense main-page tables collapse into stacked cards (see data-labels). */
+  .table-wrapper.mobile-cards {
+    overflow: visible;
+    background: transparent;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .table-wrapper.mobile-cards .data-table,
+  .table-wrapper.mobile-cards tbody,
+  .table-wrapper.mobile-cards tr,
+  .table-wrapper.mobile-cards td {
+    display: block;
+    width: 100%;
+  }
+
+  .table-wrapper.mobile-cards thead {
+    display: none;
+  }
+
+  .table-wrapper.mobile-cards tbody tr {
+    background: #fff;
+    border: 1px solid var(--gray-200);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-card);
+    margin-bottom: 12px;
+    padding: 6px 14px 12px;
+  }
+
+  .table-wrapper.mobile-cards td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 14px;
+    border: 0;
+    border-bottom: 1px solid var(--gray-100);
+    padding: 10px 2px;
+    font-size: 0.9rem;
+    text-align: right;
+    overflow: hidden;
+  }
+
+  .table-wrapper.mobile-cards td:last-child {
+    border-bottom: 0;
+  }
+
+  .table-wrapper.mobile-cards td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--gray-500);
+    text-align: left;
+  }
+
+  /* Actions column: stack its buttons full-width, no label. */
+  .table-wrapper.mobile-cards td.td-actions {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+    padding-top: 12px;
+    padding-bottom: 6px;
+  }
+
+  .table-wrapper.mobile-cards td.td-actions::before {
+    display: none;
+  }
+
+  .table-wrapper.mobile-cards td.td-actions .btn {
+    width: 100%;
+    justify-content: center;
+  }
+
+  /* Dashboard readiness tables get the same card treatment. */
+  .readiness-table-wrap.mobile-cards {
+    overflow: visible;
+  }
+
+  .readiness-table-wrap.mobile-cards .readiness-table,
+  .readiness-table-wrap.mobile-cards tbody,
+  .readiness-table-wrap.mobile-cards tr,
+  .readiness-table-wrap.mobile-cards td {
+    display: block;
+    width: 100%;
+  }
+
+  .readiness-table-wrap.mobile-cards thead {
+    display: none;
+  }
+
+  .readiness-table-wrap.mobile-cards tbody tr {
+    background: #fff;
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    margin: 8px 0;
+    padding: 6px 12px 10px;
+  }
+
+  .readiness-table-wrap.mobile-cards td {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    border: 0;
+    border-bottom: 1px solid var(--gray-100);
+    padding: 9px 2px;
+    text-align: right;
+  }
+
+  .readiness-table-wrap.mobile-cards td:last-child {
+    border-bottom: 0;
+  }
+
+  .readiness-table-wrap.mobile-cards td::before {
+    content: attr(data-label);
+    flex: 0 0 auto;
+    font-size: 0.7rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--gray-500);
+    text-align: left;
+  }
+
+  .readiness-section-header {
+    min-height: 48px;
+  }
+}
+
+/* ── Small phones (≤640px) ─────────────────────────── */
+@media (max-width: 640px) {
+  /* Extraction form: single column so fields are never clipped. */
+  .extraction-fields {
+    grid-template-columns: 1fr;
+  }
+
+  /* AI chat widget: compact FAB, full-width drawer so it never overlaps
+     critical UI or pushes layout. */
+  .chat-fab {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    justify-content: center;
+    font-size: 20px;
+    border-radius: 50%;
+    right: 14px;
+    bottom: 14px;
+  }
+
+  .chat-panel {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  /* Help widget: phone-friendly sheet. */
+  .help-fab {
+    width: 48px;
+    height: 48px;
+    padding: 0;
+    justify-content: center;
+    font-size: 18px;
+    right: 14px;
+    bottom: 70px;
+  }
+
+  .help-panel {
+    width: calc(100vw - 28px);
+    max-width: 100%;
+    height: 62vh;
+    right: 14px;
+    bottom: 66px;
+  }
+
+  /* Auth cards breathe a little on small phones. */
+  .auth-card {
+    padding: 28px 20px 24px;
+  }
+
+  /* Detail pages: stack two-column blocks. */
+  .document-detail-layout {
+    gap: 14px;
+  }
+
+  /* Metric + summary grids already collapse at 768px; ensure smallest fit. */
+  .metrics-grid,
+  .partner-status-grid {
+    gap: 12px;
+  }
+
+  .summary-cards {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+  }
+
+  /* Wizard/onboarding action rows wrap instead of squishing. */
+  .onboarding-step {
+    align-items: flex-start;
+  }
+}
+
