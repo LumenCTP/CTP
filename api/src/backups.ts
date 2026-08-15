@@ -138,8 +138,11 @@ export async function runBackupAndRetain(now: Date = new Date()): Promise<{
     }
     const sizeBytes = Bun.file(tmpPath).size;
 
-    // 2. Upload to R2 (or local fallback) under the backups/ prefix.
-    await storagePut(backupKey, Bun.file(tmpPath), "application/vnd.sqlite3");
+    // 2. Upload to R2 (or local fallback) under the backups/ prefix. Read the
+    //    file into a Buffer first — storagePut accepts Buffer/Uint8Array/string,
+    //    not a Blob.
+    const fileBytes = Buffer.from(await Bun.file(tmpPath).arrayBuffer());
+    await storagePut(backupKey, fileBytes, "application/vnd.sqlite3");
 
     // 3. Retention (list + compute + delete).
     let deleted: string[] = [];
