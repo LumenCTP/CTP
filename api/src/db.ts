@@ -140,7 +140,7 @@ function runMigrations(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       client_id INTEGER,
       vendor_id INTEGER,
-      email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder')),
+      email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout', 'inbox_rejection')),
       recipient_email TEXT NOT NULL,
       subject TEXT NOT NULL,
       sent_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -401,6 +401,13 @@ function runMigrations(db: Database): void {
   db.exec(`CREATE TABLE IF NOT EXISTS inbox_queue (id INTEGER PRIMARY KEY AUTOINCREMENT, raw_email_json TEXT NOT NULL, processed BOOLEAN NOT NULL DEFAULT 0, created_at TEXT NOT NULL DEFAULT (datetime('now')))`) ;
   ensureColumn(db, "inbox_queue", "error TEXT", "error");
   ensureColumn(db, "inbox_queue", "processed_at TEXT", "processed_at");
+  // P1 inbox tolerance: rejected_attachments holds the JSON [{filename, reason}]
+  // list for a partially-rejected email (auditable record of what was NOT
+  // ingested and why); dedup_key is a SHA-256 of the poller payload so a
+  // retried email is acknowledged without re-ingesting its attachments.
+  ensureColumn(db, "inbox_queue", "rejected_attachments TEXT", "rejected_attachments");
+  ensureColumn(db, "inbox_queue", "dedup_key TEXT", "dedup_key");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_inbox_queue_dedup_key ON inbox_queue(dedup_key)");
   // Populate/re-derive inbox slugs in the owner's per-company format: company
   // name with all non-alphanumeric characters removed, case preserved
   // ("ABC Company" → "ABCCompany"). Tenants with a legacy lowercase-dash slug
@@ -521,18 +528,19 @@ function runMigrations(db: Database): void {
   // Role-based access: 'user' (default), 'partner', 'admin'
   ensureColumn(db, "users", "role TEXT DEFAULT 'user'", "role");
 
-  // Extend email_log.email_type CHECK to include 'partner_payout' (in addition
-  // to 'password_reset'). SQLite can't ALTER a CHECK constraint, so rebuild the
-  // table (same pattern as the documents table rebuild above). Nothing
-  // references email_log, so the DROP is safe even with foreign_keys = ON.
+  // Extend email_log.email_type CHECK to include 'partner_payout' and
+  // 'inbox_rejection' (in addition to 'password_reset'). SQLite can't ALTER a
+  // CHECK constraint, so rebuild the table (same pattern as the documents table
+  // rebuild above). Nothing references email_log, so the DROP is safe even with
+  // foreign_keys = ON.
   const emailLogDdl = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_log'").get() as { sql: string } | undefined;
-  if (emailLogDdl && !emailLogDdl.sql.includes("'partner_payout'")) {
+  if (emailLogDdl && !emailLogDdl.sql.includes("'inbox_rejection'")) {
     db.exec(`
       CREATE TABLE email_log_new (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         client_id INTEGER,
         vendor_id INTEGER,
-        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout')),
+        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout', 'inbox_rejection')),
         recipient_email TEXT NOT NULL,
         subject TEXT NOT NULL,
         sent_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -546,7 +554,7 @@ function runMigrations(db: Database): void {
     db.exec("DROP TABLE email_log");
     db.exec("ALTER TABLE email_log_new RENAME TO email_log");
     db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_client_id ON email_log(client_id); CREATE INDEX IF NOT EXISTS idx_email_log_email_type ON email_log(email_type); CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);");
-    console.log("[db] Extended email_log.email_type CHECK to include partner_payout");
+    console.log("[db] Extended email_log.email_type CHECK to include partner_payout + inbox_rejection");
   }
 
   // Email attachments: JSON array of { filename, contentType, storageKey } on

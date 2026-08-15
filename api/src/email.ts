@@ -135,7 +135,7 @@ export async function sendEmail(
   htmlBody: string,
   clientId?: number,
   vendorId?: number,
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout",
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "inbox_rejection",
   attachments?: EmailAttachment[],
 ): Promise<void> {
   const db = getDb();
@@ -566,8 +566,72 @@ export function buildRenewalReminderEmail(
 </html>`;
 }
 
-// ── Helper: Parse comma-separated email string ──────────
 
+// Inbox Rejection Reply: automatic plain-language reply to the sender of an
+// inbound email whose attachment(s) could not be accepted (HEIC photo,
+// unsupported type, too large). Vendor-facing: humble tone, no internals (no
+// "API", no tech stack, no file paths), and only existing disclaimer phrasing
+// from the other templates.
+function friendlyInboxReason(reason: string): string {
+  if (reason.startsWith("file too large:")) {
+    return reason.replace(" exceeds 10MB cap", " — the maximum file size is 10MB");
+  }
+  if (reason.startsWith("unsupported file type:")) {
+    return "the file type isn't supported (we accept PDF, JPG, and PNG)";
+  }
+  return reason;
+}
+export function buildInboxRejectionEmail(
+  rejected: Array<{ filename: string; reason: string }>,
+  inboxAddress: string | null,
+): string {
+  const rows = rejected
+    .map(
+      (r) => `<tr>
+        <td style="padding: 8px 10px; font-weight: bold; background: #f9fafb; border-bottom: 1px solid #e5e7eb; width: 40%;">${r.filename.replace(/[<>&"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[ch] as string)}</td>
+        <td style="padding: 8px 10px; border-bottom: 1px solid #e5e7eb;">${friendlyInboxReason(r.reason)}</td>
+      </tr>`
+    )
+    .join("\n");
+  const resendLine = inboxAddress
+    ? `<p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      Please send those files again, this time as PDF, JPG, or PNG, to <a href="mailto:${inboxAddress}" style="color: #1a56db;">${inboxAddress}</a>.
+    </p>`
+    : `<p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      Please send those files again, this time as PDF, JPG, or PNG.
+    </p>`;
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #b45309; padding: 20px; border-radius: 8px 8px 0 0;">
+    <h1 style="color: #fff; margin: 0; font-size: 18px;">A few files couldn't be read</h1>
+  </div>
+  <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      Thank you for sending your documents. We were able to read most of them, but the following files couldn't be processed:
+    </p>
+    <table style="width: 100%; border-collapse: collapse; margin-bottom: 20px;">
+      <tr>
+        <td style="padding: 8px 10px; font-weight: bold; background: #f3f4f6; border-bottom: 1px solid #e5e7eb; width: 40%;">File</td>
+        <td style="padding: 8px 10px; font-weight: bold; background: #f3f4f6; border-bottom: 1px solid #e5e7eb;">What happened</td>
+      </tr>
+      ${rows}
+    </table>
+    ${resendLine}
+    <p style="margin: 0; font-size: 14px; color: #374151;">
+      Your other documents were received and are being processed — no need to send them again.
+    </p>
+  </div>
+  <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">
+    This email was sent by ClearToPay Compliance.
+  </p>
+</body>
+</html>`;
+}
+
+// ── Helper: Parse comma-separated email string ────────────────────
 export function parseRecipients(recipientsStr: string | null): string[] {
   if (!recipientsStr) return [];
   return recipientsStr
