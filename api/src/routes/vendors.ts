@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { serverError } from "../errors";
 import { getDb } from "../db";
 import { entityKey } from "../entities";
+import { findPossibleDuplicateVendor } from "../mapping";
 import { logAudit } from "../middleware";
 
 const app = new Hono();
@@ -114,6 +115,14 @@ app.post("/api/vendors", async (c) => {
     const key = entityKey(trimmedName, trimmedAddress);
     if (key && db.query("SELECT id FROM vendors WHERE client_id = $client_id AND normalized_key = $key").get({ $client_id: client_id, $key: key })) {
       return c.json({ error: "A vendor with this name already exists under this client" }, 409);
+    }
+    // Name-only (suffix-tolerant) dedup fallback, using the SAME guard the
+    // AI-extraction path uses (entities.normalizedNameForDedup): catches
+    // "ABC Roofing" vs "ABC Roofing, LLC" even though their normalized_key
+    // differs. A manual add must not silently create a near-duplicate.
+    const nameDup = findPossibleDuplicateVendor(db, client_id, trimmedName);
+    if (nameDup) {
+      return c.json({ error: `A vendor with this name (or a very similar name) already exists: "${nameDup.name}". Select the existing vendor instead of creating a duplicate.` }, 409);
     }
 
     const result = db.query(`

@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { getDb, applyDefaultRequiredDocs } from "../db";
 import { entityKey } from "../entities";
+import { findPossibleDuplicateVendor } from "../mapping";
 
 const app = new Hono();
 
@@ -74,6 +75,10 @@ async function importCsv(c: any, kind: "clients" | "vendors") {
         // whose normalized_key cannot be built (unlikely — name is present)
         // are skipped rather than inserted without a key.
         if (key && vendorExists.get({ $cid: clientId, $key: key })) { result.skipped++; continue; }
+        // Name-only (suffix-tolerant) dedup fallback (same guard as the manual-add
+        // and AI-extraction paths): a CSV with "ABC Roofing" and "ABC Roofing, LLC"
+        // must not create a near-duplicate pair. count as skipped (idempotent).
+        if (key && findPossibleDuplicateVendor(db, clientId, values[0])) { result.skipped++; continue; }
         if (!key) { result.errors.push({ row: rowNumber, error: "Could not build dedup key from name" }); continue; }
         const ins = vendorInsert.run({ $tenant_id: tenantId, $client_id: clientId, $name: values[0], $contact_name: values[1] || null, $contact_email: values[2] || null, $contact_phone: values[3] || null, $address: values[4] || null, $key: key });
         vendorStatusInsert.run({ $vendor_id: Number(ins.lastInsertRowid), $client_id: clientId });
