@@ -65,6 +65,14 @@ export async function ingestDocumentAttachment(opts: {
   return { id: documentId, original_filename: originalFilename, content_type: opts.contentType, file_size: opts.content.length };
 }
 
+/** Normalize a coverage-limit value from a review body edit to whole dollars (or null). */
+function normalizeCoverageParam(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  const n = typeof value === "number" ? value : Number(String(value).replace(/[$,]/g, "").trim());
+  if (!Number.isFinite(n) || n < 0) return null;
+  return Math.round(n);
+}
+
 // Shared post-extraction step (upload path AND retry-extraction path): persist
 // the extraction row, sync the parent document_type, auto-map COI entities,
 // recalculate compliance, and flip the ingestion status to 'ready'.
@@ -83,7 +91,7 @@ function applyExtractionResult(opts: {
   // new extraction — including high-confidence AI ones — until a human reviews
   // it. The honest filename fallback therefore lands in Needs Review too, and
   // no fabricated/filename-only data can ever drive compliance statuses.
-  db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,producer_name,producer_contact,producer_email,producer_phone,document_type,ai_confidence_score,extraction_method) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$prod_name,$prod_contact,$prod_email,$prod_phone,$type,$confidence,$method)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$prod_name:extraction.producer_name,$prod_contact:extraction.producer_contact,$prod_email:extraction.producer_email,$prod_phone:extraction.producer_phone,$type:extraction.document_type,$confidence:extraction.ai_confidence_score,$method:extraction.extraction_method});
+  db.query(`INSERT OR REPLACE INTO document_extractions (document_id,vendor_name,insurance_carrier,policy_number,effective_date,expiration_date,certificate_holder,certificate_holder_address,certificate_holder_name_confidence,insured_address,w9_form_date,producer_name,producer_contact,producer_email,producer_phone,coverage_gl_occurrence,coverage_gl_aggregate,coverage_wc_employers,coverage_auto_csl,coverage_umbrella,document_type,ai_confidence_score,extraction_method) VALUES ($id,$vendor,$carrier,$policy,$effective,$expiration,$holder,$holder_address,$holder_confidence,$insured_address,$w9_date,$prod_name,$prod_contact,$prod_email,$prod_phone,$cov_gl_occ,$cov_gl_agg,$cov_wc,$cov_auto,$cov_umb,$type,$confidence,$method)`).run({$id:documentId,$vendor:extraction.vendor_name,$carrier:extraction.insurance_carrier,$policy:extraction.policy_number,$effective:extraction.effective_date,$expiration:extraction.expiration_date,$holder:extraction.certificate_holder,$holder_address:extraction.certificate_holder_address,$holder_confidence:extraction.certificate_holder_name_confidence,$insured_address:extraction.insured_address,$w9_date:extraction.form_date,$prod_name:extraction.producer_name,$prod_contact:extraction.producer_contact,$prod_email:extraction.producer_email,$prod_phone:extraction.producer_phone,$cov_gl_occ:extraction.coverage_limits?.general_liability_occurrence ?? null,$cov_gl_agg:extraction.coverage_limits?.general_liability_aggregate ?? null,$cov_wc:extraction.coverage_limits?.workers_comp_employers ?? null,$cov_auto:extraction.coverage_limits?.commercial_auto ?? null,$cov_umb:extraction.coverage_limits?.umbrella ?? null,$type:extraction.document_type,$confidence:extraction.ai_confidence_score,$method:extraction.extraction_method});
   db.query("UPDATE documents SET document_type=$type WHERE id=$id AND tenant_id=$tid").run({$type:extraction.document_type||"Other",$id:documentId,$tid:tenantId});
   // Auto-create client/vendor rows ONLY from real AI extraction with high
   // holder confidence. The honest fallback sets confidence 0 and
@@ -368,7 +376,7 @@ app.get("/api/documents/:id", (c) => {
     const extractions = db.query(`
       SELECT id, document_id, vendor_name, insurance_carrier, policy_number,
              effective_date, expiration_date, certificate_holder, document_type,
-             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, producer_name, producer_contact, producer_email, producer_phone, is_reviewed, extracted_at
+             ai_confidence_score, certificate_holder_address, certificate_holder_name_confidence, insured_address, w9_form_date, producer_name, producer_contact, producer_email, producer_phone, coverage_gl_occurrence, coverage_gl_aggregate, coverage_wc_employers, coverage_auto_csl, coverage_umbrella, is_reviewed, extracted_at
       FROM document_extractions
       WHERE document_id = $document_id
       ORDER BY extracted_at DESC
@@ -511,6 +519,11 @@ app.put("/api/documents/:id/extraction", async (c) => {
       producer_contact,
       producer_email,
       producer_phone,
+      coverage_gl_occurrence,
+      coverage_gl_aggregate,
+      coverage_wc_employers,
+      coverage_auto_csl,
+      coverage_umbrella,
       is_reviewed,
       vendor_id,
       client_id,
@@ -563,6 +576,29 @@ app.put("/api/documents/:id/extraction", async (c) => {
     if (producer_phone !== undefined) {
       updates.push("producer_phone = $producer_phone");
       params.$producer_phone = producer_phone?.trim() || null;
+    }
+    // Coverage limits (whole dollars or null). Reviewer can correct a bad AI
+    // parse. Only meaningful for insurance doc types; null clears the value
+    // (→ treated as "unreadable" → needs_review, never auto-Hold).
+    if (coverage_gl_occurrence !== undefined) {
+      updates.push("coverage_gl_occurrence = $cover_gl_occ");
+      params.$cover_gl_occ = normalizeCoverageParam(coverage_gl_occurrence);
+    }
+    if (coverage_gl_aggregate !== undefined) {
+      updates.push("coverage_gl_aggregate = $cover_gl_agg");
+      params.$cover_gl_agg = normalizeCoverageParam(coverage_gl_aggregate);
+    }
+    if (coverage_wc_employers !== undefined) {
+      updates.push("coverage_wc_employers = $cover_wc");
+      params.$cover_wc = normalizeCoverageParam(coverage_wc_employers);
+    }
+    if (coverage_auto_csl !== undefined) {
+      updates.push("coverage_auto_csl = $cover_auto");
+      params.$cover_auto = normalizeCoverageParam(coverage_auto_csl);
+    }
+    if (coverage_umbrella !== undefined) {
+      updates.push("coverage_umbrella = $cover_umb");
+      params.$cover_umb = normalizeCoverageParam(coverage_umbrella);
     }
     // is_reviewed is applied AFTER assignment resolution below (a document with
     // no vendor assignment must stay in Needs Review — M2 guard).
@@ -684,7 +720,7 @@ app.put("/api/documents/:id/extraction", async (c) => {
 
     // Return updated extraction
     const updated = db.query(
-      "SELECT id, document_id, vendor_name, insurance_carrier, policy_number, effective_date, expiration_date, certificate_holder, document_type, producer_name, producer_contact, producer_email, producer_phone, ai_confidence_score, is_reviewed, extracted_at FROM document_extractions WHERE id = $id"
+      "SELECT id, document_id, vendor_name, insurance_carrier, policy_number, effective_date, expiration_date, certificate_holder, document_type, producer_name, producer_contact, producer_email, producer_phone, coverage_gl_occurrence, coverage_gl_aggregate, coverage_wc_employers, coverage_auto_csl, coverage_umbrella, ai_confidence_score, is_reviewed, extracted_at FROM document_extractions WHERE id = $id"
     ).get({ $id: existing.id }) as any;
 
     return c.json({ ...updated, is_reviewed: !!updated.is_reviewed, review_blocked: reviewBlocked });

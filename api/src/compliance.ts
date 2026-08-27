@@ -10,6 +10,10 @@ export interface PerTypeDetail {
   expiration_date: string | null;
   is_reviewed: boolean;
   has_unreviewed: boolean;
+  /** Coverage enforcement detail (owner "Simple"): one dollar amount per doc type. */
+  coverage_required: string | null;
+  coverage_extracted: number | null;
+  coverage_status: "ok" | "below" | "unreadable" | "n/a" | null;
 }
 
 export interface VendorComplianceResult {
@@ -77,6 +81,105 @@ function getToday(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+// ── Coverage enforcement (owner "Simple") ───────────────
+// One dollar amount per required insurance doc type. The engine compares the
+// AI-extracted limit on the best reviewed doc against the client's required
+// amount. This is a FLAGGING AID only: the client remains responsible for
+// verifying their own coverage adequacy (existing disclaimer framing).
+
+/** Maps a required document type to the coverage column gated for it. */
+const COVERAGE_LIMIT_COLUMN: Record<string, keyof CoverageRow> = {
+  "General Liability": "coverage_gl_occurrence",
+  "Workers Comp": "coverage_wc_employers",
+  "Commercial Auto": "coverage_auto_csl",
+  "Umbrella": "coverage_umbrella",
+};
+
+interface CoverageRow {
+  coverage_gl_occurrence: number | null;
+  coverage_gl_aggregate: number | null;
+  coverage_wc_employers: number | null;
+  coverage_auto_csl: number | null;
+  coverage_umbrella: number | null;
+}
+
+/**
+ * Normalize a client's coverage-requirement TEXT into whole dollars (or null).
+ * Accepts "1000000", "$1,000,000", "1M", "1m", "1,000,000", "$1M", and
+ * descriptive strings carrying a dollar amount ("$1,000,000 per occurrence /
+ * $2,000,000 aggregate" → the first amount, 1,000,000). Unparseable or null
+ * input returns null, and the caller SKIPS the gate (a requirement we cannot
+ * read must never auto-hold a vendor).
+ */
+export function parseCoverageRequirement(text: string | null): number | null {
+  if (!text) return null;
+  const cleaned = String(text).replace(/[$,]/g, (ch) => (ch === "," ? "" : " "));
+  const m = cleaned.match(/(\d+(?:\.\d+)?)\s*(m|k|b|million|thousand|billion)?/i);
+  if (!m) return null;
+  const num = parseFloat(m[1]);
+  if (!Number.isFinite(num) || num <= 0) return null;
+  const suffix = (m[2] || "").toLowerCase();
+  let dollars = num;
+  if (suffix === "m" || suffix === "million") dollars = num * 1_000_000;
+  else if (suffix === "k" || suffix === "thousand") dollars = num * 1_000;
+  else if (suffix === "b" || suffix === "billion") dollars = num * 1_000_000_000;
+  return Math.round(dollars);
+}
+
+/**
+ * Human-readable coverage-issue reasons across a vendor's detail list, e.g.
+ * "General Liability coverage $500,000 below required $1,000,000" or
+ * "General Liability coverage limit not readable". Returns [] when no
+ * coverage issues. Used by reports and the dashboard/vendor reason strings.
+ */
+export function coverageIssueTexts(details: PerTypeDetail[]): string[] {
+  const out: string[] = [];
+  for (const d of details) {
+    if (d.coverage_status === "below" && d.coverage_required && d.coverage_extracted != null) {
+      out.push(
+        `${d.document_type} coverage ${d.coverage_extracted.toLocaleString()} below required ${parseCoverageRequirement(d.coverage_required)?.toLocaleString() ?? d.coverage_required}`
+      );
+    } else if (d.coverage_status === "unreadable" && d.coverage_required) {
+      out.push(`${d.document_type} coverage limit not readable`);
+    }
+  }
+  return out;
+}
+
+/**
+ * Determine whether a document type's status should be downgraded by the
+ * coverage gate. Returns the new detail fields; `unchanged` when no gate
+ * applies (requirement unparseable, doc type not coverage-capable) or the
+ * doc already passes (extracted >= required).
+ */
+function applyCoverageGate(
+  requiredType: string,
+  requirementText: string | null,
+  bestDocCoverage: CoverageRow | null,
+): { coverage_required: string | null; coverage_extracted: number | null; coverage_status: "ok" | "below" | "unreadable" | "n/a" | null; newStatus: ComplianceStatus | null } {
+  const column = COVERAGE_LIMIT_COLUMN[requiredType];
+  // Doc types without an enforced coverage limit (W-9, Business License,
+  // custom docs, COI bundle, etc.) → no coverage gate.
+  if (!column) {
+    return { coverage_required: null, coverage_extracted: null, coverage_status: "n/a", newStatus: null };
+  }
+  const required = parseCoverageRequirement(requirementText);
+  // Unparseable / null requirement → skip the gate entirely (coverage_status
+  // null means "not gated"). Never auto-hold on a requirement we can't read.
+  if (required == null) {
+    return { coverage_required: requirementText ?? null, coverage_extracted: null, coverage_status: null, newStatus: null };
+  }
+  const extracted = bestDocCoverage?.[column] ?? null;
+  if (extracted == null) {
+    // Limit not readable / not extracted → needs_review (Review, NOT Hold).
+    return { coverage_required: requirementText ?? null, coverage_extracted: null, coverage_status: "unreadable", newStatus: "needs_review" };
+  }
+  if (extracted < required) {
+    return { coverage_required: requirementText ?? null, coverage_extracted: extracted, coverage_status: "below", newStatus: "below_limit" };
+  }
+  return { coverage_required: requirementText ?? null, coverage_extracted: extracted, coverage_status: "ok", newStatus: null };
+}
+
 /**
  * Determine per-document-type compliance from pre-fetched document rows
  * (already filtered to the vendor/tenant and ordered by received_date DESC).
@@ -89,11 +192,19 @@ function evaluateDocType(
     expiration_date: string | null;
     is_reviewed: number | null;
     ai_confidence_score: number | null;
+    coverage_gl_occurrence: number | null;
+    coverage_gl_aggregate: number | null;
+    coverage_wc_employers: number | null;
+    coverage_auto_csl: number | null;
+    coverage_umbrella: number | null;
   }>,
   requiredType: string,
   today: string,
+  coverageRequirement: string | null,
 ): PerTypeDetail {
   if (rows.length === 0) {
+    // Missing doc → the requirement is shown for context but there is no doc to
+    // compare, so coverage_status is null (not gated; "missing" already holds).
     return {
       document_type: requiredType,
       status: "missing",
@@ -101,6 +212,9 @@ function evaluateDocType(
       expiration_date: null,
       is_reviewed: false,
       has_unreviewed: false,
+      coverage_required: coverageRequirement ?? null,
+      coverage_extracted: null,
+      coverage_status: null,
     };
   }
 
@@ -111,7 +225,8 @@ function evaluateDocType(
 
   const hasUnreviewed = unreviewed.length > 0;
 
-  // If no reviewed docs at all → needs_review
+  // If no reviewed docs at all → needs_review (full review surface; no coverage
+  // value is trustworthy enough to gate on yet).
   if (reviewed.length === 0) {
     return {
       document_type: requiredType,
@@ -120,6 +235,9 @@ function evaluateDocType(
       expiration_date: rows[0].expiration_date,
       is_reviewed: false,
       has_unreviewed: true,
+      coverage_required: coverageRequirement ?? null,
+      coverage_extracted: null,
+      coverage_status: null,
     };
   }
 
@@ -151,9 +269,39 @@ function evaluateDocType(
   }
 
   // If there are unreviewed docs alongside reviewed ones, the type is still
-  // "needs_review" because AI hasn't processed newer versions.
+  // "needs_review" because AI hasn't processed newer versions. (A newer,
+  // unreviewed certificate could change the coverage amount too.)
   if (hasUnreviewed) {
     status = "needs_review";
+  }
+
+  // ── Coverage gate ─────────────────────────────────────────────────────
+  // Applied ONLY when the doc is otherwise compliant/expiring_soon (an expired
+  // or needs-review doc stays that way; coverage is a secondary gate). Coverage
+  // uses the BEST reviewed doc (the one driving the status), so we compare its
+  // extracted limit. onlyCompareFromReviewed avoids holding on an unreviewed doc.
+  let coverageStatus = "n/a" as PerTypeDetail["coverage_status"];
+  let coverageExtracted: number | null = null;
+  let coverageRequired: string | null = coverageRequirement ?? null;
+  if (!hasUnreviewed && (status === "compliant" || status === "expiring_soon")) {
+    const gate = applyCoverageGate(requiredType, coverageRequirement, bestDoc);
+    coverageStatus = gate.coverage_status;
+    coverageExtracted = gate.coverage_extracted;
+    coverageRequired = gate.coverage_required;
+    // below_limit → override the type status to Hold-driving below_limit.
+    // unreadable → downgrade to needs_review (Review, NOT Hold).
+    if (gate.newStatus === "below_limit") {
+      status = "below_limit";
+    } else if (gate.newStatus === "needs_review") {
+      status = "needs_review";
+    }
+  } else {
+    // Not gated right now (unreviewed, expired, or missing). Still surface the
+    // requirement so the UI can show intent; status for these is unchanged.
+    const gate = applyCoverageGate(requiredType, coverageRequirement, bestDoc);
+    coverageStatus = gate.coverage_status === "n/a" ? "n/a" : gate.coverage_status;
+    coverageExtracted = gate.coverage_extracted;
+    coverageRequired = gate.coverage_required;
   }
 
   return {
@@ -163,6 +311,9 @@ function evaluateDocType(
     expiration_date: bestDoc.expiration_date ?? null,
     is_reviewed: true,
     has_unreviewed: hasUnreviewed,
+    coverage_required: coverageRequired,
+    coverage_extracted: coverageExtracted,
+    coverage_status: coverageStatus,
   };
 }
 
@@ -176,6 +327,7 @@ function addDays(dateStr: string, days: number): string {
 
 const STATUS_PRIORITY: Record<ComplianceStatus | "missing", number> = {
   expired: 4,
+  below_limit: 3.5, // a present-but-insufficient doc beats an absent one (client may think they're covered)
   missing: 3,
   needs_review: 2,
   expiring_soon: 1,
@@ -213,6 +365,8 @@ function determinePaymentStatus(
   let hasExpiringInPaymentWeek = false;
   let hasNeedsReview = false;
   let hasExpiringSoon = false;
+  let hasCoverageBelow = false;
+  let hasCoverageUnreadable = false;
 
   for (const d of details) {
     if (d.status === "missing") {
@@ -221,8 +375,16 @@ function determinePaymentStatus(
     if (d.status === "expired") {
       hasExpired = true;
     }
+    // Coverage limit below the required amount → Hold (worst of the secondary gates).
+    if (d.status === "below_limit") {
+      hasCoverageBelow = true;
+    }
     if (d.status === "needs_review" && d.has_unreviewed) {
       hasNeedsReview = true;
+    }
+    // Coverage limit not readable → Review (never auto-Hold on a parse miss).
+    if (d.coverage_status === "unreadable") {
+      hasCoverageUnreadable = true;
     }
     // Check if expiring during the tenant's payment week (for reviewed docs)
     if (
@@ -245,12 +407,12 @@ function determinePaymentStatus(
   }
 
   // Hold conditions (worst)
-  if (hasMissing || hasExpired || hasExpiringInPaymentWeek) {
+  if (hasMissing || hasExpired || hasExpiringInPaymentWeek || hasCoverageBelow) {
     return "hold";
   }
 
   // Review conditions
-  if (hasNeedsReview || hasExpiringSoon) {
+  if (hasNeedsReview || hasExpiringSoon || hasCoverageUnreadable) {
     return "review";
   }
 
@@ -270,15 +432,15 @@ export function calculateVendorCompliance(
   const weekStartDay = getTenantPaymentWeekStartDay(db, tenantId);
   const { week_start: paymentWeekStart, week_end: paymentWeekEnd } = calculatePaymentWeek(weekStartDay);
 
-  // Get client's required document types
+  // Get client's required document types (with their coverage requirement)
   const requiredTypes = db
     .query(
-      `SELECT document_type FROM client_required_documents
+      `SELECT document_type, coverage_requirement FROM client_required_documents
      WHERE client_id = $client_id
        AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)
      ORDER BY document_type`,
     )
-    .all({ $client_id: clientId, $tenant_id: tenantId }) as Array<{ document_type: string }>;
+    .all({ $client_id: clientId, $tenant_id: tenantId }) as Array<{ document_type: string; coverage_requirement: string | null }>;
 
   if (requiredTypes.length === 0) {
     // No requirements → vendor is compliant and approved
@@ -293,7 +455,6 @@ export function calculateVendorCompliance(
       details: [],
     };
   }
-
   // Fetch ALL of the vendor's documents (any type) in one query, ordered by
   // received_date DESC — the same order the per-type query used — then group
   // rows by document_type in JS so the per-type status logic below is fed
@@ -302,7 +463,9 @@ export function calculateVendorCompliance(
     .query(
       `
     SELECT d.id, d.document_type,
-           de.expiration_date, de.is_reviewed, de.ai_confidence_score
+           de.expiration_date, de.is_reviewed, de.ai_confidence_score,
+           de.coverage_gl_occurrence, de.coverage_gl_aggregate,
+           de.coverage_wc_employers, de.coverage_auto_csl, de.coverage_umbrella
     FROM documents d
     LEFT JOIN document_extractions de ON de.document_id = d.id
     WHERE d.vendor_id = $vendor_id
@@ -316,6 +479,11 @@ export function calculateVendorCompliance(
     expiration_date: string | null;
     is_reviewed: number | null;
     ai_confidence_score: number | null;
+    coverage_gl_occurrence: number | null;
+    coverage_gl_aggregate: number | null;
+    coverage_wc_employers: number | null;
+    coverage_auto_csl: number | null;
+    coverage_umbrella: number | null;
   }>;
 
   const rowsByType = new Map<string, typeof allDocRows>();
@@ -325,9 +493,9 @@ export function calculateVendorCompliance(
     else rowsByType.set(r.document_type, [r]);
   }
 
-  // Evaluate each required type
+  // Evaluate each required type (coverage requirement passed for the gate)
   const details: PerTypeDetail[] = requiredTypes.map((rt) =>
-    evaluateDocType(rowsByType.get(rt.document_type) ?? [], rt.document_type, today),
+    evaluateDocType(rowsByType.get(rt.document_type) ?? [], rt.document_type, today, rt.coverage_requirement),
   );
 
   // Roll up compliance status (worst non-missing status wins)

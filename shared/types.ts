@@ -1,6 +1,6 @@
 // ── Enums ──────────────────────────────────────────────
 
-export type ComplianceStatus = "compliant" | "expiring_soon" | "expired" | "needs_review";
+export type ComplianceStatus = "compliant" | "expiring_soon" | "expired" | "needs_review" | "below_limit";
 export type PaymentStatus = "approved" | "review" | "hold";
 export type DocumentType = "COI" | "W-9" | "Workers Comp" | "Commercial Auto" | "General Liability" | "Umbrella" | "Business License" | "Other";
 
@@ -102,6 +102,15 @@ export interface DocumentExtraction {
   producer_contact: string | null;
   producer_email: string | null;
   producer_phone: string | null;
+  // Coverage limits (whole dollars), populated by AI extraction for insurance
+  // certificate / COI documents; null for W-9, Business License, custom docs
+  // and for docs where the limit was not visible/parsed. NULL here is treated
+  // by the compliance engine as "limit unreadable" → needs_review (never Hold).
+  coverage_gl_occurrence: number | null;
+  coverage_gl_aggregate: number | null;
+  coverage_wc_employers: number | null;
+  coverage_auto_csl: number | null;
+  coverage_umbrella: number | null;
 }
 
 // ── Compliance ────────────────────────────────────────
@@ -211,6 +220,13 @@ export interface ExtractionUpdateBody {
   producer_contact?: string | null;
   producer_email?: string | null;
   producer_phone?: string | null;
+  // Coverage limits (whole dollars or null) — editable in the review UI so a
+  // reviewer can correct a bad AI parse. NULL = not read / unreadable.
+  coverage_gl_occurrence?: number | null;
+  coverage_gl_aggregate?: number | null;
+  coverage_wc_employers?: number | null;
+  coverage_auto_csl?: number | null;
+  coverage_umbrella?: number | null;
   is_reviewed?: boolean;
   // Manual entity assignment — lets a reviewer attach an otherwise-unassigned
   // document to a vendor/client (null clears the assignment).
@@ -251,6 +267,10 @@ export interface CompliancePerTypeDetail {
   expiration_date: string | null;
   is_reviewed: boolean;
   has_unreviewed: boolean;
+  /** Coverage enforcement detail (see PerTypeDetail in api/src/compliance.ts). */
+  coverage_required: string | null;
+  coverage_extracted: number | null;
+  coverage_status: "ok" | "below" | "unreadable" | "n/a" | null;
 }
 
 export interface ComplianceDetailResponse {

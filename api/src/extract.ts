@@ -47,6 +47,25 @@ export interface ExtractionResult {
   insured_address: string | null;
   form_date: string | null;
   document_type: string | null;
+  /**
+   * Coverage limits in whole dollars, extracted ONLY from what is visibly
+   * printed on the document. Each value is null when not visible / illegible /
+   * not applicable. NEVER guess — the engine treats a null as "unreadable"
+   * (→ needs_review, never auto-Hold). Only populated for insurance-certificate
+   * / COI doc types; null throughout for W-9 / Business License / custom docs.
+   *  - general_liability_occurrence — per-occurrence limit ("General Liability" → gl_occurrence)
+   *  - general_liability_aggregate  — aggregate limit (not gated in v1 "Simple")
+   *  - workers_comp_employers       — employers liability per-accident limit ("Workers Comp" → wc_employers)
+   *  - commercial_auto              — CSL (combined single limit) if printed ("Commercial Auto" → auto_csl)
+   *  - umbrella                     — umbrella/excess limit ("Umbrella" → umbrella)
+   */
+  coverage_limits: {
+    general_liability_occurrence: number | null;
+    general_liability_aggregate: number | null;
+    workers_comp_employers: number | null;
+    commercial_auto: number | null;
+    umbrella: number | null;
+  };
   ai_confidence_score: number;
   /**
    * Producer block (top-right of an ACORD COI — the agency/agent that issued
@@ -242,6 +261,13 @@ async function callVisionAI(
           "For COI documents, also read the PRODUCER block at the TOP-RIGHT of the form " +
           "(the agency/agent that issued the certificate — agency name, contact person, phone, email). " +
           "For every NON-COI document type, producer fields must be null — there is no producer block. " +
+          "For insurance certificates / COIs, also read the COVERAGE LIMITS printed on the form " +
+          "(e.g. 'General Aggregate', 'Products-Completed Ops Aggregate', 'Each Occurrence', " +
+          "'Bodily Injury (Per Accident)', 'Combined Single Limit (CSL)', umbrella/excess limits). " +
+          "Extract ONLY dollar amounts that are visibly printed — if a limit is not shown or is " +
+          "illegible, return null for that field. NEVER guess or estimate a limit. " +
+          "For W-9 / Business License / custom documents, every coverage_limits value must be null. " +
+          "On auto certificates, if a 'Combined Single Limit' (CSL) is printed, that is the commercial_auto value. " +
           'Return ONLY valid JSON with no commentary and no markdown, matching this schema exactly: ' +
           JSON.stringify({
             document_type:
@@ -255,6 +281,13 @@ async function callVisionAI(
             certificate_holder_address: "string or null",
             insured_address: "string or null",
             form_date: '"YYYY-MM-DD" or null (only for W-9 forms)',
+            coverage_limits: {
+              general_liability_occurrence: "number or null — per-occurrence limit in whole dollars, e.g. 1000000; null if not printed",
+              general_liability_aggregate: "number or null — aggregate limit in whole dollars, e.g. 2000000; null if not printed",
+              workers_comp_employers: "number or null — employers liability each-accident limit in whole dollars; null if not printed",
+              commercial_auto: "number or null — combined single limit in whole dollars; null if not printed",
+              umbrella: "number or null — umbrella/excess limit in whole dollars; null if not printed",
+            },
             producer_name:
               "string or null — agency/agent name from the Producer block (top-right) of a COI; MUST be null for non-COI documents",
             producer_contact:
@@ -473,6 +506,40 @@ function cleanString(value: unknown): string | null {
   return s.length ? s : null;
 }
 
+/**
+ * Normalize a coverage-limit value from model JSON to whole dollars (or null).
+ * Accepts a number (1000000) or a string ("1000000", "$1,000,000"). Fractions,
+ * non-numeric strings, and unclear input all return null (treated downstream as
+ * "unreadable" → needs_review). We never round/estimate — only pass through an
+ * unambiguous whole-dollar amount.
+ */
+function parseCoverageLimit(value: unknown): number | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value) || value < 0) return null;
+    return Math.round(value);
+  }
+  if (typeof value === "string") {
+    const s = value.replace(/[$,]/g, "").trim();
+    if (!/^\d+(\.\d+)?$/.test(s)) return null;
+    const n = Number(s);
+    if (!Number.isFinite(n) || n < 0) return null;
+    return Math.round(n);
+  }
+  return null;
+}
+
+function extractCoverageLimits(raw: any): ExtractionResult["coverage_limits"] {
+  const cl = raw && typeof raw.coverage_limits === "object" ? raw.coverage_limits : {};
+  return {
+    general_liability_occurrence: parseCoverageLimit(cl.general_liability_occurrence),
+    general_liability_aggregate: parseCoverageLimit(cl.general_liability_aggregate),
+    workers_comp_employers: parseCoverageLimit(cl.workers_comp_employers),
+    commercial_auto: parseCoverageLimit(cl.commercial_auto),
+    umbrella: parseCoverageLimit(cl.umbrella),
+  };
+}
+
 function clampConfidence(value: unknown, fallback: number): number {
   const n = Number(value);
   if (!Number.isFinite(n)) return fallback;
@@ -517,6 +584,17 @@ function normalizeExtraction(raw: any, fileName: string): ExtractionResult | nul
     producer_contact: documentType === "COI" ? cleanString(raw.producer_contact) : null,
     producer_email: documentType === "COI" ? cleanString(raw.producer_email) : null,
     producer_phone: documentType === "COI" ? cleanString(raw.producer_phone) : null,
+    // Coverage limits are only meaningful for insurance-certificate/COI docs.
+    // For every other type they are forced to null — a W-9 has no coverage
+    // amounts, and we never want a bogus number gating payment on a non-COI.
+    coverage_limits:
+      documentType === "General Liability" ||
+      documentType === "Workers Comp" ||
+      documentType === "Commercial Auto" ||
+      documentType === "Umbrella" ||
+      documentType === "COI"
+        ? extractCoverageLimits(raw)
+        : { general_liability_occurrence: null, general_liability_aggregate: null, workers_comp_employers: null, commercial_auto: null, umbrella: null },
     ai_confidence_score: confidence,
     extraction_method: "ai",
   };
@@ -579,6 +657,7 @@ function honestFallback(fileName: string): ExtractionResult {
     producer_contact: null,
     producer_email: null,
     producer_phone: null,
+    coverage_limits: { general_liability_occurrence: null, general_liability_aggregate: null, workers_comp_employers: null, commercial_auto: null, umbrella: null },
     ai_confidence_score: 0,
     extraction_method: "filename",
   };

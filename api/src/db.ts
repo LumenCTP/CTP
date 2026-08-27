@@ -427,6 +427,38 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "documents", "tenant_id INTEGER REFERENCES tenants(id)", "tenant_id");
   ensureColumn(db, "tenants", "inbox_slug TEXT", "inbox_slug");
   ensureColumn(db, "tenants", "subscription_plan TEXT DEFAULT NULL", "subscription_plan");
+
+  // ── Coverage enforcement: compliance_status.status must accept 'below_limit' ──
+  // SQLite can't ALTER a CHECK constraint, so rebuild the table (same pattern as
+  // the payouts rebuild above). compliance_status is a leaf table (nothing
+  // references it), so the DROP is safe. The unique index on vendor_id is
+  // recreated after the rename.
+  const csDdl = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'compliance_status'").get() as { sql: string } | undefined;
+  if (csDdl && !csDdl.sql.includes("'below_limit'")) {
+    db.exec(`
+      CREATE TABLE compliance_status_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        vendor_id INTEGER NOT NULL,
+        client_id INTEGER NOT NULL,
+        status TEXT NOT NULL DEFAULT 'needs_review'
+          CHECK (status IN ('compliant', 'expiring_soon', 'expired', 'needs_review', 'below_limit')),
+        payment_status TEXT NOT NULL DEFAULT 'hold'
+          CHECK (payment_status IN ('approved', 'review', 'hold')),
+        calculated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
+      );
+    `);
+    db.exec(`INSERT INTO compliance_status_new (id, vendor_id, client_id, status, payment_status, calculated_at) SELECT id, vendor_id, client_id, status, payment_status, calculated_at FROM compliance_status`);
+    db.exec("DROP TABLE compliance_status");
+    db.exec("ALTER TABLE compliance_status_new RENAME TO compliance_status");
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_compliance_status_vendor_id_unique ON compliance_status(vendor_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_compliance_status_vendor_id ON compliance_status(vendor_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_compliance_status_client_id ON compliance_status(client_id)");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_compliance_status_status ON compliance_status(status)");
+    console.log("[db] Rebuilt compliance_status table — status CHECK now includes 'below_limit'");
+  }
+
   // Per-tenant company logo (TopBar branding): object-storage key under
   // logos/tenant-<id>.<ext>; NULL until the tenant uploads one.
   ensureColumn(db, "tenants", "logo_key TEXT", "logo_key");
@@ -487,6 +519,16 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "document_extractions", "producer_contact TEXT", "producer_contact");
   ensureColumn(db, "document_extractions", "producer_email TEXT", "producer_email");
   ensureColumn(db, "document_extractions", "producer_phone TEXT", "producer_phone");
+  // ── Coverage enforcement (2026-08-15, owner "Simple") ────────────────────
+  // One dollar limit per insurance doc type, extracted by AI from the printed
+  // certificate (whole dollars). NULL = not read/unreadable → the engine holds
+  // the type in needs_review (never auto-Hold on a parse miss). Existing rows
+  // stay NULL, which is the safe "needs review" default.
+  ensureColumn(db, "document_extractions", "coverage_gl_occurrence INTEGER", "coverage_gl_occurrence");
+  ensureColumn(db, "document_extractions", "coverage_gl_aggregate INTEGER", "coverage_gl_aggregate");
+  ensureColumn(db, "document_extractions", "coverage_wc_employers INTEGER", "coverage_wc_employers");
+  ensureColumn(db, "document_extractions", "coverage_auto_csl INTEGER", "coverage_auto_csl");
+  ensureColumn(db, "document_extractions", "coverage_umbrella INTEGER", "coverage_umbrella");
   // Extraction provenance: 'ai' (real vision-model extraction) vs 'filename'
   // (honest filename-only fallback). Never fabricate fields on the fallback.
   ensureColumn(db, "document_extractions", "extraction_method TEXT DEFAULT 'filename'", "extraction_method");
