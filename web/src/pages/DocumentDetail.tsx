@@ -5,8 +5,16 @@ import { fetchFileObjectUrl, openFileInNewTab } from "../lib/files";
 import { confidencePercent } from "../lib/confidence";
 import { ALL_DOCUMENT_TYPES, type DocumentDetail as DocumentDetailType, type ExtractionUpdateBody } from "@clear-to-pay/shared";
 
-const emptyForm = { vendor_name: "", insurance_carrier: "", policy_number: "", effective_date: "", expiration_date: "", certificate_holder: "", certificate_holder_address: "", producer_name: "", producer_contact: "", producer_email: "", producer_phone: "", document_type: "" };
+const emptyForm = { vendor_name: "", insurance_carrier: "", policy_number: "", effective_date: "", expiration_date: "", certificate_holder: "", certificate_holder_address: "", producer_name: "", producer_contact: "", producer_email: "", producer_phone: "", document_type: "", coverage_gl_occurrence: "", coverage_gl_aggregate: "", coverage_wc_employers: "", coverage_auto_csl: "", coverage_umbrella: "" };
 type FormState = typeof emptyForm;
+
+// Convert an optional coverage string (dollars) to number|null for the API.
+function covNum(v: string): number | null {
+  const s = v.trim();
+  if (!s) return null;
+  const n = Number(s.replace(/[$,]/g, ""));
+  return Number.isFinite(n) && n >= 0 ? Math.round(n) : null;
+}
 
 function statusBadge(status: string | undefined) {
   const labels: Record<string, string> = { ready: "Ready", processing: "Processing", uploaded: "Uploaded", error: "Error" };
@@ -70,6 +78,11 @@ export default function DocumentDetail() {
         producer_email: data.extractions?.[0]?.producer_email ?? "",
         producer_phone: data.extractions?.[0]?.producer_phone ?? "",
         document_type: data.extractions?.[0]?.document_type ?? data.extracted_document_type ?? data.document_type ?? "",
+        coverage_gl_occurrence: data.extractions?.[0]?.coverage_gl_occurrence != null ? String(data.extractions?.[0]?.coverage_gl_occurrence) : "",
+        coverage_gl_aggregate: data.extractions?.[0]?.coverage_gl_aggregate != null ? String(data.extractions?.[0]?.coverage_gl_aggregate) : "",
+        coverage_wc_employers: data.extractions?.[0]?.coverage_wc_employers != null ? String(data.extractions?.[0]?.coverage_wc_employers) : "",
+        coverage_auto_csl: data.extractions?.[0]?.coverage_auto_csl != null ? String(data.extractions?.[0]?.coverage_auto_csl) : "",
+        coverage_umbrella: data.extractions?.[0]?.coverage_umbrella != null ? String(data.extractions?.[0]?.coverage_umbrella) : "",
       });
       setReviewed(Boolean(data.is_reviewed || data.extractions?.[0]?.is_reviewed));
     }).catch((err) => setError(err instanceof Error ? err.message : "Unable to load document")).finally(() => setLoading(false));
@@ -78,7 +91,15 @@ export default function DocumentDetail() {
   async function save(e: React.FormEvent) {
     e.preventDefault(); setSaving(true); setError(null);
     try {
-      const body: ExtractionUpdateBody = { ...form, is_reviewed: reviewed };
+      const body: ExtractionUpdateBody = {
+        ...(form as unknown as Record<string, unknown>),
+        is_reviewed: reviewed,
+        coverage_gl_occurrence: covNum(form.coverage_gl_occurrence),
+        coverage_gl_aggregate: covNum(form.coverage_gl_aggregate),
+        coverage_wc_employers: covNum(form.coverage_wc_employers),
+        coverage_auto_csl: covNum(form.coverage_auto_csl),
+        coverage_umbrella: covNum(form.coverage_umbrella),
+      } as ExtractionUpdateBody;
       const res = await apiFetch(`/api/documents/${id}/extraction`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
       if (!res.ok) { const data = await res.json(); throw new Error(data.error || "Save failed"); }
       const data = await res.json();
@@ -110,6 +131,11 @@ export default function DocumentDetail() {
             <p style={{ margin: "0 0 4px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-muted, #6b7280)" }}>Producer (COI agency/agent — top-right of the certificate)</p>
             <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>Renewal reminders for this document go to the producer email when present.</p>
             {([ ["producer_name","Producer / Agency Name","text"],["producer_contact","Contact Person","text"],["producer_email","Producer Email","email"],["producer_phone","Producer Phone","text"]] as const).map(([key,label,type]) => <label className="form-group" key={key}>{label}<input className="form-input" type={type} value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>)}
+          </div>
+          <div className="coverage-fields" style={{ gridColumn: "1 / -1", padding: "12px", background: "var(--bg-soft, #f8fafc)", borderRadius: "8px", border: "1px dashed var(--border, #d1d5db)" }}>
+            <p style={{ margin: "0 0 4px", fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.04em", color: "var(--text-muted, #6b7280)" }}>Coverage limits (whole dollars, as printed on the certificate)</p>
+            <p style={{ margin: "0 0 12px", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>Used to flag vendors whose coverage is below your required amount. Leave blank if the limit is not visible.</p>
+            {([ ["coverage_gl_occurrence","GL Per-Occurrence Limit ($)"],["coverage_gl_aggregate","GL Aggregate Limit ($)"],["coverage_wc_employers","WC Employers Liability ($)"],["coverage_auto_csl","Commercial Auto CSL ($)"],["coverage_umbrella","Umbrella Limit ($)"]] as const).map(([key,label]) => <label className="form-group" key={key}>{label}<input className="form-input" type="number" min="0" step="1" placeholder="e.g. 1000000" value={form[key]} onChange={(e) => setForm({ ...form, [key]: e.target.value })} /></label>)}
           </div>
         </div>
         <label className="review-checkbox"><input type="checkbox" checked={reviewed} onChange={(e) => setReviewed(e.target.checked)} /> I reviewed the extracted data against the source document.</label>

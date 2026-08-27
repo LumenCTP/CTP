@@ -37,6 +37,16 @@ const STEP_MAP: Record<string, number> = {
 };
 
 const STANDARD_DOC_TYPES = DEFAULT_REQUIRED_DOCUMENTS.map((d) => d.document_type);
+// Doc types that carry a dollar coverage limit on the insurance certificate.
+// Only these get a "coverage amount" input; W-9 / Business License / custom
+// docs have no amount (a license or tax form has no limit to enforce).
+const COVERAGE_CAPABLE_TYPES = new Set([
+  "COI",
+  "General Liability",
+  "Workers Comp",
+  "Commercial Auto",
+  "Umbrella",
+]);
 
 export default function SetupWizard() {
   const { user, loading, token, refreshUser } = useAuth();
@@ -453,14 +463,16 @@ export default function SetupWizard() {
                     />
                     <span>{std.document_type}</span>
                   </label>
-                  <input
-                    type="text"
-                    style={{ ...inputStyle, flex: 1, opacity: checked ? 1 : 0.5 }}
-                    placeholder={checked ? "Coverage amount (optional)" : "Select to add"}
-                    value={coverageFor(std.document_type)}
-                    disabled={!checked}
-                    onChange={(e) => setCoverage(std.document_type, e.target.value)}
-                  />
+                  {COVERAGE_CAPABLE_TYPES.has(std.document_type) && (
+                    <input
+                      type="text"
+                      style={{ ...inputStyle, flex: 1, opacity: checked ? 1 : 0.5 }}
+                      placeholder={checked ? "Coverage amount (optional)" : "Select to add"}
+                      value={coverageFor(std.document_type)}
+                      disabled={!checked}
+                      onChange={(e) => setCoverage(std.document_type, e.target.value)}
+                    />
+                  )}
                 </div>
               );
             })}
@@ -470,13 +482,6 @@ export default function SetupWizard() {
               .map((r) => (
                 <div key={r.document_type} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                   <span style={{ minWidth: 190, fontSize: 14, fontWeight: 600 }}>{r.document_type}</span>
-                  <input
-                    type="text"
-                    style={{ ...inputStyle, flex: 1 }}
-                    placeholder="Coverage amount (optional)"
-                    value={r.coverage_requirement ?? ""}
-                    onChange={(e) => setCoverage(r.document_type, e.target.value)}
-                  />
                   <button
                     type="button"
                     className="btn btn-sm btn-outline"
