@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { serverError } from "../errors";
 import { getDb } from "../db";
-import { calculatePaymentWeek, getTenantPaymentWeekStartDay } from "../compliance";
+import { calculatePaymentWeek, getTenantPaymentWeekStartDay, parseCoverageRequirement } from "../compliance";
 
 const app = new Hono();
 
@@ -111,11 +111,11 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
     const $vendorIds = JSON.stringify(vendorIds);
 
     const requiredRows = db.query(`
-      SELECT client_id, document_type FROM client_required_documents
+      SELECT client_id, document_type, coverage_requirement FROM client_required_documents
       WHERE client_id IN (SELECT value FROM json_each($client_ids))
         AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)
       ORDER BY client_id, document_type
-    `).all({ $client_ids: $clientIds, $tenant_id: tenantId }) as Array<{ client_id: number; document_type: string }>;
+    `).all({ $client_ids: $clientIds, $tenant_id: tenantId }) as Array<{ client_id: number; document_type: string; coverage_requirement: string | null }>;
 
     const presentRows = db.query(`
       SELECT DISTINCT d.vendor_id, d.document_type
@@ -123,6 +123,24 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
       WHERE d.vendor_id IN (SELECT value FROM json_each($vendor_ids))
         AND d.tenant_id = $tenant_id
     `).all({ $vendor_ids: $vendorIds, $tenant_id: tenantId }) as Array<{ vendor_id: number; document_type: string }>;
+
+    // Coverage enforcement surfacing (owner "Simple"): per-vendor extracted
+    // limits by doc type, matched against the client's requirement below. Only
+    // gate-covered types (GL/WC/Auto/Umbrella) matter; NULL extracted → unreadable.
+    const coverageRows = db.query(`
+      SELECT d.vendor_id, d.document_type,
+             de.coverage_gl_occurrence, de.coverage_wc_employers,
+             de.coverage_auto_csl, de.coverage_umbrella
+      FROM document_extractions de
+      JOIN documents d ON d.id = de.document_id
+      WHERE d.vendor_id IN (SELECT value FROM json_each($vendor_ids))
+        AND d.tenant_id = $tenant_id
+        AND de.is_reviewed = 1
+    `).all({ $vendor_ids: $vendorIds, $tenant_id: tenantId }) as Array<{
+      vendor_id: number; document_type: string;
+      coverage_gl_occurrence: number | null; coverage_wc_employers: number | null;
+      coverage_auto_csl: number | null; coverage_umbrella: number | null;
+    }>;
 
     const expiringRows = db.query(`
       SELECT d.vendor_id, de.expiration_date, COALESCE(de.document_type, d.document_type) AS document_type
@@ -135,16 +153,31 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
     `).all({ $vendor_ids: $vendorIds, $tenant_id: tenantId }) as Array<{ vendor_id: number; expiration_date: string; document_type: string }>;
 
     const requiredByClient = new Map<number, string[]>();
+    const requirementFor = new Map<string, string | null>();
     for (const r of requiredRows) {
       const arr = requiredByClient.get(r.client_id);
       if (arr) arr.push(r.document_type);
       else requiredByClient.set(r.client_id, [r.document_type]);
+      requirementFor.set(`${r.client_id}:${r.document_type}`, r.coverage_requirement ?? null);
     }
     const presentByVendor = new Map<number, Set<string>>();
     for (const r of presentRows) {
       const s = presentByVendor.get(r.vendor_id);
       if (s) s.add(r.document_type);
       else presentByVendor.set(r.vendor_id, new Set([r.document_type]));
+    }
+    // Gate-covered doc type → which extracted column to read.
+    const COV_COL: Record<string, keyof typeof coverageRows[number]> = {
+      "General Liability": "coverage_gl_occurrence",
+      "Workers Comp": "coverage_wc_employers",
+      "Commercial Auto": "coverage_auto_csl",
+      "Umbrella": "coverage_umbrella",
+    };
+    const coverageByVendorType = new Map<string, number | null>();
+    for (const r of coverageRows) {
+      const col = COV_COL[r.document_type];
+      if (!col) continue;
+      coverageByVendorType.set(`${r.vendor_id}:${r.document_type}`, r[col] ?? null);
     }
     const expiringByVendor = new Map<number, { expiration_date: string; document_type: string }>();
     for (const r of expiringRows) {
@@ -159,6 +192,27 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
       const missingDocuments = requiredTypes.filter((type) => !presentTypes.has(type));
       const expiring = expiringByVendor.get(row.vendor_id) ?? null;
 
+      // Build a coverage reason for this vendor (the reason text the card shows).
+      const coverageReasons: string[] = [];
+      for (const type of requiredTypes) {
+        const col = COV_COL[type];
+        if (!col) continue;
+        const required = parseCoverageRequirement(requirementFor.get(`${row.client_id}:${type}`) ?? null);
+        if (required == null) continue;
+        const extracted = coverageByVendorType.get(`${row.vendor_id}:${type}`) ?? null;
+        if (extracted == null) {
+          coverageReasons.push(`${type} coverage limit not readable`);
+        } else if (extracted < required) {
+          coverageReasons.push(`${type} coverage ${extracted.toLocaleString()} below required ${required.toLocaleString()}`);
+        }
+      }
+      // Compose a single reason string mirroring the weekly report lists.
+      const reasonParts: string[] = [];
+      if (missingDocuments.length > 0) reasonParts.push(`Missing: ${missingDocuments.join(", ")}`);
+      if (coverageReasons.length > 0) reasonParts.push(coverageReasons.join("; "));
+      if (expiring) reasonParts.push(`${expiring.document_type} expires ${expiring.expiration_date}`);
+      const reason = reasonParts.join("; ") || (row.payment_status === "hold" ? "Held" : row.payment_status === "review" ? "Review required" : "All required documents current");
+
       return {
         vendor_id: row.vendor_id,
         vendor_name: row.vendor_name,
@@ -169,6 +223,7 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
         missing_documents: missingDocuments,
         earliest_expiring_date: expiring?.expiration_date ?? null,
         earliest_expiring_type: expiring?.document_type ?? null,
+        reason,
       };
     });
 

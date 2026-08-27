@@ -6,6 +6,7 @@ import { getDb } from "./db";
 import {
   calculatePaymentWeek,
   calculateVendorCompliance,
+  coverageIssueTexts,
   getTenantPaymentWeekStartDay,
   type PerTypeDetail,
   type VendorComplianceResult,
@@ -144,6 +145,8 @@ export function gatherReportData(clientId: number): ReportData {
       const reasons: string[] = [];
       if (missing.length > 0) reasons.push(`Missing: ${missing.join(", ")}`);
       if (expired.length > 0) reasons.push(`Expired: ${expired.join(", ")}`);
+      const cov = coverageIssueTexts(compliance.details);
+      if (cov.length > 0) reasons.push(cov.join("; "));
       if (expiringInWeek.length > 0) {
         reasons.push(
           `Expiring during payment week: ${expiringInWeek
@@ -158,6 +161,8 @@ export function gatherReportData(clientId: number): ReportData {
       if (compliance.details.some((d) => d.has_unreviewed)) {
         reasons.push("Documents in review");
       }
+      const cov = coverageIssueTexts(compliance.details);
+      if (cov.length > 0) reasons.push(cov.join("; "));
       if (
         compliance.details.some((d) => {
           if (!d.is_reviewed || !d.expiration_date) return false;
