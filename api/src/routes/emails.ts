@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { serverError } from "../errors";
 import { getDb } from "../db";
 import { requireQueueSecret } from "../middleware";
-import { sendEmail, buildWeeklyReportEmail, buildRenewalReminderEmail, parseRecipients, parseAttachmentsJson, resolveEmailAttachments } from "../email";
+import { sendEmail, buildWeeklyReportEmail, buildMonthlyReportEmail, buildRenewalReminderEmail, parseRecipients, parseAttachmentsJson, resolveEmailAttachments } from "../email";
 import { gatherReportData, generatePdfReport, generateExcelReport, countDocumentRows } from "../reports";
 import { markWeeklySent } from "../scheduler";
 import { QUEUE_SECRET } from "../secrets";
@@ -397,6 +397,96 @@ app.post("/api/emails/run-weekly/:client_id", async (c) => {
   }
 });
 
+// POST /api/emails/run-monthly/:client_id — send the REAL monthly compliance
+// report for a single client, with PDF + XLSX attachments (mirrors the
+// 1st-of-month scheduler pipeline in scheduler.ts checkMonthly, minus the
+// all-client loop and with real recipients). dry_run=1 generates + stores the
+// report files but does NOT email.
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+app.post("/api/emails/run-monthly/:client_id", async (c) => {
+  try {
+    const db = getDb();
+    const clientId = Number(c.req.param("client_id"));
+    const client = db.query("SELECT id, name, tenant_id FROM clients WHERE id = $id AND tenant_id = $tenant_id").get({ $id: clientId, $tenant_id: c.get("tenant_id") as number }) as { id: number; name: string; tenant_id: number } | undefined;
+    if (!client) {
+      return c.json({ error: "Client not found" }, 404);
+    }
+    const config = db.query(
+      "SELECT monthly_report_recipients FROM client_email_config WHERE client_id = $client_id AND client_id IN (SELECT id FROM clients WHERE tenant_id = $tenant_id)"
+    ).get({ $client_id: clientId, $tenant_id: c.get("tenant_id") as number }) as { monthly_report_recipients: string | null } | undefined;
+    if (!config?.monthly_report_recipients) {
+      return c.json({ error: "No monthly report recipients configured. Set them up first." }, 400);
+    }
+    const recipients = parseRecipients(config.monthly_report_recipients);
+    const dryRun = c.req.query("dry_run") === "1" || c.req.query("dry_run") === "true";
+
+    // Same gather → generate → store → send pipeline as the 1st-of-month
+    // scheduler (gatherReportData refreshes compliance in one pass).
+    const reportData = gatherReportData(clientId);
+    const timestamp = Date.now();
+    const clientSlug = client.name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
+    const tenantPrefix = `reports/tenant-${c.get("tenant_id") as number}`;
+    const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
+    const pdfDoc = generatePdfReport(reportData);
+    const pdfBuffers: Buffer[] = [];
+    for await (const chunk of pdfDoc) {
+      pdfBuffers.push(Buffer.from(chunk));
+    }
+    await storagePut(`${tenantPrefix}/${pdfFilename}`, Buffer.concat(pdfBuffers), "application/pdf");
+    const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
+    const xlsxBuffer = await generateExcelReport(reportData);
+    await storagePut(`${tenantPrefix}/${xlsxFilename}`, xlsxBuffer,
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    const attachments = [
+      { filename: pdfFilename, contentType: "application/pdf", storageKey: `${tenantPrefix}/${pdfFilename}` },
+      { filename: xlsxFilename, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", storageKey: `${tenantPrefix}/${xlsxFilename}` },
+    ];
+
+    const now = new Date();
+    const totalVendors = reportData.approved.length + reportData.review.length + reportData.hold.length;
+    const approved = reportData.approved.length;
+    const review = reportData.review.length;
+    const hold = reportData.hold.length;
+    const compliancePercentage = totalVendors > 0 ? (approved / totalVendors) * 100 : 0;
+    const emailBody = buildMonthlyReportEmail(client.name, {
+      compliance_percentage: compliancePercentage,
+      total_vendors: totalVendors,
+      approved,
+      review,
+      hold,
+      month: MONTH_NAMES[now.getUTCMonth()],
+      year: now.getUTCFullYear(),
+    });
+    const subject = `Monthly Compliance Report — ${MONTH_NAMES[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
+
+    if (!dryRun) {
+      await sendEmail(recipients, subject, emailBody, clientId, undefined, "monthly_report", attachments);
+    } else {
+      console.log(`[run-monthly] DRY RUN for client ${clientId} — report generated/stored but NOT emailed`);
+    }
+    return c.json({
+      success: true,
+      dry_run: dryRun,
+      recipients,
+      subject,
+      attachments: attachments.map((a) => ({ filename: a.filename, contentType: a.contentType })),
+      summary: {
+        vendor_count: totalVendors,
+        document_row_count: countDocumentRows(reportData),
+        approved_vendors: approved,
+        review_vendors: review,
+        hold_vendors: hold,
+        expiring_count: reportData.expiring_during_week.length,
+        missing_count: reportData.missing_docs.length,
+        needs_attention_count: reportData.needs_attention.length,
+      },
+      period: `${MONTH_NAMES[now.getUTCMonth()]} ${now.getUTCFullYear()}`,
+    });
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
 // POST /api/emails/test-renewal/:document_id — manually send a renewal reminder
 app.post("/api/emails/test-renewal/:document_id", async (c) => {
   try {

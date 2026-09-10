@@ -41,6 +41,19 @@ export interface ReportData {
     vendor_name: string;
     missing_types: string[];
   }>;
+  /**
+   * Documents that will expire but have NO contact address recorded (neither a
+   * COI producer email nor a document sender email), so the automated renewal
+   * reminder cannot reach anyone. Surfaced here (bug #11) instead of being
+   * silently skipped by the scheduler — the client/owner must supply a contact
+   * for these vendors or follow up manually.
+   */
+  needs_attention: Array<{
+    document_id: number;
+    vendor_name: string;
+    document_type: string;
+    expiration_date: string;
+  }>;
 }
 
 const REPORTS_DIR = path.join(import.meta.dir, "..", "data", "reports");
@@ -219,7 +232,44 @@ export function gatherReportData(clientId: number): ReportData {
     hold,
     expiring_during_week: expiringDuringWeek,
     missing_docs: missingDocs,
+    needs_attention: gatherNeedsAttention(clientId),
   };
+}
+
+/**
+ * Documents that expire but have no recipient address for renewal reminders —
+ * exactly the set the scheduler's checkRenewals would skip (producer_email and
+ * sender_email both empty). Bug #11: instead of silently dropping these, list
+ * them in the weekly report so the client/owner knows which vendors need a
+ * contact email or manual follow-up. Query mirrors scheduler.ts checkRenewals
+ * (reviewed docs with a real expiration date); no address is fabricated.
+ */
+function gatherNeedsAttention(clientId: number): ReportData["needs_attention"] {
+  const db = getDb();
+  const rows = db.query(`
+    SELECT d.id as document_id, de.document_type, de.expiration_date, v.name as vendor_name
+    FROM documents d
+    JOIN document_extractions de ON de.document_id = d.id
+    JOIN vendors v ON v.id = d.vendor_id
+    WHERE d.client_id = $client_id
+      AND de.is_reviewed = 1
+      AND de.expiration_date IS NOT NULL
+      AND de.expiration_date != ''
+      AND (de.producer_email IS NULL OR TRIM(de.producer_email) = '')
+      AND (d.sender_email IS NULL OR TRIM(d.sender_email) = '')
+    ORDER BY de.expiration_date ASC
+  `).all({ $client_id: clientId }) as Array<{
+    document_id: number;
+    document_type: string;
+    expiration_date: string;
+    vendor_name: string;
+  }>;
+  return rows.map((r) => ({
+    document_id: r.document_id,
+    vendor_name: r.vendor_name,
+    document_type: r.document_type,
+    expiration_date: r.expiration_date,
+  }));
 }
 
 // ── Colors ───────────────────────────────────────────────
@@ -457,6 +507,21 @@ export function generatePdfReport(data: ReportData): PDFKit.PDFDocument {
     COLORS.red
   );
 
+  // ── Section 6: Needs Attention — No Contact for Renewal Reminder ──
+  // Bug #11 surfacing: reviewed documents that will expire but have no
+  // producer/sender email recorded, so the automated renewal reminder cannot
+  // reach anyone. The client must add a contact for these vendors or follow up
+  // manually — they are no longer silently dropped.
+  renderSection(
+    doc,
+    "6. Needs Attention — No Contact for Renewal Reminder",
+    COLORS.blue,
+    data.needs_attention,
+    ["Vendor Name", "Document Type", "Expiration Date"],
+    (n) => [n.vendor_name, n.document_type, formatDate(n.expiration_date)],
+    COLORS.blue
+  );
+
   // Finalize
   doc.end();
   return doc;
@@ -628,8 +693,12 @@ export async function generateExcelReport(data: ReportData): Promise<Buffer> {
   const missingSheet = wb.addWorksheet("Missing");
   buildMissingSheet(missingSheet, data.missing_docs);
 
+  // ── Needs Attention Sheet (bug #11: docs expiring with no reminder contact) ──
+  const needsAttentionSheet = wb.addWorksheet("Needs Attention");
+  buildNeedsAttentionSheet(needsAttentionSheet, data.needs_attention);
+
   // ── Administrative notice on every worksheet ──
-  for (const sheet of [summarySheet, approvedSheet, reviewSheet, holdSheet, expiringSheet, missingSheet]) {
+  for (const sheet of [summarySheet, approvedSheet, reviewSheet, holdSheet, expiringSheet, missingSheet, needsAttentionSheet]) {
     addReportNotice(sheet, data.report_date);
   }
 
@@ -677,6 +746,7 @@ function buildSummarySheet(
     { label: "Hold Payment", count: data.hold.length, color: COLORS.red },
     { label: "Expiring During Payment Week", count: data.expiring_during_week.length, color: COLORS.amber },
     { label: "Missing Required Documents", count: data.missing_docs.length, color: COLORS.red },
+    { label: "Needs Attention (No Reminder Contact)", count: data.needs_attention.length, color: COLORS.blue },
   ];
 
   let row = 6;
@@ -815,5 +885,39 @@ function buildMissingSheet(
 
   if (rows.length === 0) {
     sheet.addRow({ vendor_name: "No vendors have missing documents" });
+  }
+}
+
+/** Bug #11: docs that expire but have no contact recorded for renewal reminders. */
+function buildNeedsAttentionSheet(
+  sheet: ExcelJS.Worksheet,
+  rows: ReportData["needs_attention"]
+) {
+  sheet.columns = [
+    { header: "Vendor Name", key: "vendor_name", width: 30 },
+    { header: "Document Type", key: "document_type", width: 24 },
+    { header: "Expiration Date", key: "expiration_date", width: 18 },
+  ];
+
+  const headerRow = sheet.getRow(1);
+  headerRow.eachCell((cell) => {
+    cell.fill = {
+      type: "pattern",
+      pattern: "solid",
+      fgColor: { argb: "FF1a56db" },
+    };
+    cell.font = { bold: true, size: 10, color: { argb: "FFFFFFFF" } };
+  });
+
+  for (const n of rows) {
+    sheet.addRow({
+      vendor_name: n.vendor_name,
+      document_type: n.document_type,
+      expiration_date: n.expiration_date,
+    });
+  }
+
+  if (rows.length === 0) {
+    sheet.addRow({ vendor_name: "No documents are missing a reminder contact" });
   }
 }

@@ -370,10 +370,13 @@ export function buildWeeklyReportEmail(
     hold_count: number;
     expiring_count: number;
     missing_count: number;
+    /** Bug #11: docs expiring with no reminder contact (producer/sender email). */
+    needs_attention_count?: number;
     payment_week: { week_start: string; week_end: string };
     report_date: string;
   },
 ): string {
+  const needsAttentionCount = reportSummary.needs_attention_count ?? 0;
   return `
 <!DOCTYPE html>
 <html>
@@ -415,12 +418,20 @@ export function buildWeeklyReportEmail(
         <td style="padding: 8px 10px;">❌ Missing Required Documents</td>
         <td style="padding: 8px 10px; text-align: right; font-weight: bold; color: #dc2626;">${reportSummary.missing_count}</td>
       </tr>
+      <tr>
+        <td style="padding: 8px 10px;">📞 Needs Attention — No Contact for Renewal Reminder</td>
+        <td style="padding: 8px 10px; text-align: right; font-weight: bold; color: #1a56db;">${needsAttentionCount}</td>
+      </tr>
     </table>
 
     <p style="margin: 0 0 8px; font-size: 13px; color: #6b7280;">
       A full PDF and Excel report is attached to this email.
     </p>
-
+    ${needsAttentionCount > 0
+      ? `<p style="margin: 0 0 8px; font-size: 13px; color: #1a56db;">
+      ⚠️ ${needsAttentionCount} document(s) are expiring but we have no contact email on file for their renewal reminder (no COI producer or submitter email). See the "Needs Attention" section of the attached report and add a contact for these vendors.
+    </p>`
+      : ""}
     <p style="margin: 0; font-size: 13px; color: #6b7280;">
       Log in to your <a href="${getAppBaseUrl()}" style="color: #1a56db;">ClearToPay dashboard</a> to view full details and manage your vendors.
     </p>

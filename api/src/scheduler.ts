@@ -23,6 +23,14 @@ import { runBackupAndRetain } from "./backups";
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 let inboxPollInterval: ReturnType<typeof setInterval> | null = null;
 
+/**
+ * The API's real internal listen port — mirrors index.ts `export default
+ * { port: 3001 }`. Used for loopback self-calls (e.g. /api/emails/process-queue)
+ * because the public proxy port that leaks into process.env.PORT (80) is NOT
+ * where the API listens.
+ */
+export const INTERNAL_API_PORT = 3001;
+
 function inboxPollTick(): void {
   try {
     const db = getDb();
@@ -270,6 +278,7 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
         hold_count: reportData.hold.length,
         expiring_count: reportData.expiring_during_week.length,
         missing_count: reportData.missing_docs.length,
+        needs_attention_count: reportData.needs_attention.length,
         payment_week: reportData.payment_week,
         report_date: reportData.report_date,
       });
@@ -354,9 +363,13 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
   // The delivery worker can pick these queued messages up immediately after the
   // weekly batch is created. The endpoint is local-only by convention and still
   // requires the shared queue secret.
+  // NOTE: the self-call MUST use the API's real internal listen port (3001 —
+  // see index.ts `export default { port: 3001 }`), NOT process.env.PORT: in
+  // production the PUBLIC proxy port (80) leaks into the process environment
+  // while the API itself only listens on 3001, so `process.env.PORT` made
+  // every weekly run self-call http://127.0.0.1 → ConnectionRefused.
   try {
-    const port = process.env.PORT || "3001";
-    const response = await fetch(`http://127.0.0.1:${port}/api/emails/process-queue`, {
+    const response = await fetch(`http://127.0.0.1:${INTERNAL_API_PORT}/api/emails/process-queue`, {
       method: "POST",
       headers: { "X-Queue-Secret": QUEUE_SECRET },
     });
@@ -534,21 +547,43 @@ async function checkMonthly(now: Date, todayStr: string): Promise<void> {
     try {
       console.log(`[scheduler] Generating monthly report for client ${config.client_id} (${config.client_name})`);
 
-      // Recalculate accurate compliance first so the counts below are never
-      // based on stale (or COI-only) cached values.
-      if (config.tenant_id) calculateClientCompliance(config.client_id, config.tenant_id);
-      // Get compliance summary for this client
-      const vendors = db.query(`
-        SELECT v.id, cs.payment_status
-        FROM vendors v
-        LEFT JOIN compliance_status cs ON cs.vendor_id = v.id
-        WHERE v.client_id = $client_id
-      `).all({ $client_id: config.client_id }) as Array<{ id: number; payment_status: string | null }>;
+      // Same gather → generate → store → send pipeline as the weekly report:
+      // gatherReportData recomputes fresh compliance in a single pass, then the
+      // PDF + Excel reports are persisted via the storage layer and attached to
+      // the email (the monthly email carries the same full report files as the
+      // weekly one — previously it shipped a text-only summary with no
+      // attachments, so recipients had no document-level detail and the PDF/XLSX
+      // the product promises never arrived).
+      const reportData = gatherReportData(config.client_id);
+      const timestamp = Date.now();
+      const clientSlug = config.client_name.replace(/[^a-zA-Z0-9]/g, "_").substring(0, 40);
+      const tenantPrefix = `reports/tenant-${config.tenant_id ?? "unknown"}`;
 
-      const totalVendors = vendors.length;
-      const approved = vendors.filter((v) => v.payment_status === "approved").length;
-      const review = vendors.filter((v) => v.payment_status === "review").length;
-      const hold = vendors.filter((v) => v.payment_status === "hold" || !v.payment_status).length;
+      const pdfFilename = `ClearToPay_${clientSlug}_${timestamp}.pdf`;
+      const pdfDoc = generatePdfReport(reportData);
+      const pdfBuffers: Buffer[] = [];
+      for await (const chunk of pdfDoc) {
+        pdfBuffers.push(Buffer.from(chunk));
+      }
+      await storagePut(`${tenantPrefix}/${pdfFilename}`, Buffer.concat(pdfBuffers), "application/pdf");
+
+      const xlsxFilename = `ClearToPay_${clientSlug}_${timestamp}.xlsx`;
+      const xlsxBuffer = await generateExcelReport(reportData);
+      await storagePut(`${tenantPrefix}/${xlsxFilename}`, xlsxBuffer,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+
+      const attachments = [
+        { filename: pdfFilename, contentType: "application/pdf", storageKey: `${tenantPrefix}/${pdfFilename}` },
+        { filename: xlsxFilename, contentType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", storageKey: `${tenantPrefix}/${xlsxFilename}` },
+      ];
+
+      // Compliance summary for the email body, derived from the same fresh
+      // report data (every vendor has a computed payment_status after
+      // gatherReportData, so approved + review + hold == total_vendors).
+      const totalVendors = reportData.approved.length + reportData.review.length + reportData.hold.length;
+      const approved = reportData.approved.length;
+      const review = reportData.review.length;
+      const hold = reportData.hold.length;
       const compliancePercentage = totalVendors > 0 ? (approved / totalVendors) * 100 : 0;
 
       const emailBody = buildMonthlyReportEmail(config.client_name, {
@@ -564,7 +599,10 @@ async function checkMonthly(now: Date, todayStr: string): Promise<void> {
       const recipients = parseRecipients(config.monthly_report_recipients);
       const subject = `Monthly Compliance Report — ${monthNames[now.getUTCMonth()]} ${now.getUTCFullYear()}`;
 
-      sendEmail(recipients, subject, emailBody, config.client_id, undefined, "monthly_report");
+      // Awaited, one client at a time — the previous code fired all sends in
+      // parallel without await, so large books slammed Graph with concurrent
+      // sendMail calls (2 of 6 September sends timed out).
+      await sendEmail(recipients, subject, emailBody, config.client_id, undefined, "monthly_report", attachments);
       console.log(`[scheduler] Monthly report sent for client ${config.client_id}`);
     } catch (err) {
       console.error(`[scheduler] Error generating monthly report for client ${config.client_id}:`, err);
@@ -641,7 +679,12 @@ function checkRenewals(now: Date, todayStr: string): void {
       // reminder until a producer or sender email is recorded).
       const recipientEmail = (doc.producer_email ?? "").trim() || (doc.sender_email ?? "").trim();
       if (!recipientEmail) {
-        console.log(`[scheduler] Renewal reminder skipped for document ${doc.document_id} (${doc.vendor_name} — ${doc.document_type}): no producer_email and no sender_email`);
+        // Bug #11: never silently drop a real document's reminder. These docs
+        // are surfaced in the weekly report's "Needs Attention — No Contact for
+        // Renewal Reminder" section (reports.ts gatherReportData needs_attention)
+        // so the client/owner can see which vendors still need a contact email;
+        // the log line below makes the manual-review bucket greppable.
+        console.log(`[scheduler] Renewal reminder NO CONTACT — NEEDS MANUAL REVIEW for document ${doc.document_id} (${doc.vendor_name} — ${doc.document_type}, expires ${doc.expiration_date}): no producer_email and no sender_email recorded`);
         continue;
       }
 
