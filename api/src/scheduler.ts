@@ -388,21 +388,48 @@ async function checkWeekly(now: Date, todayStr: string): Promise<void> {
 // ── Nightly Offsite Backup ──────────────────────────────
 
 async function checkBackup(now: Date): Promise<void> {
-  // Nightly window 03:00–05:59 AM ET with at-most-once-per-day semantics. If
-  // the 03:00 attempt fails, the marker is not set, so 04:00/05:00 retry;
-  // after a success (or at 06:00) the next attempt is tomorrow night.
-  const ny = nyWallClock(now);
-  if (ny.hour < 3 || ny.hour > 5) return;
+  // At-most-once-per-day backup with missed-day catch-up.
+  //
+  // WHY THERE IS NO TIME WINDOW (fixed 2026-09-10): the previous gate only ran
+  // the backup on ticks inside 03:00–05:59 AM ET. The API process is recycled by
+  // the platform roughly daily around 21:00–21:45 UTC (5–6 PM ET — visible in
+  // the scheduler_state updated_at markers, which are all set within a second of
+  // process start), so it is rarely alive inside that window: backups fired on
+  // only 5 scattered days (Aug 15/19/23/26/28 — days when a restart happened to
+  // land in-window) and then silently stopped for 13 days while the rest of the
+  // scheduler kept ticking (daily renewals and weekly/monthly markers all stay
+  // current). A backup must never depend on the process surviving to a narrow
+  // hour of the night: ANY tick on a day whose backup has not succeeded yet
+  // triggers the job, so a missed night is caught up on the very next tick, and
+  // the persisted last_backup_date marker (UTC day — same date source as the
+  // backups/cleartopay-<date>.db key in runBackupAndRetain) stops more than one
+  // run per day.
   const db = getDb();
-  const todayStr = `${ny.year}-${String(ny.month).padStart(2, "0")}-${String(ny.day).padStart(2, "0")}`;
+  const todayStr = now.toISOString().slice(0, 10);
   if (getSchedulerState(db, "last_backup_date") === todayStr) return;
 
-  console.log(`[scheduler] Nightly backup ${todayStr} 03:00+ AM ET — starting`);
+  // Failure backoff: the tick fires every 60s, so without a cooldown a
+  // persistently failing backup (e.g. object storage down) would write one
+  // backup_log error row per minute all day. After any attempt, at most one
+  // retry per 60 minutes; only a success moves last_backup_date forward.
+  const lastAttempt = getSchedulerState(db, "last_backup_attempt_time");
+  if (lastAttempt) {
+    const lastMs = Date.parse(lastAttempt.endsWith("Z") ? lastAttempt : lastAttempt + "Z");
+    if (!isNaN(lastMs) && now.getTime() - lastMs < 60 * 60 * 1000) return;
+  }
+
+  console.log(`[scheduler] Daily backup ${todayStr} (UTC) — starting`);
+  setSchedulerState(db, "last_backup_attempt_time", now.toISOString());
   try {
     const result = await runBackupAndRetain(now);
-    if (result.ok) setSchedulerState(db, "last_backup_date", todayStr);
+    if (result.ok) {
+      setSchedulerState(db, "last_backup_date", todayStr);
+      console.log(`[scheduler] Daily backup ${todayStr} complete (${result.backupKey}, ${result.sizeBytes} bytes)`);
+    } else {
+      console.error(`[scheduler] Daily backup ${todayStr} failed (will retry in ≥60m): ${result.error ?? "unknown error"}`);
+    }
   } catch (err) {
-    console.error(`[scheduler] Nightly backup error: ${String(err)}`);
+    console.error(`[scheduler] Daily backup error: ${String(err)}`);
   }
 }
 

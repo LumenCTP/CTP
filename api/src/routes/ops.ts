@@ -14,7 +14,9 @@ const app = new Hono();
 // NOT part of the tenant API — nothing here is reachable without X-Queue-Secret.
 
 // POST /api/ops/backup — run the nightly backup job now (VACUUM INTO → R2 →
-// retention). Mirrors exactly what the scheduler does at 03:00 ET.
+// retention). Mirrors exactly what the scheduler's daily backup check does
+// (same date-keyed dedupe; the scheduler itself no longer requires a 03:00 ET
+// window — see checkBackup in scheduler.ts).
 app.post("/api/ops/backup", async (c) => {
   const denied = requireQueueSecret(c);
   if (denied) return denied;
