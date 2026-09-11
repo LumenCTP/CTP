@@ -36,6 +36,23 @@ interface VendorOption {
   client_id: number;
 }
 
+interface RunWeeklyResult {
+  success: boolean;
+  dry_run: boolean;
+  recipients: string[];
+  subject: string;
+  attachments: { filename: string; contentType: string }[];
+  summary: {
+    vendor_count: number;
+    document_row_count: number;
+    approved_vendors: number;
+    review_vendors: number;
+    hold_vendors: number;
+    expiring_count: number;
+    missing_count: number;
+  };
+}
+
 export default function Reports() {
   const [clients, setClients] = useState<ClientWithRequiredDocs[]>([]);
   const [selectedClientId, setSelectedClientId] = useState<number | null>(null);
@@ -56,6 +73,12 @@ export default function Reports() {
   const [auditError, setAuditError] = useState<string | null>(null);
   const [vendors, setVendors] = useState<VendorOption[]>([]);
   const [vendorsLoading, setVendorsLoading] = useState(false);
+
+  // ── Run Weekly Now State ──
+  const [weeklyLoading, setWeeklyLoading] = useState(false);
+  const [weeklyConfirm, setWeeklyConfirm] = useState(false);
+  const [weeklyResult, setWeeklyResult] = useState<RunWeeklyResult | null>(null);
+  const [weeklyError, setWeeklyError] = useState<string | null>(null);
 
   // Load clients list
   useEffect(() => {
@@ -222,6 +245,40 @@ export default function Reports() {
       setAuditError(err instanceof Error ? err.message : String(err));
     } finally {
       setAuditLoading(false);
+    }
+  };
+
+  const runWeekly = async (dryRun: boolean) => {
+    if (!selectedClientId) return;
+
+    setWeeklyLoading(true);
+    setWeeklyError(null);
+    setWeeklyResult(null);
+
+    try {
+      // Backend exists and is live: POST /api/emails/run-weekly/:client_id
+      // (real send, tenant-scoped, marks weekly-sent). ?dry_run=1 generates +
+      // stores the PDF/XLSX but sends NO email and does NOT mark the week sent.
+      const res = await apiFetch(
+        `/api/emails/run-weekly/${selectedClientId}${dryRun ? "?dry_run=1" : ""}`,
+        { method: "POST" },
+      );
+
+      const data = await res.json().catch(() => null);
+      if (!res.ok) {
+        const msg =
+          (data && (data.error || data.message)) ||
+          (res.status === 400
+            ? "No weekly report recipients configured for this client."
+            : `HTTP ${res.status}`);
+        throw new Error(msg);
+      }
+      setWeeklyResult(data as RunWeeklyResult);
+      setWeeklyConfirm(false);
+    } catch (err) {
+      setWeeklyError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setWeeklyLoading(false);
     }
   };
 
@@ -415,6 +472,114 @@ export default function Reports() {
               )}
             </div>
           )}
+          {/* ── Run Weekly Report Now ── */}
+          <div style={{ marginTop: 48, borderTop: "2px solid #e5e7eb", paddingTop: 32 }}>
+            <div className="page-header" style={{ marginBottom: 16 }}>
+              <h3 className="page-title" style={{ fontSize: "1.25rem" }}>Run Weekly Report Now</h3>
+              <p style={{ color: "#6b7280", fontSize: "0.875rem", marginTop: 4 }}>
+                Send this week's Clear-to-Pay report to the client's configured recipients immediately —
+                the same report the automated Monday delivery would send.
+              </p>
+            </div>
+
+            <div className="report-config-panel">
+              <div className="config-row" style={{ flexWrap: "wrap", gap: 12 }}>
+                <div className="form-group" style={{ flex: "1 1 240px" }}>
+                  <label>Client</label>
+                  <div style={{ paddingTop: 8, fontWeight: 500 }}>
+                    {clientName || "—"}
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ alignSelf: "flex-end" }}>
+                  <button
+                    className="btn btn-primary"
+                    onClick={() => setWeeklyConfirm(true)}
+                    disabled={weeklyLoading || !selectedClientId}
+                  >
+                    {weeklyLoading ? "Working…" : "📧 Email Weekly Report"}
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    type="button"
+                    style={{ marginLeft: 8 }}
+                    onClick={() => runWeekly(true)}
+                    disabled={weeklyLoading || !selectedClientId}
+                  >
+                    Preview (no email)
+                  </button>
+                </div>
+              </div>
+
+              {weeklyConfirm && !weeklyLoading && (
+                <div
+                  className="success-message"
+                  style={{ marginTop: 12, marginBottom: 0, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}
+                >
+                  <span>
+                    This will email the Clear-to-Pay report to{" "}
+                    <strong>{clientName || "this client"}</strong>'s configured recipients right now.
+                    Continue?
+                  </span>
+                  <span style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
+                    <button
+                      className="btn btn-primary btn-sm"
+                      type="button"
+                      onClick={() => runWeekly(false)}
+                      disabled={weeklyLoading}
+                    >
+                      Send Email
+                    </button>
+                    <button
+                      className="btn btn-outline btn-sm"
+                      type="button"
+                      onClick={() => setWeeklyConfirm(false)}
+                      disabled={weeklyLoading}
+                    >
+                      Cancel
+                    </button>
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* Weekly Error */}
+            {weeklyError && (
+              <div className="error-message" style={{ marginBottom: 16 }}>
+                {weeklyError}
+              </div>
+            )}
+
+            {/* Weekly Success */}
+            {weeklyResult && weeklyResult.success && !weeklyError && (
+              <div className="success-message" style={{ marginBottom: 16 }}>
+                {weeklyResult.dry_run ? (
+                  <>
+                    Preview generated for <strong>{clientName}</strong> — no email was sent. Files
+                    stored:{" "}
+                    <strong>
+                      {weeklyResult.attachments.map((a) => a.filename).join(", ")}
+                    </strong>
+                    .
+                  </>
+                ) : (
+                  <>
+                    Weekly Clear-to-Pay report emailed to{" "}
+                    <strong>{weeklyResult.recipients.join(", ") || "configured recipients"}</strong>{" "}
+                    for <strong>{clientName}</strong>!
+                  </>
+                )}
+                <div style={{ marginTop: 6, fontSize: 12, color: "#6b7280" }}>
+                  {weeklyResult.summary.approved_vendors} approved ·{" "}
+                  {weeklyResult.summary.review_vendors} review ·{" "}
+                  {weeklyResult.summary.hold_vendors} hold ·{" "}
+                  {weeklyResult.summary.expiring_count} expiring ·{" "}
+                  {weeklyResult.summary.missing_count} missing
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* ── Audit Package Generator ── */}
           <div style={{ marginTop: 48, borderTop: "2px solid #e5e7eb", paddingTop: 32 }}>
             <div className="page-header" style={{ marginBottom: 16 }}>
