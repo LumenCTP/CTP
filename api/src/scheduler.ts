@@ -1,5 +1,6 @@
 import { getDb } from "./db";
 import { slugFromToAddress } from "./lib/inbox";
+import { findDueReminderWindow, renewalExpiryPhrase } from "./renewals";
 import { gatherReportData, generatePdfReport, generateExcelReport } from "./reports";
 import {
   sendEmail,
@@ -667,8 +668,6 @@ function checkRenewals(now: Date, todayStr: string): void {
     WHERE cec.renewal_reminders_enabled = 1
   `).all() as Array<{ client_id: number; client_name: string; tenant_id: number | null }>;
 
-  // Reminder windows: 30, 15, 7, 0 days before expiration
-  const REMINDER_WINDOWS = [30, 15, 7, 0];
 
   for (const config of configs) {
     // Find all reviewed documents for this client's vendors that have expiration dates.
@@ -719,47 +718,44 @@ function checkRenewals(now: Date, todayStr: string): void {
       const diffMs = expDate.getTime() - now.getTime();
       const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
-      // Check each reminder window
-      for (const window of REMINDER_WINDOWS) {
-        if (diffDays === window) {
-          // Check if we already sent this reminder
-          if (hasReminderBeenSent(doc.document_id, window)) {
-            continue;
-          }
-
-          try {
-            console.log(`[scheduler] Sending ${window}-day renewal reminder for document ${doc.document_id} (${doc.vendor_name} — ${doc.document_type}) → ${recipientEmail}`);
-
-            const emailBody = buildRenewalReminderEmail(
-              doc.vendor_name,
-              doc.document_type,
-              doc.expiration_date,
-              window,
-              config.tenant_id,
-              doc.producer_name,
-            );
-            const outreach = hasPriorYearW9(db, doc.vendor_id, now.getFullYear() - 1)
-              ? "Please submit an updated Certificate of Insurance (COI)."
-              : "Please submit an updated Certificate of Insurance (COI) and a new W-9 form.";
-            const emailBodyWithOutreach = `${emailBody}\n\n${outreach}`;
-
-            const subject = `Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${window === 0 ? "today" : `in ${window} days`}`;
-
-            sendEmail(
-              [recipientEmail],
-              subject,
-              emailBodyWithOutreach,
-              config.client_id,
-              doc.vendor_id,
-              "renewal_reminder",
-            );
-
-            markReminderSent(doc.document_id, window);
-            console.log(`[scheduler] Renewal reminder sent: doc ${doc.document_id}, window ${window} days`);
-          } catch (err) {
-            console.error(`[scheduler] Error sending renewal reminder for document ${doc.document_id}:`, err);
-          }
-        }
+      // Send-if-not-sent windowing: a reminder window is DUE once the remaining
+      // days drop to or below the window threshold (renewals.ts), so a window
+      // whose exact calendar day was missed — e.g. the API was down on the
+      // 30-day mark — still fires on the next daily scan instead of being
+      // permanently skipped. At most ONE reminder per document per scan (the
+      // most urgent due window) is sent, and renewal_reminders_sent dedup
+      // guarantees each doc+window pair sends exactly once.
+      const dueWindow = findDueReminderWindow(diffDays);
+      if (dueWindow === null) continue; // no reminder window due yet
+      if (hasReminderBeenSent(doc.document_id, dueWindow)) continue;
+      const remainingDays = Math.max(0, diffDays);
+      try {
+        console.log(`[scheduler] Sending ${dueWindow}-day renewal reminder for document ${doc.document_id} (${doc.vendor_name} — ${doc.document_type}) → ${recipientEmail}`);
+        const emailBody = buildRenewalReminderEmail(
+          doc.vendor_name,
+          doc.document_type,
+          doc.expiration_date,
+          remainingDays,
+          config.tenant_id,
+          doc.producer_name,
+        );
+        const outreach = hasPriorYearW9(db, doc.vendor_id, now.getFullYear() - 1)
+          ? "Please submit an updated Certificate of Insurance (COI)."
+          : "Please submit an updated Certificate of Insurance (COI) and a new W-9 form.";
+        const emailBodyWithOutreach = `${emailBody}\n\n${outreach}`;
+        const subject = `Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${renewalExpiryPhrase(remainingDays)}`;
+        sendEmail(
+          [recipientEmail],
+          subject,
+          emailBodyWithOutreach,
+          config.client_id,
+          doc.vendor_id,
+          "renewal_reminder",
+        );
+        markReminderSent(doc.document_id, dueWindow);
+        console.log(`[scheduler] Renewal reminder sent: doc ${doc.document_id}, window ${dueWindow} days`);
+      } catch (err) {
+        console.error(`[scheduler] Error sending renewal reminder for document ${doc.document_id}:`, err);
       }
     }
   }

@@ -2,9 +2,11 @@ import { Hono } from "hono";
 import { serverError } from "../errors";
 import { getDb } from "../db";
 import { requireQueueSecret } from "../middleware";
-import { sendEmail, buildWeeklyReportEmail, buildMonthlyReportEmail, buildRenewalReminderEmail, parseRecipients, parseAttachmentsJson, resolveEmailAttachments } from "../email";
+import { sendEmail, buildWeeklyReportEmail, buildMonthlyReportEmail, buildRenewalReminderEmail, parseRecipients, parseAttachmentsJson, resolveEmailAttachments, hasReminderBeenSent, markReminderSent } from "../email";
 import { gatherReportData, generatePdfReport, generateExcelReport, countDocumentRows } from "../reports";
 import { markWeeklySent } from "../scheduler";
+import { findDueReminderWindow, REMINDER_WINDOWS, renewalExpiryPhrase } from "../renewals";
+import { hasPriorYearW9 } from "../mapping";
 import { QUEUE_SECRET } from "../secrets";
 import { storagePut } from "../storage";
 
@@ -492,6 +494,7 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
   try {
     const db = getDb();
     const docId = Number(c.req.param("document_id"));
+    const tenantId = c.get("tenant_id") as number;
 
     const doc = db.query(`
       SELECT d.id, d.vendor_id, d.client_id, d.document_type, d.sender_email,
@@ -500,7 +503,7 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
       JOIN document_extractions de ON de.document_id = d.id
       JOIN vendors v ON v.id = d.vendor_id
       WHERE d.id = $id AND de.is_reviewed = 1 AND d.tenant_id = $tenant_id
-    `).get({ $id: docId, $tenant_id: c.get("tenant_id") }) as {
+    `).get({ $id: docId, $tenant_id: tenantId }) as {
       id: number; vendor_id: number; client_id: number; document_type: string;
       sender_email: string | null; expiration_date: string | null;
       producer_email: string | null; producer_name: string | null; vendor_name: string;
@@ -510,10 +513,10 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
       return c.json({ error: "Document not found or not reviewed" }, 404);
     }
 
-    // Recipient preference — same order as the scheduler's renewal job:
-    // producer_email (COI agency/agent contact) first, falling back to
-    // sender_email (the submitter). A manually-entered doc with only a
-    // producer email must still get a reminder.
+    // Recipient preference — same order as the scheduler's renewal job
+    // (scheduler.ts checkRenewals): producer_email (COI agency/agent contact)
+    // first, falling back to sender_email (the submitter). A manually-entered
+    // doc with only a producer email must still get a reminder.
     const recipient = (doc.producer_email ?? "").trim() || (doc.sender_email ?? "").trim();
     if (!recipient) {
       return c.json({ error: "No producer email or sender email on this document" }, 400);
@@ -527,18 +530,72 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
     const diffMs = expDate.getTime() - Date.now();
     const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
 
+    // Same windowing as the scheduled job: if no reminder window is currently
+    // due, the scheduler would not send either — so neither do we (faithful
+    // preview). Window selection + dedup keys live in src/renewals.ts so the
+    // two paths cannot drift.
+    const dueWindow = findDueReminderWindow(diffDays);
+    if (dueWindow === null) {
+      return c.json({
+        error: `No reminder window is due for this document yet (windows: ${[...REMINDER_WINDOWS].sort((a, b) => a - b).join("/")} days before expiry) - the scheduled job will send it once a window becomes due`,
+        days_until_expiry: diffDays,
+        windows: [...REMINDER_WINDOWS].sort((a, b) => a - b),
+      }, 400);
+    }
+
+    // Same dedup as the scheduled job: never send the same doc+window twice
+    // (renewal_reminders_sent). A manual send marks the window as sent so the
+    // scheduler will not duplicate it on the next daily scan.
+    if (hasReminderBeenSent(docId, dueWindow)) {
+      return c.json({
+        error: `A ${dueWindow}-day renewal reminder was already sent for this document`,
+        deduplicated: true,
+        window: dueWindow,
+        days_until_expiry: diffDays,
+      }, 409);
+    }
+
+    const remainingDays = Math.max(0, diffDays);
+    // Same email content as the scheduled job: identical body (incl. tenant
+    // inbox address + COI/W-9 outreach line) and subject line.
     const emailBody = buildRenewalReminderEmail(
       doc.vendor_name,
       doc.document_type,
       doc.expiration_date,
-      Math.max(0, diffDays),
-      undefined,
+      remainingDays,
+      tenantId,
       doc.producer_name,
     );
+    const outreach = hasPriorYearW9(db, doc.vendor_id, new Date().getFullYear() - 1)
+      ? "Please submit an updated Certificate of Insurance (COI)."
+      : "Please submit an updated Certificate of Insurance (COI) and a new W-9 form.";
+    const emailBodyWithOutreach = `${emailBody}\n\n${outreach}`;
+    const subject = `Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${renewalExpiryPhrase(remainingDays)}`;
 
-    const subject = `[TEST] Reminder: ${doc.document_type} for ${doc.vendor_name} expires ${diffDays <= 0 ? "today" : `in ${diffDays} days`}`;
+    // dry_run=1 returns a faithful preview of what the scheduler would send
+    // (same windowing, same dedup key, same subject/body) WITHOUT sending the
+    // email or marking the window as sent — the scheduled job still fires it
+    // on its next daily scan. Mirrors the run-weekly/test-weekly house pattern.
+    const dryRun = c.req.query("dry_run") === "1" || c.req.query("dry_run") === "true";
+    if (dryRun) {
+      return c.json({
+        success: true,
+        dry_run: true,
+        would_send: true,
+        recipient,
+        recipient_source: (doc.producer_email ?? "").trim() ? "producer_email" : "sender_email",
+        subject,
+        vendor_name: doc.vendor_name,
+        document_type: doc.document_type,
+        expiration_date: doc.expiration_date,
+        days_until_expiry: diffDays,
+        window: dueWindow,
+        deduplicated: false,
+      });
+    }
 
-    sendEmail([recipient], subject, emailBody, doc.client_id, doc.vendor_id, "renewal_reminder");
+    sendEmail([recipient], subject, emailBodyWithOutreach, doc.client_id, doc.vendor_id, "renewal_reminder");
+    markReminderSent(docId, dueWindow);
 
     return c.json({
       success: true,
@@ -549,6 +606,8 @@ app.post("/api/emails/test-renewal/:document_id", async (c) => {
       document_type: doc.document_type,
       expiration_date: doc.expiration_date,
       days_until_expiry: diffDays,
+      window: dueWindow,
+      deduplicated: false,
     });
   } catch (err) {
     return serverError(c, err);
