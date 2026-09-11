@@ -1,6 +1,6 @@
 import { Hono } from "hono";
 import { serverError } from "../errors";
-import { generateAuditPackage } from "../audit";
+import { generateAuditPackage, AuditClientNotFoundError } from "../audit";
 import { storageGetStream } from "../storage";
 
 const app = new Hono();
@@ -42,6 +42,10 @@ app.post("/api/audit/generate", async (c) => {
 
     return c.json(result);
   } catch (err) {
+    // Unknown/cross-tenant client id → predictable 404 (not a 500).
+    if (err instanceof AuditClientNotFoundError) {
+      return c.json({ error: "Client not found" }, 404);
+    }
     console.error("[audit] Error generating audit package:", err);
     return serverError(c, err);
   }

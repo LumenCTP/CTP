@@ -362,6 +362,19 @@ function dateToDosDateTime(d: Date): { time: number; date: number } {
 
 // ── Main Audit Generation ───────────────────────────────
 
+/**
+ * Thrown when the audit request names a client (or vendor) that does not exist
+ * for the REQUESTING tenant. A cross-tenant or deleted client must be a clean
+ * 404 to the caller — never a 500, and never a package containing another
+ * tenant's data.
+ */
+export class AuditClientNotFoundError extends Error {
+  constructor(clientId: number) {
+    super(`Client not found: ${clientId}`);
+    this.name = "AuditClientNotFoundError";
+  }
+}
+
 export async function generateAuditPackage(req: AuditRequest, tenantId: number): Promise<AuditResult> {
   const db = getDb();
 
@@ -373,7 +386,7 @@ export async function generateAuditPackage(req: AuditRequest, tenantId: number):
     | undefined;
 
   if (!client) {
-    throw new Error(`Client not found: ${req.client_id}`);
+    throw new AuditClientNotFoundError(req.client_id);
   }
 
   // Every vendor for this client (tenant-scoped) — INCLUDING vendors with zero
