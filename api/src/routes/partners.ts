@@ -220,7 +220,7 @@ app.get("/api/partner/me", requireAuth, (c) => {
     FROM payouts WHERE partner_id = $pid
     ORDER BY created_at DESC, id DESC
   `).all({ $pid: partner.id });
-  return c.json({ partner: { ...partner, total_referrals, stripe, payouts } });
+  return c.json({ partner: { ...partner, total_referrals: totalReferrals, stripe, payouts } });
 });
 
 // ── Stripe Connect onboarding (delegation B) ─────────────
