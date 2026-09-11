@@ -82,7 +82,7 @@ export function isPayoutsEnabled(mode?: StripeMode): boolean {
  * App origin used for Stripe Connect onboarding refresh/return URLs (points at
  * the partner portal SPA route). Overridable via APP_ORIGIN for local dev.
  */
-export const APP_ORIGIN = process.env.APP_ORIGIN || "https://cleartopay.ctonew.app";
+export const APP_ORIGIN = process.env.APP_ORIGIN || "https://www.cleartopayconstruction.com";
 export const PARTNER_PORTAL_CONNECT_URL = `${APP_ORIGIN}/app/partner/dashboard`;
 
 // ── Partner onboarding state helpers ───────────────────────────────────────

@@ -63,7 +63,7 @@ export default function PartnerRefer() {
   }
 
   async function copyLink() {
-    const link = `https://cleartopay.ctonew.app/get-started?ref=${referralCode}`;
+    const link = `https://www.cleartopayconstruction.com/get-started?ref=${referralCode}`;
     try {
       await navigator.clipboard.writeText(link);
     } catch {
@@ -73,7 +73,7 @@ export default function PartnerRefer() {
     window.setTimeout(() => setCopied(false), 2000);
   }
 
-  const shareLink = referralCode ? `cleartopay.ctonew.app/get-started?ref=${referralCode}` : null;
+  const shareLink = referralCode ? `www.cleartopayconstruction.com/get-started?ref=${referralCode}` : null;
 
   return (
     <div className="dashboard">

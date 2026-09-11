@@ -37,7 +37,7 @@ function generateReferralCode(db: ReturnType<typeof getDb>, lastName: string): s
   return `${base}${Date.now().toString(36).toUpperCase().slice(-3)}`;
 }
 
-const PARTNER_REFERRAL_LINK_BASE = "https://cleartopay.ctonew.app/get-started";
+const PARTNER_REFERRAL_LINK_BASE = "https://www.cleartopayconstruction.com/get-started";
 
 // ── Partner Application (public, no auth) ────────────────
 

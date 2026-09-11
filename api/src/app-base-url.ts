@@ -6,6 +6,6 @@
  * honored by stripe-connect.ts) as a second accepted override.
  */
 export function getAppBaseUrl(): string {
-  const raw = process.env.APP_BASE_URL || process.env.APP_ORIGIN || "https://cleartopay.ctonew.app";
+  const raw = process.env.APP_BASE_URL || process.env.APP_ORIGIN || "https://www.cleartopayconstruction.com";
   return raw.replace(/\/+$/, "");
 }

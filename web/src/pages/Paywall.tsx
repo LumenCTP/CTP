@@ -97,7 +97,7 @@ export default function Paywall() {
           free trial ends. Cancel anytime.
         </p>
         <p style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", marginTop: 6 }}>
-          Need help? Email <a href="mailto:support@cleartopay.com" style={{ color: "var(--blue)" }}>support@cleartopay.com</a>
+          Need help? Email <a href="mailto:documents@cleartopayconstruction.com" style={{ color: "var(--blue)" }}>documents@cleartopayconstruction.com</a>
         </p>
 
         <p className="auth-footer" style={{ marginTop: 18 }}>

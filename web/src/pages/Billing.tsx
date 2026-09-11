@@ -248,7 +248,7 @@ export default function Billing() {
 
           <p style={{ fontSize: 12, color: "var(--text-muted)", marginTop: 14 }}>
             Payments are processed by Stripe. We never see or store your card details.
-            Need help? Email <a href="mailto:support@cleartopay.com" style={{ color: "var(--blue)" }}>support@cleartopay.com</a>.
+            Need help? Email <a href="mailto:documents@cleartopayconstruction.com" style={{ color: "var(--blue)" }}>documents@cleartopayconstruction.com</a>.
           </p>
         </div>
       )}

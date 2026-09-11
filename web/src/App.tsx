@@ -128,15 +128,15 @@ function PartnerStatusPage() {
     },
     rejected: {
       title: "Application Not Approved",
-      message: "We were unable to approve your partner application. If you think this is a mistake, contact us at support@cleartopay.com.",
+      message: "We were unable to approve your partner application. If you think this is a mistake, contact us at documents@cleartopayconstruction.com.",
     },
     suspended: {
       title: "Account Suspended",
-      message: "Your partner account has been suspended. Contact us at support@cleartopay.com for more information.",
+      message: "Your partner account has been suspended. Contact us at documents@cleartopayconstruction.com for more information.",
     },
     terminated: {
       title: "Account Terminated",
-      message: "Your partner account has been terminated. Contact us at support@cleartopay.com if you have questions.",
+      message: "Your partner account has been terminated. Contact us at documents@cleartopayconstruction.com if you have questions.",
     },
   };
   const content = copy[status] ?? copy.pending;
