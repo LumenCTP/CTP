@@ -168,21 +168,37 @@ app.post("/api/auth/register", async (c) => {
 app.post("/api/auth/login", async (c) => {
   try {
     const body = await c.req.json();
-    const { email, password } = body;
+    const { email, username, password } = body;
 
-    if (!email || !password) {
-      return c.json({ error: "Email and password are required" }, 400);
+    // Partners sign in with username + password; client users keep email +
+    // password. Either identifier is accepted here — if a username is present
+    // it wins, otherwise the lookup falls back to email.
+    if ((!email || !String(email).trim()) && (!username || !String(username).trim())) {
+      return c.json({ error: "Email or username and password are required" }, 400);
+    }
+    if (!password) {
+      return c.json({ error: "Email or username and password are required" }, 400);
     }
 
     const db = getDb();
-    const user = db.query(
-      "SELECT id, full_name, company_name, email, password_hash, role FROM users WHERE email = $email"
-    ).get({
-      $email: email.trim().toLowerCase(),
-    }) as { id: number; full_name: string; company_name: string; email: string; password_hash: string; role: string } | undefined;
+    let user: { id: number; full_name: string; company_name: string; email: string; password_hash: string; role: string; username: string | null } | undefined;
+    let notFoundError = "";
+    if (typeof username === "string" && username.trim()) {
+      user = db.query(
+        "SELECT id, full_name, company_name, email, password_hash, role, username FROM users WHERE username = $username COLLATE NOCASE"
+      ).get({ $username: username.trim() }) as typeof user;
+      notFoundError = "Invalid username or password";
+    } else {
+      user = db.query(
+        "SELECT id, full_name, company_name, email, password_hash, role, username FROM users WHERE email = $email"
+      ).get({
+        $email: String(email).trim().toLowerCase(),
+      }) as typeof user;
+      notFoundError = "Invalid email or password";
+    }
 
     if (!user) {
-      return c.json({ error: "Invalid email or password" }, 401);
+      return c.json({ error: notFoundError }, 401);
     }
 
     const valid = await Bun.password.verify(password, user.password_hash).catch(() => false);
@@ -190,7 +206,7 @@ app.post("/api/auth/login", async (c) => {
       if (user.password_hash === "webhook_placeholder") {
         return c.json({ error: "Account needs password setup", needs_password: true, email: user.email }, 401);
       }
-      return c.json({ error: "Invalid email or password" }, 401);
+      return c.json({ error: notFoundError }, 401);
     }
 
     const token = await createAuthToken({
@@ -209,6 +225,7 @@ app.post("/api/auth/login", async (c) => {
         full_name: user.full_name,
         company_name: user.company_name,
         email: user.email,
+        username: user.username ?? null,
         role: user.role || "user",
         inbox_slug: tenant?.inbox_slug ?? null,
         inbox_address: buildInboxAddress(tenant?.inbox_slug ?? null),
@@ -265,8 +282,8 @@ app.post("/api/auth/set-password", async (c) => {
       return c.json({ error: "A secure setup link is required to set your password. Use the link emailed to you, or request a new one." }, 401);
     }
     const user = db.query(
-      "SELECT id, email FROM users WHERE reset_token = $token AND reset_token_expires > $now"
-    ).get({ $token: token, $now: new Date().toISOString() }) as { id: number; email: string } | undefined;
+      "SELECT id, email, role FROM users WHERE reset_token = $token AND reset_token_expires > $now"
+    ).get({ $token: token, $now: new Date().toISOString() }) as { id: number; email: string; role: string } | undefined;
     if (!user) {
       return c.json({ error: "Invalid or expired setup link. Request a new one." }, 400);
     }
@@ -274,12 +291,60 @@ app.post("/api/auth/set-password", async (c) => {
     if (email && email !== user.email) {
       return c.json({ error: "This setup link belongs to a different email address." }, 400);
     }
+    // Partners choose a username while setting their password (they sign in
+    // with username + password; email becomes notification-only). Non-partner
+    // users ignore any username in the body.
+    let username: string | null = null;
+    if (user.role === "partner") {
+      const rawUsername = typeof body.username === "string" ? body.username.trim() : "";
+      if (!/^[a-zA-Z0-9._-]{3,30}$/.test(rawUsername)) {
+        return c.json({ error: "Username must be 3–30 characters and use only letters, numbers, dots, underscores, or hyphens." }, 400);
+      }
+      username = rawUsername.toLowerCase();
+      const taken = db.query("SELECT id FROM users WHERE username = $u COLLATE NOCASE AND id != $id").get({ $u: username, $id: user.id });
+      if (taken) {
+        return c.json({ error: "That username is already taken." }, 409);
+      }
+    }
     const passwordHash = await Bun.password.hash(newPassword);
-    db.query("UPDATE users SET password_hash = $password_hash, reset_token = NULL, reset_token_expires = NULL WHERE id = $id").run({
-      $password_hash: passwordHash,
-      $id: user.id,
-    });
+    if (username !== null) {
+      db.query("UPDATE users SET password_hash = $password_hash, username = $username, reset_token = NULL, reset_token_expires = NULL WHERE id = $id").run({
+        $password_hash: passwordHash,
+        $username: username,
+        $id: user.id,
+      });
+    } else {
+      db.query("UPDATE users SET password_hash = $password_hash, reset_token = NULL, reset_token_expires = NULL WHERE id = $id").run({
+        $password_hash: passwordHash,
+        $id: user.id,
+      });
+    }
     return c.json({ success: true });
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
+
+// GET /api/auth/setup-info — read-only helper for the SetPassword page. Given
+// a valid, unexpired setup token it returns the email bound to the token and
+// whether the account is a partner (partners must choose a username before the
+// password can be set). Invalid/expired tokens → 400. Only reveals the email
+// the setup link already carries.
+app.get("/api/auth/setup-info", async (c) => {
+  try {
+    const token = (c.req.query("token") || "").trim();
+    if (!token) {
+      return c.json({ error: "A setup link token is required." }, 400);
+    }
+    const db = getDb();
+    const user = db.query(
+      "SELECT email, role FROM users WHERE reset_token = $token AND reset_token_expires > $now"
+    ).get({ $token: token, $now: new Date().toISOString() }) as { email: string; role: string } | undefined;
+    if (!user) {
+      return c.json({ error: "Invalid or expired setup link. Request a new one." }, 400);
+    }
+    const role = user.role || "user";
+    return c.json({ email: user.email, role, needs_username: role === "partner" });
   } catch (err) {
     return serverError(c, err);
   }
@@ -389,8 +454,8 @@ app.get("/api/auth/me", async (c) => {
 
   const db = getDb();
   const dbUser = db.query(
-    "SELECT id, full_name, company_name, email, role, created_at FROM users WHERE id = $id"
-  ).get({ $id: user.user_id }) as { id: number; full_name: string; company_name: string; email: string; role: string; created_at: string } | undefined;
+    "SELECT id, full_name, company_name, email, role, username, created_at FROM users WHERE id = $id"
+  ).get({ $id: user.user_id }) as { id: number; full_name: string; company_name: string; email: string; role: string; username: string | null; created_at: string } | undefined;
 
   if (!dbUser) {
     return c.json({ error: "User not found" }, 404);
@@ -404,6 +469,7 @@ app.get("/api/auth/me", async (c) => {
     full_name: dbUser.full_name,
     company_name: dbUser.company_name,
     email: dbUser.email,
+    username: dbUser.username ?? null,
     role: dbUser.role || "user",
     created_at: dbUser.created_at,
     tenant_id: tenant?.id ?? null,

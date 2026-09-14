@@ -117,7 +117,14 @@ export default function TopBar({ onMenuToggle, badge }: TopBarProps) {
       <div className="topbar-spacer" />
       <div className="topbar-user" title={displayName}>
         <span className="user-avatar">{initial}</span>
-        <span className="user-name">{displayName}</span>
+        <span className="user-name">
+          {displayName}
+          {user?.username ? (
+            <span style={{ display: "block", fontSize: 11, fontWeight: 400, color: "var(--text-muted)", lineHeight: 1.2 }}>
+              @{user.username}
+            </span>
+          ) : null}
+        </span>
         <button className="logout-btn" onClick={logout} title="Sign out">
           ↵
         </button>

@@ -4,9 +4,9 @@ import { useAuth, needsPartnerSetup } from "../components/AuthContext";
 import Logo from "../components/Logo";
 
 export default function PartnerLogin() {
-  const { user, loading, login, logout, refreshUser } = useAuth();
+  const { user, loading, loginPartner, logout, refreshUser } = useAuth();
   const navigate = useNavigate();
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -33,20 +33,20 @@ export default function PartnerLogin() {
     e.preventDefault();
     setError("");
 
-    if (!email.trim() || !password) {
-      setError("Email and password are required.");
+    if (!username.trim() || !password) {
+      setError("Username and password are required.");
       return;
     }
 
     setSubmitting(true);
-    const err = await login(email.trim(), password);
+    const err = await loginPartner(username.trim(), password);
     if (err) {
       setSubmitting(false);
       setError(err);
       return;
     }
 
-    // login() stores the user in localStorage — read it back to check the role.
+    // Sign-in stores the user in localStorage — read it back to check the role.
     let role: string | null = null;
     try {
       const raw = localStorage.getItem("cleartopay_user");
@@ -82,14 +82,14 @@ export default function PartnerLogin() {
 
         <form onSubmit={handleSubmit} className="auth-form">
           <div className="form-group">
-            <label htmlFor="email">Email</label>
+            <label htmlFor="username">Username</label>
             <input
-              id="email"
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="you@agency.com"
-              autoComplete="email"
+              id="username"
+              type="text"
+              value={username}
+              onChange={(e) => setUsername(e.target.value)}
+              placeholder="yourname"
+              autoComplete="username"
               autoFocus
             />
           </div>

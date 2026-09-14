@@ -8,6 +8,7 @@ interface Partner {
   last_name: string;
   company_name: string | null;
   email: string;
+  username?: string | null;
   phone?: string | null;
   address?: string | null;
   website?: string | null;
@@ -78,7 +79,7 @@ export default function AdminPartners() {
     return partners.filter((p) => {
       if (statusTab !== "all" && p.status !== statusTab) return false;
       if (!q) return true;
-      return [p.first_name, p.last_name, p.company_name, p.email]
+      return [p.first_name, p.last_name, p.company_name, p.email, p.username]
         .filter(Boolean)
         .some((v) => String(v).toLowerCase().includes(q));
     });
@@ -220,6 +221,7 @@ export default function AdminPartners() {
                 <th>Name</th>
                 <th>Company</th>
                 <th>Email</th>
+                <th>Username</th>
                 <th>Partner Type</th>
                 <th>Status</th>
                 <th>Referral Code</th>
@@ -230,12 +232,13 @@ export default function AdminPartners() {
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr className="table-empty"><td colSpan={9}>No partners found.</td></tr>
+                <tr className="table-empty"><td colSpan={10}>No partners found.</td></tr>
               ) : filtered.map((p) => (
                 <tr key={p.id} onClick={() => openDetail(p)} style={{ cursor: "pointer" }}>
                   <td className="td-name">{name(p)}</td>
                   <td>{p.company_name || "—"}</td>
                   <td>{p.email}</td>
+                  <td>{p.username || "—"}</td>
                   <td>{p.partner_type}</td>
                   <td><Badge status={p.status} /></td>
                   <td>{p.referral_code || "—"}</td>
@@ -267,6 +270,7 @@ export default function AdminPartners() {
                 {[
                   ["Company", detail.company_name || "—"],
                   ["Email", detail.email],
+                  ["Username", detail.username || "—"],
                   ["Phone", detail.phone || "—"],
                   ["Partner Type", detail.partner_type],
                   ["Status", <Badge key="s" status={detail.status} />],

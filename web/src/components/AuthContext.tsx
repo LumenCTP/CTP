@@ -8,6 +8,7 @@ interface User {
   inbox_address?: string | null;
   logo_url?: string | null;
   email: string;
+  username?: string | null;
   role?: string | null;
   tenant_id?: number | null;
   tenant_name?: string | null;
@@ -28,6 +29,7 @@ interface AuthContextType {
   token: string | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<string | null>;
+  loginPartner: (username: string, password: string) => Promise<string | null>;
   register: (full_name: string, company_name: string, email: string, password: string, referral_code?: string, plan?: string) => Promise<string | null>;
   logout: () => void;
   refreshUser: () => Promise<boolean>;
@@ -139,6 +141,7 @@ async function withPartnerData(token: string, user: User): Promise<User> {
         partner_id: (p.id as number) ?? null,
         partner_status: (p.status as string) ?? null,
         referral_code: (p.referral_code as string) ?? null,
+        username: (p.username as string) ?? user.username ?? null,
       };
     }
     // No partner record (or error) — treat as not yet approved.
@@ -207,6 +210,30 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  // Partner sign-in: username + password (partners chose their username when
+  // they set their password; email is notification-only). Mirrors login() but
+  // sends the partner identifier as `username`.
+  const loginPartner = useCallback(async (username: string, password: string): Promise<string | null> => {
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        return data.error || "Login failed";
+      }
+      const merged = mergeTenant(data.user || {}, data.tenant);
+      setToken(data.token);
+      setUser(merged);
+      storeAuth(data.token, merged);
+      return null;
+    } catch {
+      return "Could not reach the server. Check your connection and try again.";
+    }
+  }, []);
+
   const register = useCallback(async (
     full_name: string, company_name: string, email: string, password: string, referral_code?: string, plan?: string
   ): Promise<string | null> => {
@@ -264,7 +291,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [loadSession]);
 
   return (
-    <AuthContext.Provider value={{ user, token, loading, login, register, logout, refreshUser }}>
+    <AuthContext.Provider value={{ user, token, loading, login, loginPartner, register, logout, refreshUser }}>
       {children}
     </AuthContext.Provider>
   );

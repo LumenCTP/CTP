@@ -701,7 +701,7 @@ export function buildSetupPasswordEmail(fullName: string, setupLink: string): st
   <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
     <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">Hi ${fullName},</p>
     <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
-      Your ClearToPay account is ready. Click the button below to choose a password and sign in.
+      Your ClearToPay account is ready. Click the button below to set your username and password and sign in.
       This link expires in <strong>1 hour</strong>.
     </p>
     <p style="margin: 24px 0; text-align: center;">

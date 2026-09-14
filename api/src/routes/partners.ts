@@ -356,8 +356,10 @@ app.get("/api/partners", requireAuth, requireAdmin, (c) => {
     SELECT p.id, p.first_name, p.last_name, p.company_name, p.email, p.partner_type, p.status,
            p.referral_code, p.commission_percentage, p.created_at,
            p.w9_filename, (p.w9_file_key IS NOT NULL) as w9_uploaded, p.tax_info_status,
+           u.username,
            (SELECT COUNT(*) FROM referrals r WHERE r.partner_id = p.id) as total_referrals
     FROM partners p
+    LEFT JOIN users u ON u.id = p.user_id
   `;
   const rows = status
     ? db.query(`${baseSql} WHERE p.status = $status ORDER BY p.created_at DESC, p.id DESC`).all({ $status: status })
@@ -369,7 +371,10 @@ app.get("/api/partners/:id", requireAuth, requireAdmin, (c) => {
   const id = Number(c.req.param("id"));
   if (!Number.isInteger(id)) return c.json({ error: "Invalid partner id" }, 400);
   const db = getDb();
-  const partner = db.query("SELECT * FROM partners WHERE id = $id").get({ $id: id }) as Record<string, unknown> | undefined;
+  const partner = db.query(`
+    SELECT p.*, (SELECT username FROM users WHERE id = p.user_id) as username
+    FROM partners p WHERE p.id = $id
+  `).get({ $id: id }) as Record<string, unknown> | undefined;
   if (!partner) return c.json({ error: "Partner not found" }, 404);
 
   const totalReferrals = (db.query("SELECT COUNT(*) as c FROM referrals WHERE partner_id = $id").get({ $id: id }) as { c: number }).c;
@@ -454,6 +459,7 @@ app.get("/api/partner/me", requireAuth, (c) => {
   // Strip the storage key — the W-9 file is admin-only. The partner gets a
   // boolean + filename so they know what's on file.
   const { w9_file_key: _w9Key, ...partner } = raw;
+  const userRow = db.query("SELECT username FROM users WHERE id = $uid").get({ $uid: user.user_id }) as { username: string | null } | undefined;
   const totalReferrals = (db.query("SELECT COUNT(*) as c FROM referrals WHERE partner_id = $id").get({ $id: partner.id }) as { c: number }).c;
   const stripeRow = getPartnerStripeRow(db, Number(partner.id));
   const stripe = {
@@ -473,6 +479,7 @@ app.get("/api/partner/me", requireAuth, (c) => {
   return c.json({
     partner: {
       ...partner,
+      username: userRow?.username ?? null,
       // W-9 file is admin-only — partners see a boolean + the original filename
       // (so they know what's on file) but NEVER the storage key/location.
       w9_uploaded: !!raw.w9_file_key,

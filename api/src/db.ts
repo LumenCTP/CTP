@@ -607,6 +607,12 @@ function runMigrations(db: Database): void {
 
   // Role-based access: 'user' (default), 'partner', 'admin'
   ensureColumn(db, "users", "role TEXT DEFAULT 'user'", "role");
+  // Partner login usernames: each partner chooses a username when they set
+  // their password; they sign in with username + password (email is
+  // notification-only). SQLite unique indexes allow multiple NULLs, so client
+  // users (username NULL) are unaffected while partner usernames are unique.
+  ensureColumn(db, "users", "username TEXT", "username");
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)");
 
   // Extend email_log.email_type CHECK to include 'partner_payout',
   // 'inbox_rejection' and 'internal_alert'. SQLite can't ALTER a CHECK
