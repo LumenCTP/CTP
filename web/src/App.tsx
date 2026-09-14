@@ -123,8 +123,8 @@ function PartnerStatusPage() {
 
   const copy: Record<string, { title: string; message: string }> = {
     pending: {
-      title: "Application Pending Approval",
-      message: "Your partner application is under review. You'll receive an email as soon as your account is approved. Check back soon!",
+      title: "Application Pending",
+      message: "Your partner account is currently pending. Contact us at documents@cleartopayconstruction.com if you have questions.",
     },
     rejected: {
       title: "Application Not Approved",

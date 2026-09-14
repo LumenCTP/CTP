@@ -4,6 +4,8 @@ import { getDb } from "../db";
 import { requireAuth, requireAdmin, requirePartner, logAudit } from "../middleware";
 import { calculateCommissions, runPartnerPayouts } from "../commissions";
 import { getStripe, partnerConnectStatus, getPartnerStripeRow, PARTNER_PORTAL_CONNECT_URL } from "../stripe-connect";
+import { sendEmail, buildSetupPasswordEmail } from "../email";
+import { getAppBaseUrl } from "../app-base-url";
 
 const app = new Hono();
 
@@ -59,7 +61,9 @@ app.post("/api/partners/apply", async (c) => {
     if (existing) return c.json({ error: "A user with this email already exists" }, 409);
 
     // Create a user account with a random password — the partner sets their own
-    // password later via the standard set-password flow.
+    // password via the emailed set-password link right after applying. Partners
+    // are approved instantly (no manual admin step), so the portal opens for
+    // them the moment they sign in.
     const randomPassword = `${crypto.randomUUID().replace(/-/g, "")}Aa1!`;
     const passwordHash = await Bun.password.hash(randomPassword);
 
@@ -75,9 +79,25 @@ app.post("/api/partners/apply", async (c) => {
     });
     const userId = Number(userResult.lastInsertRowid);
 
+    // One-time password-setup token (same mechanism as forgot-password /
+    // send-setup-link): random base64url bytes, valid for 1 hour. The token is
+    // NEVER returned in this response — it is only emailed to the partner.
+    const bytes = new Uint8Array(32);
+    crypto.getRandomValues(bytes);
+    const token = Buffer.from(bytes).toString("base64url");
+    const tokenExpires = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    db.query("UPDATE users SET reset_token = $token, reset_token_expires = $expires WHERE id = $id").run({
+      $token: token,
+      $expires: tokenExpires,
+      $id: userId,
+    });
+
+    // Instantly approved — generate the referral code up front so the partner
+    // can start referring the moment they sign in.
+    const referralCode = generateReferralCode(db, last_name.trim());
     const partnerResult = db.query(`
-      INSERT INTO partners (user_id, first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method, status)
-      VALUES ($user_id, $first_name, $last_name, $company_name, $email, $phone, $address, $website, $states_served, $partner_type, $tax, $payout_method, 'pending')
+      INSERT INTO partners (user_id, first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method, status, referral_code)
+      VALUES ($user_id, $first_name, $last_name, $company_name, $email, $phone, $address, $website, $states_served, $partner_type, $tax, $payout_method, 'approved', $referral_code)
     `).run({
       $user_id: userId,
       $first_name: first_name.trim(),
@@ -91,13 +111,33 @@ app.post("/api/partners/apply", async (c) => {
       $partner_type: partner_type.trim(),
       $tax: (tax_info_status && tax_info_status.trim()) || "not_submitted",
       $payout_method: (preferred_payout_method && preferred_payout_method.trim()) || null,
+      $referral_code: referralCode,
     });
     const partnerId = Number(partnerResult.lastInsertRowid);
 
-    logPartnerAudit(db, partnerId, "application_submitted", { partner_type: partner_type.trim(), email: normalizedEmail }, null, normalizedEmail);
-    logAudit(db, "partner", partnerId, "partner_application", { email: normalizedEmail, partner_type: partner_type.trim() });
+    logPartnerAudit(db, partnerId, "application_submitted", { partner_type: partner_type.trim(), email: normalizedEmail, status: "approved", referral_code: referralCode }, null, normalizedEmail);
+    logPartnerAudit(db, partnerId, "application_approved", { referral_code: referralCode, method: "instant" }, null, normalizedEmail);
+    logAudit(db, "partner", partnerId, "partner_application", { email: normalizedEmail, partner_type: partner_type.trim(), status: "approved", referral_code: referralCode });
 
-    return c.json({ partner: { id: partnerId, status: "pending", message: "Application submitted" } }, 201);
+    // Email the set-password link through the normal sendEmail path (Graph
+    // Mail primary; SMTP/queue fallback). A delivery hiccup must not fail the
+    // application itself — the partner is already approved, and can re-request
+    // a setup link if needed.
+    try {
+      const setupLink = `${getAppBaseUrl()}/app/set-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`;
+      await sendEmail([normalizedEmail], "Set up your ClearToPay password", buildSetupPasswordEmail(fullName, setupLink), undefined, undefined, "password_reset");
+    } catch (emailErr) {
+      console.error(`[partners] Set-password email failed for partner ${partnerId} (${normalizedEmail}):`, emailErr);
+    }
+
+    return c.json({
+      partner: {
+        id: partnerId,
+        status: "approved",
+        referral_code: referralCode,
+        message: "You're approved! Check your inbox for a link to set your password, then sign in to your partner portal.",
+      },
+    }, 201);
   } catch (err) {
     return serverError(c, err);
   }

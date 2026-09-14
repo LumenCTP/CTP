@@ -43,6 +43,7 @@ export default function PartnerRegister() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
+  const [approved, setApproved] = useState<{ referral_code?: string | null } | null>(null);
 
   function update(field: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -76,6 +77,7 @@ export default function PartnerRegister() {
       if (!res.ok) {
         setError(data.error || "Application failed. Please try again.");
       } else {
+        setApproved(data.partner || null);
         setSubmitted(true);
       }
     } catch {
@@ -91,12 +93,21 @@ export default function PartnerRegister() {
         <div className="auth-card">
           <div className="auth-header">
             <div className="auth-logo-slot"><Logo size={48} /></div>
-            <h2>Application Submitted!</h2>
-            <p className="auth-subtitle">You'll receive an email when approved.</p>
+            <h2>You're approved!</h2>
+            <p className="auth-subtitle">
+              Welcome to the ClearToPay partner program.
+            </p>
           </div>
           <div className="auth-success">
-            Your partner application is under review. Once approved you'll be
-            able to sign in to your partner dashboard.
+            {approved?.referral_code ? (
+              <p style={{ margin: "0 0 12px" }}>
+                Your referral code is <strong>{approved.referral_code}</strong>.
+              </p>
+            ) : null}
+            <p style={{ margin: 0 }}>
+              Check your inbox for a link to set your password, then sign in to
+              your partner portal. You can start referring right away.
+            </p>
           </div>
           <p style={{ textAlign: "center", marginTop: 16 }}>
             <Link className="btn btn-primary" to="/app/partner/login">
