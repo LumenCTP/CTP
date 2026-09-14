@@ -54,7 +54,7 @@ app.get("/api/vendors/:id/compliance-detail", (c) => {
 
     const client = db.query(
       "SELECT id, name FROM clients WHERE id = $id AND tenant_id = $tenant_id"
-    ).get({ $id: vendor.client_id }) as { id: number; name: string } | undefined;
+    ).get({ $id: vendor.client_id, $tenant_id: c.get("tenant_id") as number }) as { id: number; name: string } | undefined;
 
     // Recalculate fresh compliance for this vendor
     const result = calculateVendorCompliance(vendor.id, vendor.client_id, c.get("tenant_id") as number);

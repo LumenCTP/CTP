@@ -44,7 +44,7 @@ export function validateAttachment(opts: { filename: string; contentType: string
     return { ok: false, reason: "HEIC photo detected — please resend as PDF or JPG" };
   }
   if (!ALLOWED_TYPES.includes(opts.contentType.toLowerCase())) {
-    return { ok: false, reason: `unsupported file type: ${opts.contentType || "unknown"}` };
+    return { ok: false, reason: `unsupported file type: ${opts.contentType || "unknown"} — please send a PDF, JPG, or PNG` };
   }
   if (opts.size > MAX_UPLOAD_SIZE) {
     return { ok: false, reason: `file too large: ${formatFileSize(opts.size)} exceeds 10MB cap` };

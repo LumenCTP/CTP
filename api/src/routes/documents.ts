@@ -110,6 +110,11 @@ app.post("/api/documents/upload", async (c) => {
     const clientId = clientRaw ? Number(clientRaw) : null; const vendorId = vendorRaw ? Number(vendorRaw) : null;
     if (clientRaw && !Number.isInteger(clientId)) return c.json({ error: "Invalid client_id" }, 400);
     if (vendorRaw && !Number.isInteger(vendorId)) return c.json({ error: "Invalid vendor_id" }, 400);
+    // Validate BEFORE ingest so an unsupported/oversize file returns a clear
+    // 400 with the specific reason (shared validator — same rules as the inbox
+    // path) instead of surfacing as a 500 "Something went wrong".
+    const validation = validateAttachment({ filename: file.name, contentType: file.type, size: file.size });
+    if (!validation.ok) return c.json({ error: validation.reason }, 400);
     const document = await ingestDocumentAttachment({db:getDb(),tenantId:c.get("tenant_id") as number,filename:file.name,content:new Uint8Array(await file.arrayBuffer()),contentType:file.type,senderName:form.get("sender_name")?.toString(),senderEmail:form.get("sender_email")?.toString(),clientId,vendorId});
     return c.json({document,ingestion_status:"processing"},201);
   } catch (err) { console.error("[upload]",err); return serverError(c, err); }

@@ -570,7 +570,7 @@ export default function Vendors() {
         <div className="modal-overlay" onClick={() => setShowImport(false)}><div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
           <div className="modal-header"><h3>Import Vendors CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
           <div className="modal-body"><div className="form-group"><label>Client *</label><select className="form-select" value={importClientId || ""} onChange={(e) => setImportClientId(Number(e.target.value))}><option value="" disabled>Select a client…</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
-            <p className="text-muted text-sm">Columns: name, contact_name, contact_email, contact_phone</p><div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
+            <p className="text-muted text-sm">Columns: name, contact_name, contact_email, contact_phone, address</p><div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
             <button
               type="button"
               className="link-button"

@@ -203,6 +203,15 @@ app.put("/api/vendors/:id", async (c) => {
     if (key && db.query("SELECT id FROM vendors WHERE client_id = $client_id AND normalized_key = $key AND id != $id").get({ $client_id: client_id, $key: key, $id: id })) {
       return c.json({ error: "Another vendor with this name already exists under this client" }, 409);
     }
+    // Name-only (suffix-tolerant) dedup fallback — same guard the POST create
+    // path (and AI-extraction path) uses: renaming "ABC Roofing" →
+    // "ABC Roofing, Inc." while "ABC Roofing LLC" already exists must be caught,
+    // even though their normalized_key differs. The vendor being edited is
+    // excluded so an unchanged-name edit (contact/address updates) still saves.
+    const nameDup = findPossibleDuplicateVendor(db, client_id, trimmedName);
+    if (nameDup && nameDup.id !== id) {
+      return c.json({ error: `A vendor with this name (or a very similar name) already exists: "${nameDup.name}". Select the existing vendor instead of creating a duplicate.` }, 409);
+    }
 
     db.query(`
       UPDATE vendors
