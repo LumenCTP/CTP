@@ -9,6 +9,8 @@ interface PartnerProfile {
   company_name?: string | null;
   referral_code?: string | null;
   status?: string;
+  w9_uploaded?: boolean;
+  w9_filename?: string | null;
   stripe?: StripeConnectState;
   payouts?: PayoutRow[];
 }
@@ -37,6 +39,10 @@ interface PayoutRow {
 interface DashboardData {
   referral_code: string | null;
   referral_link: string | null;
+  referring_enabled?: boolean;
+  w9_required?: boolean;
+  w9_uploaded?: boolean;
+  w9_filename?: string | null;
   total_referrals: number;
   active_customers: number;
   pending_referrals: number;
@@ -99,8 +105,12 @@ export default function PartnerDashboard() {
   const [error, setError] = useState<string | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
   const [connectError, setConnectError] = useState<string | null>(null);
+  const [w9File, setW9File] = useState<File | null>(null);
+  const [w9Busy, setW9Busy] = useState(false);
+  const [w9Msg, setW9Msg] = useState<{ kind: "ok" | "err"; text: string } | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
     Promise.all([
       apiFetch("/api/partner/me").then((res) => (res.ok ? res.json() : { partner: null })),
       apiFetch("/api/partner/dashboard").then((res) => (res.ok ? res.json() : null)),
@@ -117,6 +127,31 @@ export default function PartnerDashboard() {
         setLoading(false);
       });
   }, []);
+
+  useEffect(load, [load]);
+
+  const handleW9Upload = useCallback(async () => {
+    if (!w9File) return;
+    setW9Busy(true);
+    setW9Msg(null);
+    try {
+      const fd = new FormData();
+      fd.append("w9", w9File);
+      const res = await apiFetch("/api/partners/w9", { method: "POST", body: fd });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setW9Msg({ kind: "err", text: json?.error || `Upload failed (HTTP ${res.status})` });
+        return;
+      }
+      setW9Msg({ kind: "ok", text: json?.partner?.message || "W-9 uploaded — you're ready to refer!" });
+      setW9File(null);
+      load(); // refresh dashboard: referral code + flags now come back enabled
+    } catch (err: any) {
+      setW9Msg({ kind: "err", text: err?.message || "Upload failed. Please try again." });
+    } finally {
+      setW9Busy(false);
+    }
+  }, [w9File, load]);
 
   const handleConnect = useCallback(async () => {
     if (!profile?.id) return;
@@ -153,6 +188,7 @@ export default function PartnerDashboard() {
     ? `${profile.first_name ?? ""} ${profile.last_name ?? ""}`.trim()
     : null;
   const company = profile?.company_name || null;
+  const referringEnabled = data?.referring_enabled !== false; // absent flag ⇒ enabled (back-compat)
   const referralCode = data?.referral_code || profile?.referral_code || null;
   // TODO: revert to www.cleartopayconstruction.com once the domain is restored
   const referralLink = data?.referral_link || (referralCode ? `https://cleartopay.ctonew.app/get-started?ref=${referralCode}` : null);
@@ -180,8 +216,24 @@ export default function PartnerDashboard() {
           <h2 className="page-title">Partner Dashboard</h2>
           {name && <p className="page-subtitle">{name}{company ? ` · ${company}` : ""}</p>}
         </div>
-        <Link to="/app/partner/refer" className="btn btn-primary">Refer a Client</Link>
+        {referringEnabled ? (
+          <Link to="/app/partner/refer" className="btn btn-primary">Refer a Client</Link>
+        ) : (
+          <span className="btn btn-primary" style={{ opacity: 0.5, pointerEvents: "none" }} title="Upload your W-9 to unlock referring">
+            Refer a Client
+          </span>
+        )}
       </div>
+
+      {!referringEnabled && (
+        <W9UnlockCard
+          busy={w9Busy}
+          msg={w9Msg}
+          onFile={(f) => setW9File(f)}
+          file={w9File}
+          onUpload={handleW9Upload}
+        />
+      )}
 
       {referralCode && (
         <section className="referral-code-card">
@@ -303,6 +355,55 @@ function StripeConnectCard({
       </div>
       {(payouts ?? []).length > 5 && (
         <p style={{ marginTop: "8px" }}><Link to="/app/partner/payouts" className="btn btn-outline btn-sm">View all payouts</Link></p>
+      )}
+    </section>
+  );
+}
+
+// ── W-9 unlock card ──────────────────────────────────────
+// Shown when the partner has no W-9 on file (referral_code NULL ⇒ referring
+// disabled). Uploading calls POST /api/partners/w9, which stores the file and
+// generates the referral code — after that, referring is enabled.
+function W9UnlockCard({
+  busy, msg, file, onFile, onUpload,
+}: {
+  busy: boolean;
+  msg: { kind: "ok" | "err"; text: string } | null;
+  file: File | null;
+  onFile: (f: File | null) => void;
+  onUpload: () => void;
+}) {
+  return (
+    <section className="referral-code-card" style={{ borderColor: "#d97706", background: "linear-gradient(135deg, #fffbeb 0%, #fff 100%)" }}>
+      <div className="referral-code-info">
+        <div>
+          <span className="referral-code-label" style={{ color: "#92400e" }}>Upload your W-9 to unlock referring</span>
+          <p style={{ margin: "6px 0 0", fontSize: 14, color: "#78350f", maxWidth: 520 }}>
+            You're approved — one step left. A W-9 is required before you can
+            refer clients and start earning. Upload a PDF, JPG, or PNG (max 10MB)
+            and your referral link unlocks immediately.
+          </p>
+        </div>
+      </div>
+      <div className="referral-code-actions" style={{ flexWrap: "wrap", gap: 8 }}>
+        <input
+          type="file"
+          accept="application/pdf,image/jpeg,image/png"
+          onChange={(e) => onFile(e.target.files?.[0] ?? null)}
+          style={{ maxWidth: 260 }}
+          disabled={busy}
+        />
+        <button type="button" className="btn btn-primary" onClick={onUpload} disabled={busy || !file}>
+          {busy ? "Uploading…" : "Upload W-9"}
+        </button>
+      </div>
+      {file && !busy && (
+        <p style={{ margin: "8px 0 0", fontSize: 13, color: "#059669" }}>✓ {file.name} ({(file.size / 1024).toFixed(1)} KB)</p>
+      )}
+      {msg && (
+        <p style={{ margin: "8px 0 0", fontSize: 13, color: msg.kind === "ok" ? "#059669" : "#b91c1c" }}>
+          {msg.text}
+        </p>
       )}
     </section>
   );

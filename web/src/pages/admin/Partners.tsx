@@ -17,6 +17,8 @@ interface Partner {
   preferred_payout_method?: string | null;
   status: string;
   referral_code?: string | null;
+  w9_uploaded?: boolean;
+  w9_filename?: string | null;
   commission_percentage: number;
   created_at?: string | null;
   total_referrals: number;
@@ -118,7 +120,7 @@ export default function AdminPartners() {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Action failed");
-      show("success", `Partner ${newStatus === "approved" ? "approved — referral code generated" : newStatus}`);
+      show("success", `Partner ${newStatus === "approved" ? "approved" : newStatus}`);
       setDetail((d) => (d ? { ...d, ...data.partner } : d));
       setPendingAction(null);
       setReason("");
@@ -160,6 +162,25 @@ export default function AdminPartners() {
     }
   };
 
+  const downloadW9 = async (id: number) => {
+    try {
+      const res = await apiFetch(`/api/partners/${id}/w9`);
+      if (!res.ok) throw new Error((await res.json().catch(() => ({})))?.error || "Failed to download W-9");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      const cd = res.headers.get("content-disposition") || "";
+      const m = /filename="?([^";]+)"?/.exec(cd);
+      a.download = m ? m[1] : `partner-${id}-w9`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err: any) {
+      show("error", err?.message || "Failed to download W-9");
+    }
+  };
   const name = (p: Partner) => `${p.first_name} ${p.last_name}`.trim();
 
   return (
@@ -203,12 +224,13 @@ export default function AdminPartners() {
                 <th>Status</th>
                 <th>Referral Code</th>
                 <th>Total Referrals</th>
+                <th>W-9</th>
                 <th>Created</th>
               </tr>
             </thead>
             <tbody>
               {filtered.length === 0 ? (
-                <tr className="table-empty"><td colSpan={8}>No partners found.</td></tr>
+                <tr className="table-empty"><td colSpan={9}>No partners found.</td></tr>
               ) : filtered.map((p) => (
                 <tr key={p.id} onClick={() => openDetail(p)} style={{ cursor: "pointer" }}>
                   <td className="td-name">{name(p)}</td>
@@ -218,6 +240,7 @@ export default function AdminPartners() {
                   <td><Badge status={p.status} /></td>
                   <td>{p.referral_code || "—"}</td>
                   <td>{p.total_referrals}</td>
+                  <td>{p.w9_uploaded ? "✓" : "—"}</td>
                   <td>{fmtDate(p.created_at)}</td>
                 </tr>
               ))}
@@ -250,6 +273,13 @@ export default function AdminPartners() {
                   ["Referral Code", detail.referral_code || "—"],
                   ["Commission %", `${detail.commission_percentage ?? 25}%`],
                   ["Tax Info", detail.tax_info_status || "—"],
+                  ["W-9", detail.w9_uploaded ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ color: "#059669" }}>✓ On file</span>
+                      <span style={{ color: "var(--gray-600)", fontSize: "0.8rem" }}>{detail.w9_filename || ""}</span>
+                      <button className="btn btn-outline btn-sm" onClick={() => downloadW9(Number(detail.id))}>Download W-9</button>
+                    </div>
+                  ) : <span style={{ color: "#d97706" }}>Not uploaded</span>],
                   ["Payout Method", detail.preferred_payout_method || "—"],
                   ["States Served", detail.states_served || "—"],
                   ["Website", detail.website || "—"],

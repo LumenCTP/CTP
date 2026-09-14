@@ -113,7 +113,7 @@ export default function PartnerLogin() {
 
         <p className="auth-footer">
           New to the partner program?{" "}
-          <Link to="/app/partner/register">Apply to become a partner</Link>
+          <Link to="/app/partner/register">Apply to the Partner Program</Link>
         </p>
       </div>
     </div>

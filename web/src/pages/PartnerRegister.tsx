@@ -19,12 +19,8 @@ const TAX_INFO_OPTIONS = [
   { value: "exempt", label: "Tax exempt" },
 ];
 
-const PAYOUT_METHODS = [
-  { value: "ach", label: "ACH / Bank Transfer" },
-  { value: "check", label: "Check" },
-  { value: "paypal", label: "PayPal" },
-  { value: "other", label: "Other" },
-];
+// Payouts are ACH-only — no check / PayPal / other options.
+const PAYOUT_METHODS = [{ value: "ach", label: "ACH / Bank Transfer" }];
 
 export default function PartnerRegister() {
   const [form, setForm] = useState({
@@ -40,10 +36,11 @@ export default function PartnerRegister() {
     tax_info_status: "not_submitted",
     preferred_payout_method: "ach",
   });
+  const [w9File, setW9File] = useState<File | null>(null);
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
-  const [approved, setApproved] = useState<{ referral_code?: string | null } | null>(null);
+  const [approved, setApproved] = useState<{ referral_code?: string | null; w9_uploaded?: boolean; w9_error?: string | null } | null>(null);
 
   function update(field: keyof typeof form, value: string) {
     setForm((f) => ({ ...f, [field]: value }));
@@ -65,13 +62,25 @@ export default function PartnerRegister() {
       setError("Please select a partner type.");
       return;
     }
+    if (w9File && w9File.size > 10 * 1024 * 1024) {
+      setError("W-9 file is too large — the limit is 10MB.");
+      return;
+    }
 
     setSubmitting(true);
     try {
+      // Multipart apply: text fields + the optional W-9 file in one request.
+      // The server creates the partner (status='approved'), sends the
+      // set-password email, and — if the W-9 is included and valid — generates
+      // the referral code immediately. No auth token exists at apply time, so
+      // the file must travel with the application itself.
+      const formData = new FormData();
+      Object.entries(form).forEach(([key, value]) => formData.append(key, value));
+      if (w9File) formData.append("w9", w9File);
+
       const res = await apiFetch("/api/partners/apply", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: formData,
       });
       const data = await res.json();
       if (!res.ok) {
@@ -88,6 +97,8 @@ export default function PartnerRegister() {
   }
 
   if (submitted) {
+    const code = approved?.referral_code;
+    const w9Ok = approved?.w9_uploaded;
     return (
       <div className="auth-page">
         <div className="auth-card">
@@ -99,14 +110,27 @@ export default function PartnerRegister() {
             </p>
           </div>
           <div className="auth-success">
-            {approved?.referral_code ? (
+            {code ? (
               <p style={{ margin: "0 0 12px" }}>
-                Your referral code is <strong>{approved.referral_code}</strong>.
+                Your referral code is <strong>{code}</strong> — you're ready to
+                refer clients.
+              </p>
+            ) : (
+              <p style={{ margin: "0 0 12px" }}>
+                <strong>One more step:</strong> upload your W-9 to unlock
+                referring. Sign in and the dashboard will walk you through it.
+              </p>
+            )}
+            {approved?.w9_error ? (
+              <p style={{ margin: "0 0 12px", color: "#b45309" }}>
+                Note: your application was accepted, but the W-9 file wasn't
+                saved ({approved.w9_error}). You can upload it after signing in.
               </p>
             ) : null}
+            {!code && w9Ok && <p style={{ margin: "0 0 12px" }}>Your W-9 was received.</p>}
             <p style={{ margin: 0 }}>
               Check your inbox for a link to set your password, then sign in to
-              your partner portal. You can start referring right away.
+              your partner portal.
             </p>
           </div>
           <p style={{ textAlign: "center", marginTop: 16 }}>
@@ -124,7 +148,7 @@ export default function PartnerRegister() {
       <div className="auth-card auth-card-wide">
         <div className="auth-header">
           <div className="auth-logo-slot"><Logo size={48} /></div>
-          <h2>Become a Partner</h2>
+          <h2>Partner Program</h2>
           <p className="auth-subtitle">
             Earn commissions for every construction company you refer to
             ClearToPay Construction
@@ -133,7 +157,7 @@ export default function PartnerRegister() {
 
         {error && <div className="auth-error">{error}</div>}
 
-        <form onSubmit={handleSubmit} className="auth-form">
+        <form onSubmit={handleSubmit} className="auth-form" encType="multipart/form-data">
           <div className="form-row">
             <div className="form-group">
               <label htmlFor="first_name">First Name *</label>
@@ -245,33 +269,47 @@ export default function PartnerRegister() {
             </select>
           </div>
 
-          <div className="form-row">
-            <div className="form-group">
-              <label htmlFor="tax_info_status">Tax Info Status</label>
-              <select
-                id="tax_info_status"
-                className="form-input"
-                value={form.tax_info_status}
-                onChange={(e) => update("tax_info_status", e.target.value)}
-              >
-                {TAX_INFO_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </div>
-            <div className="form-group">
-              <label htmlFor="preferred_payout_method">Preferred Payout Method</label>
-              <select
-                id="preferred_payout_method"
-                className="form-input"
-                value={form.preferred_payout_method}
-                onChange={(e) => update("preferred_payout_method", e.target.value)}
-              >
-                {PAYOUT_METHODS.map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-            </div>
+          <div className="form-group">
+            <label htmlFor="tax_info_status">Tax Info Status</label>
+            <select
+              id="tax_info_status"
+              className="form-input"
+              value={form.tax_info_status}
+              onChange={(e) => update("tax_info_status", e.target.value)}
+            >
+              {TAX_INFO_OPTIONS.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+
+          <div className="form-group">
+            <label htmlFor="w9">W-9 (Required before referring)</label>
+            <input
+              id="w9"
+              type="file"
+              accept="application/pdf,image/jpeg,image/png"
+              onChange={(e) => setW9File(e.target.files?.[0] ?? null)}
+            />
+            <p className="form-hint" style={{ marginTop: 6, fontSize: 13, color: "#6b7280" }}>
+              Upload now to start referring immediately, or upload it from your
+              dashboard after you sign in. PDF, JPG, or PNG (max 10MB). Your W-9
+              is stored securely and only visible to ClearToPay staff.
+            </p>
+            {w9File && (
+              <p style={{ marginTop: 6, fontSize: 13, color: "#059669" }}>
+                ✓ {w9File.name} ({(w9File.size / 1024).toFixed(1)} KB)
+              </p>
+            )}
+          </div>
+
+          <div className="form-group">
+            <label>Preferred Payout Method</label>
+            <p className="form-hint" style={{ margin: 0, fontSize: 14, color: "#374151", padding: "10px 0 2px" }}>
+              Payouts are paid by <strong>ACH / bank transfer</strong> to your
+              connected Stripe account.
+            </p>
+            <input type="hidden" name="preferred_payout_method" value={form.preferred_payout_method} />
           </div>
 
           <button type="submit" className="auth-btn" disabled={submitting}>

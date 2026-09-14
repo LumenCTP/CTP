@@ -391,6 +391,12 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "partners", "stripe_payouts_enabled INTEGER NOT NULL DEFAULT 0", "stripe_payouts_enabled");
   ensureColumn(db, "partners", "stripe_charges_enabled INTEGER NOT NULL DEFAULT 0", "stripe_charges_enabled");
   ensureColumn(db, "partners", "stripe_disconnected_at TEXT", "stripe_disconnected_at");
+  // W-9 (tax form) — REQUIRED before a partner may refer. The document is
+  // stored in object storage under partners/<id>/w9-<ts>.<ext>; only the file
+  // key/filename/upload-time live in the DB (admin-only surface).
+  ensureColumn(db, "partners", "w9_file_key TEXT", "w9_file_key");
+  ensureColumn(db, "partners", "w9_filename TEXT", "w9_filename");
+  ensureColumn(db, "partners", "w9_uploaded_at TEXT", "w9_uploaded_at");
   ensureColumn(db, "tenants", "stripe_customer_id TEXT", "stripe_customer_id");
   ensureColumn(db, "tenants", "stripe_subscription_id TEXT", "stripe_subscription_id");
   // Trial end date (Unix epoch stored as TEXT) — set when a trialing

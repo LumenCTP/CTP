@@ -6,6 +6,8 @@ import { calculateCommissions, runPartnerPayouts } from "../commissions";
 import { getStripe, partnerConnectStatus, getPartnerStripeRow, PARTNER_PORTAL_CONNECT_URL } from "../stripe-connect";
 import { sendEmail, buildSetupPasswordEmail } from "../email";
 import { getAppBaseUrl } from "../app-base-url";
+import { storagePut, storageGetStream, storageDelete } from "../storage";
+import { validateAttachment, isHeicFile } from "../attachments";
 
 const app = new Hono();
 
@@ -39,6 +41,65 @@ function generateReferralCode(db: ReturnType<typeof getDb>, lastName: string): s
   return `${base}${Date.now().toString(36).toUpperCase().slice(-3)}`;
 }
 
+// ── W-9 upload helper (shared by unauthenticated apply-inline and the
+//    auth-gated POST /api/partners/w9) ────────────────────
+// Stores the W-9 in object storage under partners/<id>/w9-<ts>.<ext>, records
+// the file key/filename/upload-time on the partners row, flips tax_info_status
+// to 'submitted', and — the key rule — only NOW generates the referral code if
+// it is still NULL (the code must not exist before a W-9 is on file).
+async function ingestW9(
+  db: ReturnType<typeof getDb>,
+  partnerId: number,
+  file: File,
+  performedBy: string,
+): Promise<{ ok: true; referral_code: string | null; w9_file_key: string; w9_filename: string; generated: boolean } | { ok: false; reason: string }> {
+  const validation = validateAttachment({ filename: file.name, contentType: file.type, size: file.size });
+  if (!validation.ok) return { ok: false, reason: validation.reason };
+
+  const extMatch = /\.([a-z0-9]{1,8})$/i.exec(file.name);
+  const extFromName = extMatch ? extMatch[1].toLowerCase() : "";
+  const extByType =
+    file.type === "application/pdf" ? "pdf"
+    : file.type === "image/png" ? "png"
+    : file.type === "image/jpeg" ? "jpg"
+    : "";
+  const ext = extByType || (extFromName === "jpg" || extFromName === "jpeg" || extFromName === "png" || extFromName === "pdf" ? (extFromName === "jpeg" ? "jpg" : extFromName) : "pdf");
+
+  const now = Date.now();
+  const key = `partners/${partnerId}/w9-${now}.${ext}`;
+  const content = new Uint8Array(await file.arrayBuffer());
+  await storagePut(key, content, file.type || "application/pdf");
+
+  const partner = db.query("SELECT id, last_name, referral_code FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number; last_name: string; referral_code: string | null } | undefined;
+  if (!partner) {
+    await storageDelete(key).catch(() => {});
+    return { ok: false, reason: "Partner not found" };
+  }
+
+  let referralCode = partner.referral_code;
+  let generated = false;
+  if (!referralCode) {
+    referralCode = generateReferralCode(db, partner.last_name);
+    generated = true;
+  }
+
+  db.query(`
+    UPDATE partners SET
+      w9_file_key = $key,
+      w9_filename = $filename,
+      w9_uploaded_at = datetime('now'),
+      tax_info_status = 'submitted',
+      referral_code = $code,
+      updated_at = datetime('now')
+    WHERE id = $id
+  `).run({ $key: key, $filename: file.name, $code: referralCode, $id: partnerId });
+
+  logPartnerAudit(db, partnerId, "w9_uploaded", { w9_filename: file.name, w9_file_key: key, referral_code_generated: generated, tax_info_status: "submitted" }, null, performedBy);
+  logAudit(db, "partner", partnerId, "w9_uploaded", { w9_filename: file.name, w9_file_key: key, referral_code_generated: generated });
+
+  return { ok: true, referral_code: referralCode, w9_file_key: key, w9_filename: file.name, generated };
+}
+
 // TODO: revert to www.cleartopayconstruction.com once the domain is restored
 const PARTNER_REFERRAL_LINK_BASE = "https://cleartopay.ctonew.app/get-started";
 
@@ -46,8 +107,25 @@ const PARTNER_REFERRAL_LINK_BASE = "https://cleartopay.ctonew.app/get-started";
 
 app.post("/api/partners/apply", async (c) => {
   try {
-    const body = await c.req.json().catch(() => ({}));
-    const { first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method } = body;
+    // Accept either JSON (existing API consumers/tests) or multipart/form-data
+    // (the SPA register form, which sends the optional W-9 file in the same
+    // request). Text-field validation is identical for both shapes.
+    const contentType = c.req.header("content-type") || "";
+    let body: Record<string, unknown> = {};
+    let w9File: File | null = null;
+    if (contentType.includes("multipart/form-data")) {
+      const form = await c.req.formData().catch(() => null);
+      if (!form) return c.json({ error: "Invalid multipart body" }, 400);
+      for (const key of ["first_name", "last_name", "company_name", "email", "phone", "address", "website", "states_served", "partner_type", "tax_info_status", "preferred_payout_method"]) {
+        const v = form.get(key);
+        if (v !== null) body[key] = String(v);
+      }
+      const f = form.get("w9");
+      if (f instanceof File && f.size > 0) w9File = f;
+    } else {
+      body = await c.req.json().catch(() => ({}));
+    }
+    const { first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method } = body as Record<string, string | undefined>;
 
     if (!first_name || typeof first_name !== "string" || !first_name.trim()) return c.json({ error: "first_name is required" }, 400);
     if (!last_name || typeof last_name !== "string" || !last_name.trim()) return c.json({ error: "last_name is required" }, 400);
@@ -92,12 +170,12 @@ app.post("/api/partners/apply", async (c) => {
       $id: userId,
     });
 
-    // Instantly approved — generate the referral code up front so the partner
-    // can start referring the moment they sign in.
-    const referralCode = generateReferralCode(db, last_name.trim());
+    // Approved instantly. The referral code is deliberately NOT generated at
+    // apply time — it only exists once a W-9 is uploaded (ingestW9 below or
+    // POST /api/partners/w9 later). No W-9 ⇒ no code ⇒ referring is blocked.
     const partnerResult = db.query(`
       INSERT INTO partners (user_id, first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method, status, referral_code)
-      VALUES ($user_id, $first_name, $last_name, $company_name, $email, $phone, $address, $website, $states_served, $partner_type, $tax, $payout_method, 'approved', $referral_code)
+      VALUES ($user_id, $first_name, $last_name, $company_name, $email, $phone, $address, $website, $states_served, $partner_type, $tax, $payout_method, 'approved', NULL)
     `).run({
       $user_id: userId,
       $first_name: first_name.trim(),
@@ -111,13 +189,12 @@ app.post("/api/partners/apply", async (c) => {
       $partner_type: partner_type.trim(),
       $tax: (tax_info_status && tax_info_status.trim()) || "not_submitted",
       $payout_method: (preferred_payout_method && preferred_payout_method.trim()) || null,
-      $referral_code: referralCode,
     });
     const partnerId = Number(partnerResult.lastInsertRowid);
 
-    logPartnerAudit(db, partnerId, "application_submitted", { partner_type: partner_type.trim(), email: normalizedEmail, status: "approved", referral_code: referralCode }, null, normalizedEmail);
-    logPartnerAudit(db, partnerId, "application_approved", { referral_code: referralCode, method: "instant" }, null, normalizedEmail);
-    logAudit(db, "partner", partnerId, "partner_application", { email: normalizedEmail, partner_type: partner_type.trim(), status: "approved", referral_code: referralCode });
+    logPartnerAudit(db, partnerId, "application_submitted", { partner_type: partner_type.trim(), email: normalizedEmail, status: "approved", referral_code: null }, null, normalizedEmail);
+    logPartnerAudit(db, partnerId, "application_approved", { referral_code: null, method: "instant" }, null, normalizedEmail);
+    logAudit(db, "partner", partnerId, "partner_application", { email: normalizedEmail, partner_type: partner_type.trim(), status: "approved", referral_code: null });
 
     // Email the set-password link through the normal sendEmail path (Graph
     // Mail primary; SMTP/queue fallback). A delivery hiccup must not fail the
@@ -130,14 +207,117 @@ app.post("/api/partners/apply", async (c) => {
       console.error(`[partners] Set-password email failed for partner ${partnerId} (${normalizedEmail}):`, emailErr);
     }
 
+    // Inline W-9 from the register form — nice-to-have at apply time; a bad
+    // file must not fail the application (the partner can retry in the portal
+    // with a clear reason). If it succeeds, the referral code is now generated.
+    let referralCode: string | null = null;
+    let w9Uploaded = false;
+    let w9Error: string | null = null;
+    if (w9File) {
+      const w9 = await ingestW9(db, partnerId, w9File, normalizedEmail);
+      if (w9.ok) {
+        referralCode = w9.referral_code;
+        w9Uploaded = true;
+      } else {
+        w9Error = w9.reason;
+      }
+    }
+
     return c.json({
       partner: {
         id: partnerId,
         status: "approved",
         referral_code: referralCode,
+        w9_uploaded: w9Uploaded,
+        w9_error: w9Error,
         message: "You're approved! Check your inbox for a link to set your password, then sign in to your partner portal.",
       },
     }, 201);
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
+
+// POST /api/partners/w9 — upload/replace the partner's W-9 (auth-gated: the
+// partner themself OR any admin, who may pass partner_id to upload for a
+// specific partner). Accepts multipart/form-data with the file under "w9"
+// (or "file" for convenience). Validates type/size (PDF/JPG/PNG, ≤10MB — same
+// rules as document uploads), stores the object in R2 under
+// partners/<id>/w9-<ts>.<ext>, records it, and generates the referral code
+// if it was still NULL. W-9 presence is the gate to referring.
+app.post("/api/partners/w9", requireAuth, async (c) => {
+  try {
+    const db = getDb();
+    const user = c.get("user") as { user_id: number; email: string };
+    const roleRow = db.query("SELECT role FROM users WHERE id = ?").get(user.user_id) as { role: string } | null;
+    const isAdmin = roleRow?.role === "admin";
+
+    const form = await c.req.formData().catch(() => null);
+    if (!form) return c.json({ error: "multipart/form-data body expected with a 'w9' file field" }, 400);
+    let file = form.get("w9");
+    if (!(file instanceof File) || file.size === 0) {
+      const alt = form.get("file");
+      if (alt instanceof File && alt.size > 0) file = alt;
+    }
+    if (!(file instanceof File) || file.size === 0) return c.json({ error: "W-9 file is required (PDF, JPG, or PNG)" }, 400);
+
+    // Resolve the target partner: admin may specify partner_id; otherwise the
+    // authenticated user's own partner row (approved partners only).
+    let partnerId: number | null = null;
+    const pidRaw = form.get("partner_id");
+    if (isAdmin && pidRaw !== null && String(pidRaw).trim() !== "") {
+      partnerId = Number(pidRaw);
+      if (!Number.isInteger(partnerId)) return c.json({ error: "Invalid partner_id" }, 400);
+    } else {
+      const mine = db.query("SELECT id, status FROM partners WHERE user_id = $uid").get({ $uid: user.user_id }) as { id: number; status: string } | undefined;
+      if (!mine) return c.json({ error: "Partner account required" }, 403);
+      if (mine.status !== "approved") return c.json({ error: "Partner account not yet approved" }, 403);
+      partnerId = mine.id;
+    }
+
+    const exists = db.query("SELECT id FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number } | undefined;
+    if (!exists) return c.json({ error: "Partner not found" }, 404);
+
+    const w9 = await ingestW9(db, partnerId, file, isAdmin ? `admin:${user.email}` : user.email);
+    if (!w9.ok) return c.json({ error: w9.reason }, 400);
+
+    return c.json({
+      partner: {
+        id: partnerId,
+        w9_uploaded: true,
+        w9_filename: w9.w9_filename,
+        referral_code: w9.referral_code,
+        referral_link: w9.referral_code ? `${PARTNER_REFERRAL_LINK_BASE}?ref=${w9.referral_code}` : null,
+        tax_info_status: "submitted",
+        message: w9.generated ? "W-9 received — you're ready to refer!" : "W-9 updated.",
+      },
+    }, 200);
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
+
+// GET /api/partners/:id/w9 — ADMIN-ONLY download of the stored W-9 object.
+// Partners/clients never see the file or its storage key anywhere else.
+app.get("/api/partners/:id/w9", requireAuth, requireAdmin, async (c) => {
+  try {
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id)) return c.json({ error: "Invalid partner id" }, 400);
+    const db = getDb();
+    const partner = db.query("SELECT id, w9_file_key, w9_filename FROM partners WHERE id = $id").get({ $id: id }) as { id: number; w9_file_key: string | null; w9_filename: string | null } | undefined;
+    if (!partner) return c.json({ error: "Partner not found" }, 404);
+    if (!partner.w9_file_key) return c.json({ error: "No W-9 on file for this partner" }, 404);
+
+    const obj = await storageGetStream(partner.w9_file_key);
+    if (!obj) return c.json({ error: "W-9 file missing from storage" }, 404);
+
+    logPartnerAudit(db, id, "w9_downloaded", { w9_filename: partner.w9_filename }, null, c.get("user").email);
+    logAudit(db, "partner", id, "w9_downloaded", { w9_filename: partner.w9_filename });
+
+    const filename = partner.w9_filename || `partner-${id}-w9`;
+    c.header("Content-Type", obj.contentType || "application/pdf");
+    c.header("Content-Disposition", `attachment; filename="${filename.replace(/["\\]/g, "")}"`);
+    return c.body(obj.stream as unknown as BodyInit);
   } catch (err) {
     return serverError(c, err);
   }
@@ -151,6 +331,7 @@ app.get("/api/partners", requireAuth, requireAdmin, (c) => {
   const baseSql = `
     SELECT p.id, p.first_name, p.last_name, p.company_name, p.email, p.partner_type, p.status,
            p.referral_code, p.commission_percentage, p.created_at,
+           p.w9_filename, (p.w9_file_key IS NOT NULL) as w9_uploaded, p.tax_info_status,
            (SELECT COUNT(*) FROM referrals r WHERE r.partner_id = p.id) as total_referrals
     FROM partners p
   `;
@@ -193,13 +374,14 @@ app.put("/api/partners/:id/status", requireAuth, requireAdmin, async (c) => {
     const partner = db.query("SELECT * FROM partners WHERE id = $id").get({ $id: id }) as { id: number; last_name: string; referral_code: string | null } | undefined;
     if (!partner) return c.json({ error: "Partner not found" }, 404);
 
-    const changes: Record<string, unknown> = { status };
+    // Referral code is NOT minted on approval — it is only generated when the
+    // partner uploads a W-9 (POST /api/partners/w9), so an approved partner
+    // with no W-9 on file cannot refer. W-9 upload is the sole gate.
+    db.query("UPDATE partners SET status = $status, updated_at = datetime('now') WHERE id = $id").run({ $status: status, $id: id });
+    const changes: Record<string, unknown> = { status, previous_status: partner.status };
     if (status === "approved" && !partner.referral_code) {
-      const code = generateReferralCode(db, partner.last_name);
-      db.query("UPDATE partners SET status = $status, referral_code = $code, updated_at = datetime('now') WHERE id = $id").run({ $status: status, $code: code, $id: id });
-      changes.referral_code = code;
-    } else {
-      db.query("UPDATE partners SET status = $status, updated_at = datetime('now') WHERE id = $id").run({ $status: status, $id: id });
+      changes.referral_code = null;
+      changes.note = "referral_code stays NULL until the partner uploads a W-9";
     }
 
     logPartnerAudit(db, id, "status_changed", changes, (reason && String(reason).trim()) || null, c.get("user").email);
@@ -243,8 +425,11 @@ app.put("/api/partners/:id/commission", requireAuth, requireAdmin, async (c) => 
 app.get("/api/partner/me", requireAuth, (c) => {
   const db = getDb();
   const user = c.get("user") as { user_id: number };
-  const partner = db.query("SELECT * FROM partners WHERE user_id = $uid").get({ $uid: user.user_id }) as Record<string, unknown> | undefined;
-  if (!partner) return c.json({ error: "Partner account required" }, 403);
+  const raw = db.query("SELECT * FROM partners WHERE user_id = $uid").get({ $uid: user.user_id }) as Record<string, unknown> | undefined;
+  if (!raw) return c.json({ error: "Partner account required" }, 403);
+  // Strip the storage key — the W-9 file is admin-only. The partner gets a
+  // boolean + filename so they know what's on file.
+  const { w9_file_key: _w9Key, ...partner } = raw;
   const totalReferrals = (db.query("SELECT COUNT(*) as c FROM referrals WHERE partner_id = $id").get({ $id: partner.id }) as { c: number }).c;
   const stripeRow = getPartnerStripeRow(db, Number(partner.id));
   const stripe = {
@@ -261,7 +446,19 @@ app.get("/api/partner/me", requireAuth, (c) => {
     FROM payouts WHERE partner_id = $pid
     ORDER BY created_at DESC, id DESC
   `).all({ $pid: partner.id });
-  return c.json({ partner: { ...partner, total_referrals: totalReferrals, stripe, payouts } });
+  return c.json({
+    partner: {
+      ...partner,
+      // W-9 file is admin-only — partners see a boolean + the original filename
+      // (so they know what's on file) but NEVER the storage key/location.
+      w9_uploaded: !!raw.w9_file_key,
+      w9_filename: partner.w9_filename ?? null,
+      w9_uploaded_at: partner.w9_uploaded_at ?? null,
+      total_referrals: totalReferrals,
+      stripe,
+      payouts,
+    },
+  });
 });
 
 // ── Stripe Connect onboarding (delegation B) ─────────────
@@ -345,7 +542,7 @@ app.get("/api/partner/connect-status", requireAuth, requirePartner, (c) => {
 app.get("/api/partner/dashboard", requireAuth, requirePartner, (c) => {
   const db = getDb();
   const partnerId = c.get("partner_id") as number;
-  const partner = db.query("SELECT id, referral_code FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number; referral_code: string | null };
+  const partner = db.query("SELECT id, referral_code, w9_file_key, w9_filename FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number; referral_code: string | null; w9_file_key: string | null; w9_filename: string | null };
 
   const countBy = (where: string, params: Record<string, unknown> = {}) =>
     (db.query(`SELECT COUNT(*) as c FROM referrals WHERE partner_id = $pid AND ${where}`).get({ $pid: partnerId, ...params }) as { c: number }).c;
@@ -366,9 +563,17 @@ app.get("/api/partner/dashboard", requireAuth, requirePartner, (c) => {
   const lifetimeEarnings = sumBy("status NOT IN ('reversed','disputed')");
   const nextExpectedPayout = sumBy("status IN ('approved','scheduled')");
 
+  const w9Uploaded = !!partner.w9_file_key;
+  const referringEnabled = !!partner.referral_code;
   return c.json({
     referral_code: partner.referral_code,
     referral_link: partner.referral_code ? `${PARTNER_REFERRAL_LINK_BASE}?ref=${partner.referral_code}` : null,
+    // Explicit W-9 gate flags for the portal UI: referring is disabled until a
+    // W-9 is on file (which is also when the referral code is generated).
+    referring_enabled: referringEnabled,
+    w9_required: !w9Uploaded,
+    w9_uploaded: w9Uploaded,
+    w9_filename: partner.w9_filename,
     total_referrals: totalReferrals,
     active_customers: activeCustomers,
     pending_referrals: pendingReferrals,
@@ -392,8 +597,14 @@ app.post("/api/partner/referrals", requireAuth, requirePartner, async (c) => {
 
     const db = getDb();
     const partnerId = c.get("partner_id") as number;
-    const partner = db.query("SELECT id, referral_code FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number; referral_code: string | null };
-    const code = partner.referral_code || "";
+    const partner = db.query("SELECT id, referral_code, w9_file_key FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number; referral_code: string | null; w9_file_key: string | null };
+    // W-9 gate: no W-9 on file ⇒ no referral code ⇒ referring is blocked.
+    // (The code only ever exists once a W-9 has been uploaded, but both checks
+    // guard against any legacy row that has a code but no W-9.)
+    if (!partner.w9_file_key || !partner.referral_code) {
+      return c.json({ error: "Upload your W-9 before referring" }, 403);
+    }
+    const code = partner.referral_code;
 
     const result = db.query(`
       INSERT INTO referrals (partner_id, partner_code, referred_company, contact_name, contact_email, contact_phone, notes, customer_status)
