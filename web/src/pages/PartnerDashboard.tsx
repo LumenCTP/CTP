@@ -154,7 +154,8 @@ export default function PartnerDashboard() {
     : null;
   const company = profile?.company_name || null;
   const referralCode = data?.referral_code || profile?.referral_code || null;
-  const referralLink = data?.referral_link || (referralCode ? `https://www.cleartopayconstruction.com/get-started?ref=${referralCode}` : null);
+  // TODO: revert to www.cleartopayconstruction.com once the domain is restored
+  const referralLink = data?.referral_link || (referralCode ? `https://cleartopay.ctonew.app/get-started?ref=${referralCode}` : null);
 
   const stats = [
     { key: "total_referrals", label: "Total Referrals", icon: "👥", color: "#1a56db", value: data?.total_referrals ?? 0 },
