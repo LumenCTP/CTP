@@ -356,8 +356,8 @@ export default function Documents() {
               📧 Vendors can also email documents directly to{" "}
               <strong style={{ wordBreak: "break-all" }}>{user.inbox_address}</strong>
               <span style={{ display: "block", marginTop: 6, fontSize: 12, color: "var(--blue-600, #2563eb)" }}>
-                ClearToPay stores and tracks your documents; your customer (the contractor)
-                sets the compliance requirements. Contact them with questions about coverage.
+                Share this address with your subcontractors and their insurance agents. Documents
+                emailed here are automatically processed and matched against your compliance requirements.
               </span>
             </div>
           )}

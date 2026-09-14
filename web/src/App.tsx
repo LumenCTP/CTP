@@ -261,19 +261,44 @@ function CheckoutReturnHandler() {
 
     setActivating(true);
     (async () => {
-      try {
+      // The Stripe webhook may lag behind checkout completion. Re-run confirm
+      // (idempotent) and re-check /me a few times over ~10s so a slow webhook
+      // doesn't bounce a customer who just paid straight to the paywall.
+      let activated = false;
+      for (let attempt = 0; attempt < 5 && !activated; attempt++) {
         if (sessionId) {
-          await fetch("/api/checkout/confirm", {
-            method: "POST",
-            headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
-            body: JSON.stringify({ session_id: sessionId }),
-          });
+          try {
+            await fetch("/api/checkout/confirm", {
+              method: "POST",
+              headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+              body: JSON.stringify({ session_id: sessionId }),
+            });
+          } catch {
+            // Network error — retry on the next attempt.
+          }
         }
-        // Whether confirm succeeded or the webhook already did the job,
-        // refresh /me so the shell routes to the wizard/dashboard.
+        try {
+          const meRes = await fetch("/api/auth/me", {
+            headers: { Authorization: `Bearer ${token}` },
+          });
+          if (meRes.ok) {
+            const me = await meRes.json() as { subscription_status?: string | null };
+            activated = me.subscription_status === "ACTIVE" || me.subscription_status === "TRIAL";
+          }
+        } catch {
+          // retry on the next attempt
+        }
+        if (!activated && attempt < 4) {
+          await new Promise((r) => setTimeout(r, 2500));
+        }
+      }
+      // Final refresh /me so the shell routes to the wizard/dashboard (or the
+      // paywall, whose "check status" action can re-confirm if the webhook
+      // still hasn't landed).
+      try {
         await refreshUser();
       } catch {
-        // Network error — fall through; /me will still be refreshed on next mount.
+        // fall through; /me will be refreshed on next mount
       }
       try {
         localStorage.removeItem(CHECKOUT_SESSION_KEY);

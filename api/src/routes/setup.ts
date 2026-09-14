@@ -39,6 +39,7 @@ app.get("/api/setup", requireAuth, requireTenant, (c) => {
             company_address: wizard.company_address,
             payment_week_start_day: wizard.payment_week_start_day,
             compliance_client_id: wizard.compliance_client_id ?? null,
+            acknowledged: !!wizard.acknowledged,
             completed_at: wizard.completed_at,
           }
         : null,
@@ -73,6 +74,27 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
     }
     // Explicit confirmation: the final step's "Confirm & Get Started" button.
     const confirmed = body.confirmed === true || body.confirmed === "true";
+    // Server-side liability acknowledgment (the confirmation step's checkbox).
+    // Completion is REJECTED when confirmed === true but acknowledged is not
+    // truthy — the acknowledgment must be persisted, not just client-side UI.
+    const acknowledged = body.acknowledged === true || body.acknowledged === 1 || body.acknowledged === "true";
+    // Report recipients collected during onboarding (weekly/monthly Clear-to-Pay
+    // reports). Stored on the tenant's compliance client row via client_email_config
+    // — the exact fields the Clients → Email Settings panel manages.
+    const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    function invalidRecipient(value: string | null | undefined): string | null {
+      if (typeof value !== "string" || value.trim() === "") return null;
+      for (const part of value.split(",").map((s) => s.trim()).filter(Boolean)) {
+        if (!EMAIL_RE.test(part)) return `Invalid email in report recipients: "${part}"`;
+      }
+      return null;
+    }
+    const weekly_report_recipients = typeof body.weekly_report_recipients === "string" ? body.weekly_report_recipients.trim() || null : null;
+    const monthly_report_recipients = typeof body.monthly_report_recipients === "string" ? body.monthly_report_recipients.trim() || null : null;
+    const weeklyErr = invalidRecipient(body.weekly_report_recipients);
+    if (weeklyErr) return c.json({ error: weeklyErr }, 400);
+    const monthlyErr = invalidRecipient(body.monthly_report_recipients);
+    if (monthlyErr) return c.json({ error: monthlyErr }, 400);
     // Optional: the tenant's own client row that the Compliance Requirements step
     // attached its required docs to (used by the wizard resume logic).
     let compliance_client_id: number | null = null;
@@ -96,6 +118,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
           company_address = COALESCE($company_address, company_address),
           payment_week_start_day = $day,
           compliance_client_id = COALESCE($compliance_client_id, compliance_client_id),
+          acknowledged = COALESCE($acknowledged, acknowledged),
           current_step = COALESCE($current_step, current_step),
           updated_at = datetime('now')
       WHERE tenant_id = $tid
@@ -104,9 +127,32 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
       $company_address: company_address || null,
       $day: payment_week_start_day,
       $compliance_client_id: compliance_client_id,
+      // undefined → null → COALESCE keeps the previous value; explicit false
+      // persists 0 (an un-acknowledgment is itself a fact worth recording).
+      $acknowledged: acknowledged ? 1 : body.acknowledged === undefined ? null : 0,
       $current_step: current_step,
       $tid: tenantId,
     });
+
+    // Report recipients go on the tenant's compliance client row — the same
+    // client_email_config fields the Clients → Email Settings panel uses, so the
+    // Monday Clear-to-Pay email (and monthly report) is configured before the
+    // wizard even completes instead of landing every new client in the
+    // "weekly reports not configured" warning.
+    if (compliance_client_id) {
+      db.query(`
+        INSERT INTO client_email_config (client_id, weekly_report_recipients, monthly_report_recipients, renewal_reminders_enabled, updated_at)
+        VALUES ($client_id, $weekly, $monthly, 1, datetime('now'))
+        ON CONFLICT(client_id) DO UPDATE SET
+          weekly_report_recipients = COALESCE($weekly, weekly_report_recipients),
+          monthly_report_recipients = COALESCE($monthly, monthly_report_recipients),
+          updated_at = datetime('now')
+      `).run({
+        $client_id: compliance_client_id,
+        $weekly: weekly_report_recipients,
+        $monthly: monthly_report_recipients,
+      });
+    }
 
     // Update tenant name to company_name (if provided) + payment week start day.
     // The user's profile name (full_name) stays in sync with the company name:
@@ -144,6 +190,21 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
     // COMPLETED is only reached by explicitly confirming the final step.
     // Saving earlier steps (even with every field filled) keeps the wizard
     // IN_PROGRESS so a reload resumes at the exact step.
+    if (confirmed && !acknowledged) {
+      // Liability backstop: an explicit confirm without the acknowledgment is
+      // rejected. Progress above is already saved; only completion is refused,
+      // so the wizard stays on the confirmation step for the user to check the
+      // box. This guards against old clients / direct API calls that skip the
+      // checkbox — the acknowledgment must be on the server, not just in the UI.
+      db.query(`
+        UPDATE setup_wizard SET status = 'IN_PROGRESS', updated_at = datetime('now')
+        WHERE tenant_id = $tid
+      `).run({ $tid: tenantId });
+      return c.json({
+        error: "Please confirm your compliance criteria acknowledgment before completing setup.",
+        completed: false,
+      }, 400);
+    }
     if (confirmed && allFilled) {
       db.query(`
         UPDATE setup_wizard
@@ -154,7 +215,11 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
         company_name: wizard.company_name,
         company_address: wizard.company_address,
         payment_week_start_day: wizard.payment_week_start_day,
+        compliance_client_id: wizard.compliance_client_id ?? null,
         confirmed: true,
+        acknowledged: !!acknowledged,
+        weekly_report_recipients: weekly_report_recipients ?? (db.query("SELECT weekly_report_recipients FROM client_email_config WHERE client_id = $cid").get({ $cid: wizard.compliance_client_id }) as { weekly_report_recipients: string | null } | undefined)?.weekly_report_recipients ?? null,
+        monthly_report_recipients: monthly_report_recipients ?? (db.query("SELECT monthly_report_recipients FROM client_email_config WHERE client_id = $cid").get({ $cid: wizard.compliance_client_id }) as { monthly_report_recipients: string | null } | undefined)?.monthly_report_recipients ?? null,
       });
     } else {
       db.query(`
@@ -182,6 +247,7 @@ app.post("/api/setup", requireAuth, requireTenant, async (c) => {
         company_address: wizard.company_address,
         payment_week_start_day: wizard.payment_week_start_day,
         compliance_client_id: wizard.compliance_client_id ?? null,
+        acknowledged: !!wizard.acknowledged,
         completed_at: wizard.completed_at,
       },
     });

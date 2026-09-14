@@ -659,6 +659,10 @@ function runMigrations(db: Database): void {
   // Wizard resume marker: the tenant's own client row the wizard attaches its
   // Compliance Requirements step to (null until that step is saved).
   ensureColumn(db, "setup_wizard", "compliance_client_id INTEGER", "compliance_client_id");
+  // Server-side record of the setup wizard's liability acknowledgment (the
+  // confirmation step's checkbox). Completion is rejected unless acknowledged
+  // is truthy, so the acknowledgment is enforceable, not just client-side UI.
+  ensureColumn(db, "setup_wizard", "acknowledged INTEGER NOT NULL DEFAULT 0", "acknowledged");
   // Backfill the owner-set default requirement list into clients that have zero
   // configured rows (existing config is never overwritten).
   const zeroConfigClients = db.query(

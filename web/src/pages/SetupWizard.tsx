@@ -69,6 +69,12 @@ export default function SetupWizard() {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [acknowledged, setAcknowledged] = useState(false);
+  // Report recipients (comma-separated emails) collected on the confirmation
+  // step — persisted to the same client_email_config fields the Clients →
+  // Email Settings panel uses, so weekly/monthly reports are configured at
+  // onboarding instead of landing the client in the unconfigured-report warning.
+  const [weeklyRecipients, setWeeklyRecipients] = useState("");
+  const [monthlyRecipients, setMonthlyRecipients] = useState("");
 
   // Load existing wizard state (so returning users can resume)
   useEffect(() => {
@@ -113,6 +119,19 @@ export default function SetupWizard() {
       .then((rows) => {
         if (Array.isArray(rows)) {
           setReqDocs(rows.map((r) => ({ document_type: r.document_type, coverage_requirement: r.coverage_requirement ?? null })));
+        }
+      })
+      .catch(() => {});
+    // Prefill report recipients from the client's email config so a returning
+    // user resuming the wizard sees what's already configured.
+    apiFetch(`/api/emails/config/${complianceClientId}`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((cfg) => {
+        if (cfg) {
+          if (typeof cfg.weekly_report_recipients === "string") setWeeklyRecipients(cfg.weekly_report_recipients);
+          if (typeof cfg.monthly_report_recipients === "string") setMonthlyRecipients(cfg.monthly_report_recipients);
         }
       })
       .catch(() => {});
@@ -318,13 +337,25 @@ export default function SetupWizard() {
           company_address: companyAddress.trim(),
           payment_week_start_day: paymentWeekDay,
           compliance_client_id: complianceClientId,
+          weekly_report_recipients: weeklyRecipients.trim(),
+          monthly_report_recipients: monthlyRecipients.trim(),
           current_step: "completed",
           confirmed: true,
+          acknowledged: true,
         }),
       });
       const data = await res.json();
       if (!res.ok) {
         setError(res.status >= 500 ? "Something went wrong. Please try again." : (data.error || "Failed to save setup. Please try again."));
+        setSubmitting(false);
+        return;
+      }
+      // The server only returns completed:true when the wizard is COMPLETED
+      // (it may legitimately return ok without completion, e.g. a rejected or
+      // deferred confirmation). Navigating with data.completed falsy would let
+      // the AppShell guard bounce the user back silently — surface it instead.
+      if (!data.completed) {
+        setError(data.error || "Setup couldn't be completed. Please try again.");
         setSubmitting(false);
         return;
       }
@@ -560,21 +591,50 @@ export default function SetupWizard() {
             {user?.inbox_address && (
               <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px dashed var(--accent, #2563eb)" }}>
                 <p style={{ margin: "0 0 8px", fontWeight: 700 }}>📥 Vendor Document Submission</p>
-                <p style={{ margin: "0 0 6px", fontSize: 14, color: "var(--text-muted, #6b7280)" }}>
+                <p style={{ margin: "0 0 8px", fontSize: 14, color: "var(--text-muted, #6b7280)" }}>
                   Have vendors email COIs and W-9s to:
                 </p>
                 <p style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, wordBreak: "break-all" }}>
                   {user.inbox_address}
                 </p>
                 <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted, #6b7280)" }}>
-                  Documents will be automatically processed and matched.
-                </p>
-                <p style={{ margin: "6px 0 0", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>
-                  ClearToPay stores and tracks your documents; your customer (the contractor)
-                  sets the compliance requirements. Contact them with questions about coverage.
+                  Share this address with your subcontractors and their insurance
+                  agents. Documents emailed here are automatically processed and
+                  matched against your compliance requirements.
                 </p>
               </div>
             )}
+            {/* ── Report recipients (collected at onboarding so the Monday
+                Clear-to-Pay email and the monthly report are configured before
+                the wizard even completes — no unconfigured-report warning). */}
+            <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px solid var(--border, #e2e8f0)" }}>
+              <p style={{ margin: "0 0 4px", fontWeight: 700 }}>📧 Report Recipients</p>
+              <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>
+                Who should receive your Clear-to-Pay reports? Comma-separated emails
+                (e.g. you@company.com, ap@company.com). You can change these anytime
+                in Clients → Email Settings.
+              </p>
+              <div className="form-group">
+                <label htmlFor="weeklyRecipients">Weekly Clear-to-Pay Report Recipients</label>
+                <input
+                  id="weeklyRecipients"
+                  type="text"
+                  value={weeklyRecipients}
+                  onChange={(e) => setWeeklyRecipients(e.target.value)}
+                  placeholder="you@company.com"
+                />
+              </div>
+              <div className="form-group" style={{ marginBottom: 0 }}>
+                <label htmlFor="monthlyRecipients">Monthly Compliance Report Recipients</label>
+                <input
+                  id="monthlyRecipients"
+                  type="text"
+                  value={monthlyRecipients}
+                  onChange={(e) => setMonthlyRecipients(e.target.value)}
+                  placeholder="you@company.com"
+                />
+              </div>
+            </div>
             <label
               style={{
                 display: "flex",

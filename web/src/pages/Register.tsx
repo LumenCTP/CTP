@@ -12,6 +12,9 @@ export default function Register() {
   const [plan, setPlan] = useState<"monthly" | "annual">("monthly");
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // True when registration was rejected because the email already has an
+  // account (409) — offer the forward path to sign in instead.
+  const [emailExists, setEmailExists] = useState(false);
 
   // Optional partner referral code captured from ?ref= in the URL
   // (e.g. cleartopay-dev.ctonew.app/app/register?ref=CODE). Passed through to
@@ -38,6 +41,7 @@ export default function Register() {
   async function handleSubmit(e: FormEvent) {
     e.preventDefault();
     setError("");
+    setEmailExists(false);
 
     if (!companyName.trim()) {
       setError("Company name is required.");
@@ -63,7 +67,15 @@ export default function Register() {
     setSubmitting(false);
 
     if (err) {
-      setError(err);
+      // 409: the email already has an account (e.g. a placeholder created by
+      // anonymous checkout before this registration attempt) — show the
+      // "Sign in instead" forward path so the user isn't stuck at a wall.
+      if (err.startsWith("409|")) {
+        setEmailExists(true);
+        setError(err.slice(4));
+      } else {
+        setError(err);
+      }
       return;
     }
 
@@ -83,6 +95,12 @@ export default function Register() {
         </div>
 
         {error && <div className="auth-error">{error}</div>}
+        {emailExists && (
+          <p style={{ fontSize: 13, textAlign: "center", margin: "-6px 0 12px" }}>
+            Your email already has an account — <Link to="/app/login">Sign in instead</Link>{" "}
+            to continue with your subscription and data.
+          </p>
+        )}
 
         <form onSubmit={handleSubmit} className="auth-form">
           <div className="form-group">

@@ -1,5 +1,11 @@
+import { useState } from "react";
 import Logo from "../components/Logo";
 import { useAuth } from "../components/AuthContext";
+
+// Same key the marketing /checkout page + App.tsx use to stash the Stripe
+// session id before redirecting (survives an intermediate redirect that strips
+// ?session_id=).
+const CHECKOUT_SESSION_KEY = "cleartopay_checkout_session";
 
 const PLAN_STYLES: React.CSSProperties = {
   flex: 1,
@@ -19,9 +25,57 @@ const PLAN_STYLES: React.CSSProperties = {
  * CANCELLED). Every plan button goes to the marketing /checkout page on the
  * same origin — checkout starts a 30-day free trial (card on file, no charge
  * until the trial ends) or collects payment immediately for a paid plan.
+ *
+ * Also offers a "check status" recovery path: a customer who already completed
+ * checkout (but whose Stripe webhook lagged, or who landed back here via a
+ * redirect) can re-run /api/checkout/confirm instead of being forced to
+ * re-checkout.
  */
 export default function Paywall() {
-  const { logout } = useAuth();
+  const { logout, token, refreshUser } = useAuth();
+  const [checking, setChecking] = useState(false);
+  const [checkError, setCheckError] = useState("");
+
+  async function checkStatus() {
+    setChecking(true);
+    setCheckError("");
+    try {
+      const qs = new URLSearchParams(window.location.search);
+      let sessionId = qs.get("session_id");
+      if (!sessionId) {
+        try {
+          sessionId = localStorage.getItem(CHECKOUT_SESSION_KEY);
+        } catch {
+          sessionId = null;
+        }
+      }
+      if (sessionId && token) {
+        await fetch("/api/checkout/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ session_id: sessionId }),
+        });
+        try {
+          localStorage.removeItem(CHECKOUT_SESSION_KEY);
+        } catch {
+          // ignore
+        }
+      }
+      // Re-fetch /me — if the subscription is ACTIVE/TRIAL now, the shell
+      // re-renders and this paywall disappears.
+      const ok = await refreshUser();
+      if (token && !ok) {
+        setCheckError("We could not reach the server. Please try again in a moment.");
+      }
+      // If refreshUser returned true but the tenant is still PENDING, the
+      // Webhook hasn't landed yet — leave the paywall visible with no error
+      // (the user can retry or pick a plan).
+    } catch {
+      setCheckError("We could not confirm your checkout yet. Please try again in a moment.");
+    } finally {
+      setChecking(false);
+    }
+  }
 
   return (
     <div className="auth-page">
@@ -96,6 +150,24 @@ export default function Paywall() {
           Your card is entered at checkout but you won't be charged until your 30-day
           free trial ends. Cancel anytime.
         </p>
+
+        {/* Checkout recovery: the webhook may have lagged behind a completed
+            checkout, or the user may have landed back here after a redirect.
+            Re-run confirm instead of forcing a re-checkout. */}
+        <div style={{ textAlign: "center", marginTop: 10 }}>
+          <button
+            type="button"
+            className="auth-link-btn"
+            onClick={checkStatus}
+            disabled={checking}
+          >
+            {checking ? "Checking…" : "I already completed checkout — check status"}
+          </button>
+          {checkError && (
+            <p style={{ fontSize: 12.5, color: "#b91c1c", margin: "8px 12px 0" }}>{checkError}</p>
+          )}
+        </div>
+
         <p style={{ fontSize: 13, color: "var(--text-muted)", textAlign: "center", marginTop: 6 }}>
           Need help? Email <a href="mailto:documents@cleartopayconstruction.com" style={{ color: "var(--blue)" }}>documents@cleartopayconstruction.com</a>
         </p>

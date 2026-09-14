@@ -684,7 +684,10 @@ app.post("/api/checkout/session", async (c) => {
 
   const successUrl = typeof body.success_url === "string" && body.success_url !== ""
     ? body.success_url
-    : `${baseOrigin}/app?checkout=success`;
+    // {CHECKOUT_SESSION_ID} is a Stripe template var — the SPA's checkout-return
+    // handler reads ?session_id= to run /api/checkout/confirm (belt-and-suspenders
+    // activation when the webhook lags), so the id must be in the redirect URL.
+    : `${baseOrigin}/app?checkout=success&session_id={CHECKOUT_SESSION_ID}`;
   const cancelUrl = typeof body.cancel_url === "string" && body.cancel_url !== ""
     ? body.cancel_url
     : `${baseOrigin}/checkout?cancelled=1`;

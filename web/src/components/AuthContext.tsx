@@ -225,7 +225,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       });
       const data = await res.json();
       if (!res.ok) {
-        return data.error || "Registration failed";
+        const msg = data.error || "Registration failed";
+        // 409 (email already exists) is a special case: the register form wants
+        // to offer a "Sign in instead" path, so surface the status by prefixing
+        // the message. Only register() does this; login errors are untouched.
+        return res.status === 409 ? `409|${msg}` : msg;
       }
       const merged = mergeTenant(data.user || {}, data.tenant);
       setToken(data.token);

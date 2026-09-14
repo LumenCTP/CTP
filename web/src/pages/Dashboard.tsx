@@ -57,13 +57,16 @@ export default function Dashboard() {
       .then(([data, documents, readiness]) => {
         setStats(data);
         setClearToPay((readiness as { vendors?: ClearToPayVendor[] }).vendors ?? []);
-        setDocumentCount(Array.isArray(documents) ? documents.length : (documents as { documents?: unknown[] }).documents?.length ?? 0);
+        // Compute the doc count from THIS fetch (not the stale state value —
+        // setDocumentCount's new value isn't visible in this closure yet).
+        const freshDocumentCount = Array.isArray(documents) ? documents.length : (documents as { documents?: unknown[] }).documents?.length ?? 0;
+        setDocumentCount(freshDocumentCount);
         // Show the onboarding guide whenever the tenant is effectively empty:
         // no vendors AND no documents. That covers the zero-client state AND
         // the normal signup path where the setup wizard auto-created the
         // tenant's own client row (so total_clients >= 1 but there is still
         // nothing configured) — step 1 is marked done by the steps list below.
-        setShowGuide(data.total_vendors === 0 && documentCount === 0);
+        setShowGuide(data.total_vendors === 0 && freshDocumentCount === 0);
         setLoading(false);
       })
       .catch((err) => {
@@ -108,7 +111,8 @@ export default function Dashboard() {
         <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", borderLeft: "5px solid #d97706", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13.5, color: "#78350f", lineHeight: 1.5 }}>
           <strong>⚠️ Your weekly Clear-to-Pay report isn't configured yet.</strong>{" "}
           No weekly report will be emailed until at least one client has report recipients set.{" "}
-          <Link to="/app/clients" style={{ color: "#92400e", fontWeight: 700 }}>Add recipients in Clients → Email Settings</Link>
+          <Link to="/app/clients" style={{ color: "#92400e", fontWeight: 700 }}>Go to Clients</Link>{" "}
+          and use the ✉ Email action on a client's row to add recipients.
         </div>
       )}
 
