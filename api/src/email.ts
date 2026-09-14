@@ -136,7 +136,7 @@ export async function sendEmail(
   htmlBody: string,
   clientId?: number,
   vendorId?: number,
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "inbox_rejection" | "internal_alert",
+  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "inbox_rejection" | "internal_alert" | "partner_application_notify",
   attachments?: EmailAttachment[],
 ): Promise<void> {
   const db = getDb();

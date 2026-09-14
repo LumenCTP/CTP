@@ -207,6 +207,30 @@ app.post("/api/partners/apply", async (c) => {
       console.error(`[partners] Set-password email failed for partner ${partnerId} (${normalizedEmail}):`, emailErr);
     }
 
+    // Owner application notification — internal, admin-only. The owner wants to
+    // know the moment an application comes in, so they can see who signed up.
+    // It carries only this applicant's own details; nothing about the platform
+    // internals and nothing from other tenants/partners. Same try/catch pattern
+    // as the set-password email: a delivery hiccup must never fail the
+    // application itself, and no field is added to the apply response (the
+    // applicant never sees the owner's address or any notification detail).
+    try {
+      const ownerNotifyEmail = process.env.OWNER_NOTIFY_EMAIL || "documents@cleartopayconstruction.com";
+      const esc = (s: string) => s.replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch] as string);
+      const notifyBodyHtml =
+        `<p>A new partner has applied to the ClearToPay Partner Program.</p>` +
+        `<p>Name: ${esc(fullName)}<br/>` +
+        `Company: ${esc((company_name && company_name.trim()) || "(not provided)")}<br/>` +
+        `Email: ${esc(normalizedEmail)}<br/>` +
+        `Phone: ${esc((phone && phone.trim()) || "(not provided)")}<br/>` +
+        `Partner type: ${esc(partner_type.trim())}<br/>` +
+        `States served: ${esc((states_served && states_served.trim()) || "(not provided)")}<br/>` +
+        `Applied at: ${esc(new Date().toISOString())}</p>`;
+      await sendEmail([ownerNotifyEmail], `New partner application: ${first_name.trim()} ${last_name.trim()}`, notifyBodyHtml, undefined, undefined, "partner_application_notify");
+    } catch (notifyErr) {
+      console.error(`[partners] Owner application-notification email failed for partner ${partnerId} (${normalizedEmail}):`, notifyErr);
+    }
+
     // Inline W-9 from the register form — nice-to-have at apply time; a bad
     // file must not fail the application (the partner can retry in the portal
     // with a clear reason). If it succeeds, the referral code is now generated.
