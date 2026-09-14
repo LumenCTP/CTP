@@ -1,42 +1,47 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useNavigate } from "react-router-dom";
 import { AuthProvider, useAuth, needsSetup, needsPayment, getHomePath, needsPartnerSetup, type User } from "./components/AuthContext";
 import Layout from "./components/Layout";
 import PartnerShell from "./components/PartnerShell";
 import Logo from "./components/Logo";
-import Paywall from "./pages/Paywall";
-import Dashboard from "./pages/Dashboard";
-import Clients from "./pages/Clients";
-import Vendors from "./pages/Vendors";
-import VendorDetail from "./pages/VendorDetail";
-import Documents from "./pages/Documents";
-import DocumentDetail from "./pages/DocumentDetail";
-import Reports from "./pages/Reports";
-import NeedsReview from "./pages/NeedsReview";
-import EmailLog from "./pages/EmailLog";
-import Billing from "./pages/Billing";
-import Login from "./pages/Login";
-import Register from "./pages/Register";
-import SetupWizard from "./pages/SetupWizard";
-import SetPassword from "./pages/SetPassword";
-import ResetPassword from "./pages/ResetPassword";
-import PartnerLogin from "./pages/PartnerLogin";
-import PartnerRegister from "./pages/PartnerRegister";
-import PartnerDashboard from "./pages/PartnerDashboard";
-import PartnerRefer from "./pages/PartnerRefer";
-import PartnerReferrals from "./pages/PartnerReferrals";
-import PartnerCommissions from "./pages/PartnerCommissions";
-import PartnerPayouts from "./pages/PartnerPayouts";
 import AdminShell from "./components/AdminShell";
-import AdminDashboard from "./pages/admin/Dashboard";
-import AdminPartners from "./pages/admin/Partners";
-import AdminReferrals from "./pages/admin/Referrals";
-import AdminCommissions from "./pages/admin/Commissions";
-import AdminPayouts from "./pages/admin/Payouts";
-import AdminAuditLog from "./pages/admin/AuditLog";
-import AdminAccounts from "./pages/admin/Accounts";
-import AdminQuestions from "./pages/admin/Questions";
-import AdminCashflow from "./pages/admin/Cashflow";
+import Paywall from "./pages/Paywall";
+
+// Route-level code splitting: every leaf page below is loaded on demand, so
+// visitors only download the chunks for the routes they can actually reach
+// (public auth pages, client app tree, partner portal, admin dashboard).
+// Guards and shells stay eagerly imported — they drive every route decision.
+const Dashboard = lazy(() => import("./pages/Dashboard"));
+const Clients = lazy(() => import("./pages/Clients"));
+const Vendors = lazy(() => import("./pages/Vendors"));
+const VendorDetail = lazy(() => import("./pages/VendorDetail"));
+const Documents = lazy(() => import("./pages/Documents"));
+const DocumentDetail = lazy(() => import("./pages/DocumentDetail"));
+const Reports = lazy(() => import("./pages/Reports"));
+const NeedsReview = lazy(() => import("./pages/NeedsReview"));
+const EmailLog = lazy(() => import("./pages/EmailLog"));
+const Billing = lazy(() => import("./pages/Billing"));
+const Login = lazy(() => import("./pages/Login"));
+const Register = lazy(() => import("./pages/Register"));
+const SetupWizard = lazy(() => import("./pages/SetupWizard"));
+const SetPassword = lazy(() => import("./pages/SetPassword"));
+const ResetPassword = lazy(() => import("./pages/ResetPassword"));
+const PartnerLogin = lazy(() => import("./pages/PartnerLogin"));
+const PartnerRegister = lazy(() => import("./pages/PartnerRegister"));
+const PartnerDashboard = lazy(() => import("./pages/PartnerDashboard"));
+const PartnerRefer = lazy(() => import("./pages/PartnerRefer"));
+const PartnerReferrals = lazy(() => import("./pages/PartnerReferrals"));
+const PartnerCommissions = lazy(() => import("./pages/PartnerCommissions"));
+const PartnerPayouts = lazy(() => import("./pages/PartnerPayouts"));
+const AdminDashboard = lazy(() => import("./pages/admin/Dashboard"));
+const AdminPartners = lazy(() => import("./pages/admin/Partners"));
+const AdminReferrals = lazy(() => import("./pages/admin/Referrals"));
+const AdminCommissions = lazy(() => import("./pages/admin/Commissions"));
+const AdminPayouts = lazy(() => import("./pages/admin/Payouts"));
+const AdminAuditLog = lazy(() => import("./pages/admin/AuditLog"));
+const AdminAccounts = lazy(() => import("./pages/admin/Accounts"));
+const AdminQuestions = lazy(() => import("./pages/admin/Questions"));
+const AdminCashflow = lazy(() => import("./pages/admin/Cashflow"));
 
 function LoadingScreen() {
   return (
@@ -333,7 +338,8 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <CheckoutReturnHandler />
-        <Routes>
+        <Suspense fallback={<LoadingScreen />}>
+          <Routes>
           {/* Public routes */}
           <Route element={<PublicRoute />}>
             <Route path="app/login" element={<Login />} />
@@ -398,7 +404,8 @@ export default function App() {
           {/* Fallbacks */}
           <Route path="/" element={<HomeRedirect />} />
           <Route path="*" element={<HomeRedirect />} />
-        </Routes>
+          </Routes>
+        </Suspense>
       </AuthProvider>
     </BrowserRouter>
   );
