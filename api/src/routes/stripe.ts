@@ -680,7 +680,7 @@ app.post("/api/checkout/session", async (c) => {
     ? reqOrigin.replace(/\/+$/, "")
     : reqHost && !reqHost.includes("localhost") && !reqHost.includes("127.0.0.1")
       ? `https://${reqHost}`
-      : "https://www.cleartopayconstruction.com";
+      : "https://cleartopay.ctonew.app";
 
   const successUrl = typeof body.success_url === "string" && body.success_url !== ""
     ? body.success_url
@@ -912,7 +912,7 @@ function billingReturnUrl(c: any, fallbackPath: string): string {
     ? reqOrigin.replace(/\/+$/, "")
     : reqHost && !reqHost.includes("localhost") && !reqHost.includes("127.0.0.1")
       ? `https://${reqHost}`
-      : "https://www.cleartopayconstruction.com";
+      : "https://cleartopay.ctonew.app";
   return `${base}${fallbackPath}`;
 }
 
