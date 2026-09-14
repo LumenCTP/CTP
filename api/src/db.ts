@@ -613,6 +613,9 @@ function runMigrations(db: Database): void {
   // users (username NULL) are unaffected while partner usernames are unique.
   ensureColumn(db, "users", "username TEXT", "username");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username ON users(username)");
+  // How the partner heard about the program (dropdown on the application form:
+  // Flyer / Social Media / Other Agency). Nullable; never whitelisted server-side.
+  ensureColumn(db, "partners", "hear_about_us TEXT", "hear_about_us");
 
   // Extend email_log.email_type CHECK to include 'partner_payout',
   // 'inbox_rejection' and 'internal_alert'. SQLite can't ALTER a CHECK

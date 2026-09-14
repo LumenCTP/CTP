@@ -13,11 +13,7 @@ const PARTNER_TYPES = [
   "Other",
 ];
 
-const TAX_INFO_OPTIONS = [
-  { value: "not_submitted", label: "Not submitted yet" },
-  { value: "submitted", label: "Submitted (W-9 on file)" },
-  { value: "exempt", label: "Tax exempt" },
-];
+const HEAR_ABOUT_OPTIONS = ["Flyer", "Social Media", "Other Agency"];
 
 // Payouts are ACH-only — no check / PayPal / other options.
 const PAYOUT_METHODS = [{ value: "ach", label: "ACH / Bank Transfer" }];
@@ -33,7 +29,7 @@ export default function PartnerRegister() {
     website: "",
     states_served: "",
     partner_type: "",
-    tax_info_status: "not_submitted",
+    hear_about_us: "",
     preferred_payout_method: "ach",
   });
   const [w9File, setW9File] = useState<File | null>(null);
@@ -270,15 +266,16 @@ export default function PartnerRegister() {
           </div>
 
           <div className="form-group">
-            <label htmlFor="tax_info_status">Tax Info Status</label>
+            <label htmlFor="hear_about_us">How did you hear about us?</label>
             <select
-              id="tax_info_status"
+              id="hear_about_us"
               className="form-input"
-              value={form.tax_info_status}
-              onChange={(e) => update("tax_info_status", e.target.value)}
+              value={form.hear_about_us}
+              onChange={(e) => update("hear_about_us", e.target.value)}
             >
-              {TAX_INFO_OPTIONS.map((o) => (
-                <option key={o.value} value={o.value}>{o.label}</option>
+              <option value="">Select…</option>
+              {HEAR_ABOUT_OPTIONS.map((o) => (
+                <option key={o} value={o}>{o}</option>
               ))}
             </select>
           </div>

@@ -116,7 +116,7 @@ app.post("/api/partners/apply", async (c) => {
     if (contentType.includes("multipart/form-data")) {
       const form = await c.req.formData().catch(() => null);
       if (!form) return c.json({ error: "Invalid multipart body" }, 400);
-      for (const key of ["first_name", "last_name", "company_name", "email", "phone", "address", "website", "states_served", "partner_type", "tax_info_status", "preferred_payout_method"]) {
+      for (const key of ["first_name", "last_name", "company_name", "email", "phone", "address", "website", "states_served", "partner_type", "tax_info_status", "preferred_payout_method", "hear_about_us"]) {
         const v = form.get(key);
         if (v !== null) body[key] = String(v);
       }
@@ -125,7 +125,7 @@ app.post("/api/partners/apply", async (c) => {
     } else {
       body = await c.req.json().catch(() => ({}));
     }
-    const { first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method } = body as Record<string, string | undefined>;
+    const { first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method, hear_about_us } = body as Record<string, string | undefined>;
 
     if (!first_name || typeof first_name !== "string" || !first_name.trim()) return c.json({ error: "first_name is required" }, 400);
     if (!last_name || typeof last_name !== "string" || !last_name.trim()) return c.json({ error: "last_name is required" }, 400);
@@ -174,8 +174,8 @@ app.post("/api/partners/apply", async (c) => {
     // apply time — it only exists once a W-9 is uploaded (ingestW9 below or
     // POST /api/partners/w9 later). No W-9 ⇒ no code ⇒ referring is blocked.
     const partnerResult = db.query(`
-      INSERT INTO partners (user_id, first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method, status, referral_code)
-      VALUES ($user_id, $first_name, $last_name, $company_name, $email, $phone, $address, $website, $states_served, $partner_type, $tax, $payout_method, 'approved', NULL)
+      INSERT INTO partners (user_id, first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method, hear_about_us, status, referral_code)
+      VALUES ($user_id, $first_name, $last_name, $company_name, $email, $phone, $address, $website, $states_served, $partner_type, $tax, $payout_method, $hear_about_us, 'approved', NULL)
     `).run({
       $user_id: userId,
       $first_name: first_name.trim(),
@@ -189,6 +189,7 @@ app.post("/api/partners/apply", async (c) => {
       $partner_type: partner_type.trim(),
       $tax: (tax_info_status && tax_info_status.trim()) || "not_submitted",
       $payout_method: (preferred_payout_method && preferred_payout_method.trim()) || null,
+      $hear_about_us: (hear_about_us && hear_about_us.trim()) || null,
     });
     const partnerId = Number(partnerResult.lastInsertRowid);
 
@@ -355,7 +356,7 @@ app.get("/api/partners", requireAuth, requireAdmin, (c) => {
   const baseSql = `
     SELECT p.id, p.first_name, p.last_name, p.company_name, p.email, p.partner_type, p.status,
            p.referral_code, p.commission_percentage, p.created_at,
-           p.w9_filename, (p.w9_file_key IS NOT NULL) as w9_uploaded, p.tax_info_status,
+           p.w9_filename, (p.w9_file_key IS NOT NULL) as w9_uploaded, p.tax_info_status, p.hear_about_us,
            u.username,
            (SELECT COUNT(*) FROM referrals r WHERE r.partner_id = p.id) as total_referrals
     FROM partners p

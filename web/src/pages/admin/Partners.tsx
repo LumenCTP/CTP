@@ -15,6 +15,7 @@ interface Partner {
   states_served?: string | null;
   partner_type: string;
   tax_info_status?: string | null;
+  hear_about_us?: string | null;
   preferred_payout_method?: string | null;
   status: string;
   referral_code?: string | null;
@@ -277,6 +278,7 @@ export default function AdminPartners() {
                   ["Referral Code", detail.referral_code || "—"],
                   ["Commission %", `${detail.commission_percentage ?? 25}%`],
                   ["Tax Info", detail.tax_info_status || "—"],
+                  ["How heard", detail.hear_about_us || "—"],
                   ["W-9", detail.w9_uploaded ? (
                     <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                       <span style={{ color: "#059669" }}>✓ On file</span>
