@@ -16,6 +16,33 @@ export const MONTHLY_RATE = 149; // monthly plan, $/month
 export const ANNUAL_MONTHLY_EQUIVALENT = 100; // annual plan, monthly-equivalent ($1,200/yr)
 export const DEFAULT_COMMISSION_PERCENT = 25.0; // used when partner row has NULL
 
+// ── Owner rules (must hold, checked by tests / code review) ───────────────
+// Compensation = 25% of COLLECTED revenue. NO 12-month cap. NO $25 minimum.
+
+/**
+ * Resolve the monthly-equivalent eligible revenue for a referred tenant's
+ * billing period. Priority:
+ *   1. referrals.subscription_amount when set — the ACTUAL collected revenue
+ *      in monthly-equivalent dollars, recorded by the Stripe webhook
+ *      (invoice.payment_succeeded / subscription events) or corrected by an
+ *      admin via PUT /api/referrals/:id. This is NOT a placeholder: it is the
+ *      real number the tenant was billed and paid.
+ *   2. The plan rate (MONTHLY_RATE for monthly, ANNUAL_MONTHLY_EQUIVALENT for
+ *      annual) — a fallback only when no actual amount has been recorded yet
+ *      (e.g. the first commission accrues before any invoice webhook).
+ * Never invents a value: an invalid stored amount is treated as an error, not
+ * silently replaced.
+ */
+export function eligibleRevenueForPlan(plan: string | null | undefined, actualMonthly: number | null | undefined): number | null {
+  if (actualMonthly !== null && actualMonthly !== undefined) {
+    const n = Number(actualMonthly);
+    if (!Number.isFinite(n) || n <= 0) return null; // invalid stored amount — caller errors
+    return Math.round(n * 100) / 100;
+  }
+  const p = (plan || "").toLowerCase();
+  return p === "annual" ? ANNUAL_MONTHLY_EQUIVALENT : MONTHLY_RATE;
+}
+
 // ── Helpers ───────────────────────────────────────────────────────────────
 
 /** Current billing-period key, e.g. "2026-08" (UTC). */
@@ -61,11 +88,15 @@ export interface CommissionRunResult {
  * (referrals.tenant_id set), create the commission for the CURRENT billing
  * period if none exists. Idempotency key: (partner_id, tenant_id,
  * billing_period) — enforced by a check-then-insert plus a UNIQUE index
- * (uq_commissions_partner_tenant_period, see db.ts).
+ * (uq_commissions_partner_tenant_period, see db.ts); a concurrent/duplicate
+ * insert that trips the index is counted as a skip, never an error.
  *
- * Eligible revenue: $149/mo (monthly plan) or $100/mo monthly-equivalent
- * (annual plan). Commission percent: partner.commission_percentage, default
- * 25%. Commissions are created with status 'approved' and audit-logged.
+ * Eligible revenue: the tenant's ACTUAL COLLECTED revenue for the period
+ * (referrals.subscription_amount, monthly-equivalent, recorded by the Stripe
+ * webhook), falling back to the plan rate ($149/mo monthly, $100/mo
+ * monthly-equivalent annual) only while no actual amount has been recorded.
+ * Commission percent: partner.commission_percentage, default 25%. No cap, no
+ * minimum. Commissions are created with status 'approved' and audit-logged.
  * One tenant failing never aborts the run.
  */
 export function calculateCommissions(now: Date = new Date()): CommissionRunResult {
@@ -78,6 +109,7 @@ export function calculateCommissions(now: Date = new Date()): CommissionRunResul
            t.subscription_plan,
            r.id AS referral_id,
            r.partner_id,
+           r.subscription_amount AS actual_monthly_revenue,
            COALESCE(p.commission_percentage, $default_pct) AS commission_percentage
     FROM tenants t
     JOIN referrals r ON r.tenant_id = t.id
@@ -89,6 +121,7 @@ export function calculateCommissions(now: Date = new Date()): CommissionRunResul
     subscription_plan: string | null;
     referral_id: number;
     partner_id: number;
+    actual_monthly_revenue: number | null;
     commission_percentage: number;
   }>;
 
@@ -106,47 +139,65 @@ export function calculateCommissions(now: Date = new Date()): CommissionRunResul
         result.skipped++;
         continue;
       }
-      const plan = (row.subscription_plan || "").toLowerCase();
-      const revenue = plan === "annual" ? ANNUAL_MONTHLY_EQUIVALENT : MONTHLY_RATE;
       const pct = Number(row.commission_percentage);
       if (!Number.isFinite(pct) || pct < 0 || pct > 100) {
         result.errors.push(`tenant ${row.tenant_id}: invalid commission_percentage ${row.commission_percentage}`);
         continue;
       }
+      // COLLECTED revenue (not a placeholder): prefer the actual recorded
+      // amount; fall back to the plan rate only before a webhook has recorded
+      // one. An invalid stored amount is an error — never fabricated.
+      const revenue = eligibleRevenueForPlan(row.subscription_plan, row.actual_monthly_revenue);
+      if (revenue === null) {
+        result.errors.push(`tenant ${row.tenant_id}: invalid stored subscription_amount ${row.actual_monthly_revenue} — refusing to invent revenue (fix via PUT /api/referrals/:id)`);
+        continue;
+      }
+      const plan = (row.subscription_plan || "").toLowerCase();
       const amount = Math.round(revenue * (pct / 100) * 100) / 100;
-      const ins = db.query(`
-        INSERT INTO commissions (partner_id, referral_id, tenant_id, billing_period, eligible_revenue, commission_percentage, commission_amount, status)
-        VALUES ($pid, $ref_id, $tid, $period, $revenue, $pct, $amount, 'approved')
-      `).run({
-        $pid: row.partner_id,
-        $ref_id: row.referral_id,
-        $tid: row.tenant_id,
-        $period: period,
-        $revenue: revenue,
-        $pct: pct,
-        $amount: amount,
-      });
-      const commissionId = Number(ins.lastInsertRowid);
-      logAudit(db, "commission", commissionId, "commission_auto_created", {
-        partner_id: row.partner_id,
-        tenant_id: row.tenant_id,
-        referral_id: row.referral_id,
-        billing_period: period,
-        eligible_revenue: revenue,
-        commission_percentage: pct,
-        commission_amount: amount,
-        plan: plan || "monthly",
-      });
-      logPartnerAudit(db, row.partner_id, "commission_auto_created", {
-        commission_id: commissionId,
-        tenant_id: row.tenant_id,
-        billing_period: period,
-        eligible_revenue: revenue,
-        commission_percentage: pct,
-        commission_amount: amount,
-      }, null, "system");
-      result.created++;
-      console.log(`[commissions] ${period}: created commission #${commissionId} partner ${row.partner_id} tenant ${row.tenant_id} amount $${amount}`);
+      try {
+        const ins = db.query(`
+          INSERT INTO commissions (partner_id, referral_id, tenant_id, billing_period, eligible_revenue, commission_percentage, commission_amount, status)
+          VALUES ($pid, $ref_id, $tid, $period, $revenue, $pct, $amount, 'approved')
+        `).run({
+          $pid: row.partner_id,
+          $ref_id: row.referral_id,
+          $tid: row.tenant_id,
+          $period: period,
+          $revenue: revenue,
+          $pct: pct,
+          $amount: amount,
+        });
+        const commissionId = Number(ins.lastInsertRowid);
+        logAudit(db, "commission", commissionId, "commission_auto_created", {
+          partner_id: row.partner_id,
+          tenant_id: row.tenant_id,
+          referral_id: row.referral_id,
+          billing_period: period,
+          eligible_revenue: revenue,
+          revenue_source: row.actual_monthly_revenue !== null && row.actual_monthly_revenue !== undefined ? "actual (referrals.subscription_amount)" : "plan_rate_fallback",
+          commission_percentage: pct,
+          commission_amount: amount,
+          plan: plan || "monthly",
+        });
+        logPartnerAudit(db, row.partner_id, "commission_auto_created", {
+          commission_id: commissionId,
+          tenant_id: row.tenant_id,
+          billing_period: period,
+          eligible_revenue: revenue,
+          commission_percentage: pct,
+          commission_amount: amount,
+        }, null, "system");
+        result.created++;
+        console.log(`[commissions] ${period}: created commission #${commissionId} partner ${row.partner_id} tenant ${row.tenant_id} amount ${amount} (revenue ${revenue})`);
+      } catch (err: any) {
+        // UNIQUE(partner_id, tenant_id, billing_period) race / duplicate →
+        // idempotent skip, not an error.
+        if (String(err?.message ?? err).includes("UNIQUE")) {
+          result.skipped++;
+        } else {
+          throw err;
+        }
+      }
     } catch (err) {
       result.errors.push(`tenant ${row.tenant_id}: operation failed — see server logs`);
       console.error(`[commissions] Error creating commission for tenant ${row.tenant_id}:`, err);
@@ -179,9 +230,17 @@ export interface PayoutRunResult {
  * (handles Feb 28/29 and 30/31-day months) at most once per calendar month.
  * For each partner with APPROVED commissions: aggregate the sum, create ONE
  * payout (status 'pending', payment_date = run date), mark those commissions
- * 'paid' + set payout_id, audit-log, email the partner (honest "being
- * processed" wording — money is NOT transferred here), then call
- * attemptPayoutTransfer() which no-ops without a Stripe key.
+ * 'scheduled' + set payout_id (NOT 'paid' — money has not moved yet),
+ * audit-log, email the partner (honest "being processed" wording — money is
+ * NOT transferred here), then call attemptPayoutTransfer() which no-ops without
+ * a Stripe key or an onboarded partner.
+ *
+ * Lifecycle: commissions 'approved' → 'scheduled' (payout created, pending)
+ * → 'paid' ONLY when the transfer.paid webhook (or an admin payout
+ * confirmation) finalizes the transfer. On transfer.failed the webhook
+ * reverts the commissions to 'approved' (payout_id cleared) so the next run
+ * re-aggregates them — a failed/cancelled payout never double-counts and
+ * never leaves money marked paid that wasn't.
  */
 export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
   const db = getDb();
@@ -214,7 +273,9 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
   const runDate = now.toISOString().slice(0, 10);
   console.log(`[payouts] ${month}: payout run started (run date ${runDate})`);
 
-  // Aggregate APPROVED commissions per partner.
+  // Aggregate APPROVED commissions per partner (approved = accrued, not yet
+  // linked to any payout; 'scheduled' rows are already inside a pending
+  // payout, 'paid' rows are finalized, 'pending' rows await admin approval).
   const partners = db.query(`
     SELECT c.partner_id,
            p.first_name || ' ' || p.last_name AS partner_name,
@@ -241,18 +302,28 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
 
   for (const partner of partners) {
     try {
-      // Gate 3 (per-partner, DB-level): no payout already exists for this
-      // partner in the current calendar month. Survives process restarts that
-      // reset the module guard above.
-      const existingPayout = db.query(
-        `SELECT id FROM payouts WHERE partner_id = $pid AND substr(payment_date, 1, 7) = $month`,
-      ).get({ $pid: partner.partner_id, $month: month });
-      if (existingPayout) {
-        console.log(`[payouts] ${month}: payout already exists for partner ${partner.partner_id} — skipping`);
+      // NaN/negative guard: never create a payout from a broken sum.
+      const total = Number(partner.total_amount);
+      if (!Number.isFinite(total) || total <= 0) {
+        result.errors.push(`partner ${partner.partner_id}: invalid aggregated amount ${partner.total_amount} — payout skipped`);
         continue;
       }
 
-      const amount = Math.round(Number(partner.total_amount) * 100) / 100;
+      // Gate 3 (per-partner, DB-level): no OPEN payout (pending or paid) may
+      // already exist for this partner in the current calendar month. A
+      // failed/cancelled payout does NOT block a new run — its commissions
+      // were reverted to 'approved' by the webhook/admin, so this re-run
+      // aggregates them into a fresh payout. Survives process restarts that
+      // reset the module guard above.
+      const existingPayout = db.query(
+        `SELECT id FROM payouts WHERE partner_id = $pid AND status IN ('pending','paid') AND substr(payment_date, 1, 7) = $month`,
+      ).get({ $pid: partner.partner_id, $month: month });
+      if (existingPayout) {
+        console.log(`[payouts] ${month}: open payout already exists for partner ${partner.partner_id} — skipping`);
+        continue;
+      }
+
+      const amount = Math.round(total * 100) / 100;
       const payoutRun = db.transaction((): { payoutId: number; linked: number } => {
         const ins = db.query(`
           INSERT INTO payouts (partner_id, amount, status, payment_date, payment_method, transaction_ref, notes)
@@ -264,8 +335,11 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
           $notes: `Auto-generated monthly payout run (${month})`,
         });
         const payoutId = Number(ins.lastInsertRowid);
+        // 'scheduled', NOT 'paid': the transfer has not happened yet. The
+        // transfer.paid webhook flips these to 'paid'; transfer.failed reverts
+        // them to 'approved'.
         const updated = db.query(`
-          UPDATE commissions SET status = 'paid', payout_id = $payout_id
+          UPDATE commissions SET status = 'scheduled', payout_id = $payout_id
           WHERE partner_id = $pid AND status = 'approved'
         `).run({ $payout_id: payoutId, $pid: partner.partner_id });
         logAudit(db, "payout", payoutId, "payout_auto_created", {
@@ -279,6 +353,7 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
           amount,
           month,
           commissions_linked: Number(updated.changes),
+          commission_status: "scheduled (flips to paid on transfer.paid webhook)",
         }, null, "system");
         return { payoutId, linked: Number(updated.changes) };
       });
@@ -294,7 +369,7 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
       const body = buildPartnerPayoutEmail(partner.partner_name, amount, periodLabel);
       sendEmail([partner.email], subject, body, undefined, undefined, "partner_payout");
       result.emailsQueued++;
-      console.log(`[payouts] ${month}: payout created for partner ${partner.partner_id} (${partner.partner_name}) — $${amount} (${linked} commission(s)), email queued, transfer attempted next`);
+      console.log(`[payouts] ${month}: payout created for partner ${partner.partner_id} (${partner.partner_name}) — ${amount} (${linked} commission(s)), email queued, transfer attempted next`);
 
       // Seam for delegation B: real Stripe Connect transfer lives here.
       attemptPayoutTransfer(payoutId);
@@ -304,6 +379,19 @@ export function runPartnerPayouts(now: Date = new Date()): PayoutRunResult {
     }
   }
   return result;
+}
+
+/**
+ * Flip every commission linked to a payout to a new status (used by the
+ * transfer.paid / transfer.failed webhooks and admin payout confirmation).
+ * Only 'scheduled' rows are touched so manual reversals/disputes survive.
+ * Returns the number of rows changed.
+ */
+export function markPayoutCommissions(db: ReturnType<typeof getDb>, payoutId: number, toStatus: "paid" | "approved"): number {
+  const res = db.query(
+    "UPDATE commissions SET status = $status, payout_id = CASE WHEN $status = 'paid' THEN payout_id ELSE NULL END WHERE payout_id = $pid AND status = 'scheduled'"
+  ).run({ $status: toStatus, $pid: payoutId });
+  return Number(res.changes);
 }
 
 // ── 3. Transfer (delegation B: real Stripe Connect) ────────────────────────
@@ -335,6 +423,18 @@ export function attemptPayoutTransfer(payoutId: number): void {
     | undefined;
   if (!payout) {
     console.error(`[payouts] attemptPayoutTransfer: payout ${payoutId} not found`);
+    return;
+  }
+  // Never transfer twice: only 'pending' payouts are eligible. A payout that
+  // is already paid/failed/cancelled is left alone.
+  if (payout.status !== "pending") {
+    console.log(`[payouts] attemptPayoutTransfer(${payoutId}): status is '${payout.status}' — not 'pending', skipping transfer`);
+    return;
+  }
+  if (!Number.isFinite(Number(payout.amount)) || Number(payout.amount) <= 0) {
+    const message = `payout amount ${payout.amount} is not a positive finite number — transfer skipped`;
+    console.error(`[payouts] attemptPayoutTransfer(${payoutId}): ${message}`);
+    db.query("UPDATE payouts SET notes = $notes WHERE id = $id").run({ $notes: message, $id: payout.id });
     return;
   }
 

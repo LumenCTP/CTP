@@ -360,7 +360,7 @@ function runMigrations(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       partner_id INTEGER NOT NULL REFERENCES partners(id),
       amount REAL NOT NULL,
-      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','paid','cancelled')),
+      status TEXT DEFAULT 'pending' CHECK(status IN ('pending','paid','failed','cancelled')),
       payment_date TEXT,
       payment_method TEXT,
       transaction_ref TEXT,
