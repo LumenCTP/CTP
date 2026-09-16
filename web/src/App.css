@@ -2531,3 +2531,124 @@ body {
   }
 }
 
+
+/* ── Referral Code page (partner portal) ────────────────────
+   Dedicated page for the partner's own referral code: a big, readable
+   code, a copy button, and the share link. Reuses the design tokens
+   (--blue / --gray-* / --radius-* / --shadow-*) of the partner cards. */
+.referral-hero {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: 30px 24px;
+  margin-bottom: 20px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+.referral-code-xl {
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: clamp(1.8rem, 8vw, 3.25rem);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  line-height: 1.1;
+  color: var(--blue);
+  background: var(--blue-light);
+  border: 1px dashed rgba(26, 86, 219, 0.35);
+  border-radius: var(--radius-md);
+  padding: 10px 26px;
+  max-width: 100%;
+  word-break: break-all;
+  user-select: all;
+}
+.referral-hero-hint {
+  font-size: 0.9rem;
+  color: var(--gray-500);
+  margin: 0;
+}
+.referral-hero-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: center;
+}
+/* Share-link row */
+.referral-link-card {
+  background: #fff;
+  border: 1px dashed var(--gray-300);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.referral-link-label {
+  color: var(--gray-600);
+}
+.referral-code-link-text {
+  flex: 1 1 280px;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.85rem;
+  background: var(--gray-100);
+  border-radius: var(--radius-sm);
+  padding: 6px 10px;
+  color: var(--blue);
+  word-break: break-all;
+  user-select: all;
+}
+/* "How referrals work" card */
+.referral-tips {
+  background: #fff;
+  border: 1px solid var(--gray-200);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-card);
+  padding: 20px 24px;
+}
+.referral-tips-list {
+  margin: 10px 0 0 20px;
+  font-size: 0.9rem;
+  line-height: 1.7;
+  color: var(--gray-600);
+}
+.referral-tips-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 16px 0 0;
+}
+/* Empty state: no referral code yet (code is NULL until the W-9 is on file) */
+.referral-empty {
+  background: #fff;
+  border: 1px dashed var(--gray-300);
+  border-radius: var(--radius-lg);
+  padding: 38px 24px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.referral-empty-icon {
+  font-size: 2rem;
+  line-height: 1;
+}
+.referral-empty-title {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--gray-900);
+  margin: 12px 0 0;
+}
+.referral-empty-text {
+  font-size: 0.9rem;
+  line-height: 1.65;
+  color: var(--gray-600);
+  max-width: 470px;
+  margin: 8px 0 0;
+}
+.referral-empty .btn {
+  margin-top: 18px;
+}

@@ -30,6 +30,7 @@ const PartnerLogin = lazy(() => import("./pages/PartnerLogin"));
 const PartnerRegister = lazy(() => import("./pages/PartnerRegister"));
 const PartnerDashboard = lazy(() => import("./pages/PartnerDashboard"));
 const PartnerRefer = lazy(() => import("./pages/PartnerRefer"));
+const PartnerReferralCode = lazy(() => import("./pages/PartnerReferralCode"));
 const PartnerReferrals = lazy(() => import("./pages/PartnerReferrals"));
 const PartnerCommissions = lazy(() => import("./pages/PartnerCommissions"));
 const PartnerPayouts = lazy(() => import("./pages/PartnerPayouts"));
@@ -402,6 +403,7 @@ export default function App() {
               <Route path="app/partner" element={<PartnerShell />}>
                 <Route index element={<Navigate to="dashboard" replace />} />
                 <Route path="dashboard" element={<PartnerDashboard />} />
+                <Route path="referral-code" element={<PartnerReferralCode />} />
                 <Route path="refer" element={<PartnerRefer />} />
                 <Route path="referrals" element={<PartnerReferrals />} />
                 <Route path="commissions" element={<PartnerCommissions />} />

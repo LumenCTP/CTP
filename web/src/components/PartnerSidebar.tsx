@@ -3,6 +3,7 @@ import Logo from "./Logo";
 
 const partnerNavItems = [
   { to: "/app/partner/dashboard", label: "Dashboard", icon: "⌂" },
+  { to: "/app/partner/referral-code", label: "Referral Code", icon: "🔗" },
   { to: "/app/partner/refer", label: "Refer a Client", icon: "➕" },
   { to: "/app/partner/referrals", label: "My Referrals", icon: "👥" },
   { to: "/app/partner/commissions", label: "Commissions", icon: "💰" },

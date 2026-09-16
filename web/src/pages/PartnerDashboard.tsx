@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
+import CopyButton from "../components/CopyButton";
 
 interface PartnerProfile {
   id?: number;
@@ -91,36 +92,8 @@ function statusBadge(status: string) {
   return <span className={`badge ${cls[status] ?? "badge-lead"}`}>{status.replace("_", " ")}</span>;
 }
 
-// Small copy button that shows "Copied!" for 2 seconds after clicking.
-function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) {
-  const [copied, setCopied] = useState(false);
-
-  const copy = useCallback(async () => {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      // clipboard unavailable — fall back to a temporary textarea
-      try {
-        const ta = document.createElement("textarea");
-        ta.value = text;
-        document.body.appendChild(ta);
-        ta.select();
-        document.execCommand("copy");
-        document.body.removeChild(ta);
-      } catch {
-        return;
-      }
-    }
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 2000);
-  }, [text]);
-
-  return (
-    <button type="button" className="btn btn-outline btn-sm copy-btn" onClick={copy}>
-      {copied ? "Copied!" : label}
-    </button>
-  );
-}
+// Small copy button that shows "Copied!" for 2 seconds after clicking
+// (shared with the Referral Code page).
 
 export default function PartnerDashboard() {
   const [profile, setProfile] = useState<PartnerProfile | null>(null);
