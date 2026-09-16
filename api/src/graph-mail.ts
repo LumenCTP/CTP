@@ -14,10 +14,9 @@
 // path and before the platform queue). See sendEmail() in email.ts for the
 // full fallback order.
 //
-// No credentials exist yet (owner is creating the Entra app registration), so
-// everything here is verified via the stub-fetch harness in
-// api/scripts/test-graph-mail.ts — see that file for the exact request shapes
-// this module produces.
+// The three secrets went live 2026-08-14 (owner's Entra app registration), so
+// this is the active production path. Request shapes are still verified offline
+// via the stub-fetch harness in api/scripts/test-graph-mail.ts.
 
 // ── Config / capability ──────────────────────────────────
 
