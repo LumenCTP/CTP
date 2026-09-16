@@ -37,21 +37,32 @@ function verifyStripeSignature(rawBody: string, sigHeader: string | undefined, s
 }
 
 // Try the LIVE secret first, then the TEST secret — whichever matches wins.
-// Returns which mode verified (for logging). With no secrets configured at
-// all, falls back to dev mode (accept + warn), matching the pre-existing
-// behavior of this route.
-function verifyWithSecrets(rawBody: string, sigHeader: string | undefined): { ok: boolean; mode: StripeMode | "dev" | "none" } {
+// Returns which mode verified (for logging) plus, on failure, why it failed so
+// the route can answer 403 (nothing configured) vs 400 (bad signature).
+//
+// FAIL CLOSED: with no webhook secret configured this must NOT accept an
+// unsigned POST — an attacker could otherwise forge subscription events.
+// The only exception is an explicit NODE_ENV=development guard (local dev),
+// where the old accept-and-warn behavior is preserved.
+function verifyWithSecrets(
+  rawBody: string,
+  sigHeader: string | undefined,
+): { ok: boolean; mode: StripeMode | "dev" | "none"; reason?: "unconfigured" | "mismatch" } {
   const secrets = getWebhookSecrets();
   if (secrets.length === 0) {
-    console.warn("[stripe] No STRIPE_WEBHOOK_SECRET / STRIPE_WEBHOOK_SECRET_TEST set — skipping signature verification (dev mode)");
-    return { ok: true, mode: "dev" };
+    if (process.env.NODE_ENV === "development") {
+      console.warn("[stripe] No STRIPE_WEBHOOK_SECRET / STRIPE_WEBHOOK_SECRET_TEST set — NODE_ENV=development, accepting unsigned webhook (dev mode)");
+      return { ok: true, mode: "dev" };
+    }
+    console.error("[stripe] No STRIPE_WEBHOOK_SECRET / STRIPE_WEBHOOK_SECRET_TEST configured — refusing webhook (fail closed)");
+    return { ok: false, mode: "none", reason: "unconfigured" };
   }
   for (const { secret, mode } of secrets) {
     if (verifyStripeSignature(rawBody, sigHeader, secret)) {
       return { ok: true, mode };
     }
   }
-  return { ok: false, mode: "none" };
+  return { ok: false, mode: "none", reason: "mismatch" };
 }
 
 // ── Event helpers ────────────────────────────────────────
@@ -480,6 +491,11 @@ app.post("/api/webhooks/stripe", async (c) => {
 
     const verified = verifyWithSecrets(rawBody, sigHeader);
     if (!verified.ok) {
+      if (verified.reason === "unconfigured") {
+        // Fail closed: no secret configured in a non-development environment.
+        // Deliberately opaque — never describe our configuration to a caller.
+        return c.json({ error: "Forbidden" }, 403);
+      }
       console.warn("[stripe] Webhook signature verification failed (live and test secrets both rejected)");
       return c.json({ error: "Invalid signature" }, 400);
     }

@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { getDb } from "./db";
 import { companyNameToSlug } from "./lib/inbox";
 import { QUEUE_SECRET, TOKEN_SECRET } from "./secrets";
@@ -23,8 +24,18 @@ export function isQueueRoute(c: any): boolean {
   const path = c.req.path;
   return path === "/api/emails/process-queue" || path === "/api/emails/mark-sent" || path === "/api/emails/mark-failed" || path === "/api/inbox/ingest" || path === "/api/inbox/relay" || path === "/api/inbox/receive";
 }
+// Constant-time string compare — avoids leaking the shared secret byte-by-byte
+// through response-timing differences. Lengths are compared first (timingSafeEqual
+// requires equal-length buffers); a length mismatch is not secret-dependent.
+function constantTimeEqual(a: string, b: string): boolean {
+  const bufA = Buffer.from(a, "utf8");
+  const bufB = Buffer.from(b, "utf8");
+  if (bufA.length !== bufB.length) return false;
+  return timingSafeEqual(bufA, bufB);
+}
 export function requireQueueSecret(c: any): Response | null {
-  if (c.req.header("X-Queue-Secret") !== QUEUE_SECRET) {
+  const provided = c.req.header("X-Queue-Secret") ?? "";
+  if (!constantTimeEqual(provided, QUEUE_SECRET)) {
     return c.json({ error: "Invalid queue secret" }, 401);
   }
   return null;

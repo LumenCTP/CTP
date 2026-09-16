@@ -220,7 +220,7 @@ app.put("/api/vendors/:id", async (c) => {
           contact_name = $contact_name, contact_email = $contact_email, contact_phone = $contact_phone,
           insurance_agent_email = $insurance_agent_email,
           updated_at = datetime('now')
-      WHERE id = $id
+      WHERE id = $id AND tenant_id = $tenant_id
     `).run({
       $id: id,
       $tenant_id: c.get("tenant_id") as number,
@@ -246,7 +246,7 @@ app.put("/api/vendors/:id", async (c) => {
       FROM vendors v
       JOIN clients c ON v.client_id = c.id
       LEFT JOIN compliance_status cs ON cs.vendor_id = v.id
-      WHERE v.id = $id
+      WHERE v.id = $id AND v.tenant_id = $tenant_id
     `).get({ $id: id, $tenant_id: c.get("tenant_id") as number });
 
     return c.json(vendor);

@@ -4,25 +4,46 @@ import { storageProbe, isStorageConfigured } from "../storage";
 import { graphMailConfigured } from "../graph-mail";
 import { smtpConfigured } from "../smtp";
 import { getSchedulerState } from "../scheduler";
+import { requireAuth, requireAdmin } from "../middleware";
 
 const app = new Hono();
 
 // ── Health ──────────────────────────────────────────────
-
-// GET /api/health — enriched liveness + reliability checks.
 //
-// Backward-compatible shape: {"status":"ok","db":"connected"} plus a new
-// top-level `checks` object an external uptime monitor can page on:
+// CONFIDENTIALITY (owner directive): the public endpoint must never disclose how
+// the platform is built or operated — no storage mode, no email delivery path,
+// no queue depth, no error counts, no scheduler state. The public route is a
+// bare liveness signal; the operational detail lives on the admin-only route
+// below.
+//
+// GET /api/health — PUBLIC liveness probe.
+// Returns only {"status":"ok"} (503 with {"status":"error"} if the DB is
+// unreachable — still no internals, no error text). Safe for external uptime
+// monitors and the local reachability checks in scripts/e2e-stripe.ts.
+app.get("/api/health", (c) => {
+  try {
+    // Verify the DB is alive with a simple query, but leak nothing about it.
+    getDb().query("SELECT 1").get();
+    return c.json({ status: "ok" });
+  } catch (err) {
+    // Opaque failure shape — never expose the DB engine or the raw error.
+    console.error("[health] db check failed:", err);
+    return c.json({ status: "error" }, 503);
+  }
+});
+
+// GET /api/health/full — ADMIN-ONLY detailed checks.
+// Internal operations detail (admin JWT required: requireAuth + requireAdmin):
 //   db            — SELECT 1
 //   storage       — R2 reachability (cheap HEAD probe; local mode always ok)
 //   email         — which delivery path is active (graph/smtp/queue) + config presence
 //   email_queue   — outgoing_email_queue depth + oldest row age
 //   email_log     — error count (last 24h)
 //   scheduler     — persisted last-run markers (scheduler_state)
-// The R2 probe runs with a short timeout so a hung object store never blocks
-// the monitor. status stays "ok"/"error" based on the DB only (backward compat);
+// The R2 probe runs with a short timeout so a hung object store never blocks the
+// monitor. status stays "ok"/"error" based on the DB only (backward compat);
 // individual checks carry their own ok flag for granular alerting.
-app.get("/api/health", async (c) => {
+app.get("/api/health/full", requireAuth, requireAdmin, async (c) => {
   try {
     const db = getDb();
     // Verify DB is alive with a simple query
