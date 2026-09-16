@@ -146,7 +146,7 @@ function runMigrations(db: Database): void {
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       client_id INTEGER,
       vendor_id INTEGER,
-      email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout', 'inbox_rejection', 'internal_alert', 'partner_application_notify')),
+      email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout', 'inbox_rejection', 'internal_alert', 'partner_application_notify', 'daily_review_trigger')),
       recipient_email TEXT NOT NULL,
       subject TEXT NOT NULL,
       sent_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -676,6 +676,35 @@ function runMigrations(db: Database): void {
     db.exec("ALTER TABLE email_log_new RENAME TO email_log");
     db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_client_id ON email_log(client_id); CREATE INDEX IF NOT EXISTS idx_email_log_email_type ON email_log(email_type); CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);");
     console.log("[db] Extended email_log.email_type CHECK to include partner_application_notify");
+  }
+  // Extend email_log.email_type CHECK to include 'daily_review_trigger' (the
+  // internal once-per-day improvement-review prompt email). Same rebuild
+  // pattern as above — SQLite can't ALTER a CHECK constraint. The new table's
+  // allowed list includes BOTH partner_application_notify and
+  // daily_review_trigger so the migration is a superset of every prior one.
+  // Guarded on the new value so it is a no-op once applied.
+  const emailLogDdl3 = db.query("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'email_log'").get() as { sql: string } | undefined;
+  if (emailLogDdl3 && !emailLogDdl3.sql.includes("'daily_review_trigger'")) {
+    db.exec(`
+      CREATE TABLE email_log_new (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id INTEGER,
+        vendor_id INTEGER,
+        email_type TEXT NOT NULL CHECK (email_type IN ('weekly_report', 'monthly_report', 'renewal_reminder', 'password_reset', 'partner_payout', 'inbox_rejection', 'internal_alert', 'partner_application_notify', 'daily_review_trigger')),
+        recipient_email TEXT NOT NULL,
+        subject TEXT NOT NULL,
+        sent_at TEXT NOT NULL DEFAULT (datetime('now')),
+        status TEXT NOT NULL DEFAULT 'queued' CHECK (status IN ('queued', 'sent', 'error')),
+        error_message TEXT,
+        FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE SET NULL,
+        FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE SET NULL
+      );
+    `);
+    db.exec(`INSERT INTO email_log_new (id, client_id, vendor_id, email_type, recipient_email, subject, sent_at, status, error_message) SELECT id, client_id, vendor_id, email_type, recipient_email, subject, sent_at, status, error_message FROM email_log`);
+    db.exec("DROP TABLE email_log");
+    db.exec("ALTER TABLE email_log_new RENAME TO email_log");
+    db.exec("CREATE INDEX IF NOT EXISTS idx_email_log_client_id ON email_log(client_id); CREATE INDEX IF NOT EXISTS idx_email_log_email_type ON email_log(email_type); CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at);");
+    console.log("[db] Extended email_log.email_type CHECK to include daily_review_trigger");
   }
 
   // Email attachments: JSON array of { filename, contentType, storageKey } on

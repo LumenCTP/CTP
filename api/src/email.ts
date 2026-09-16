@@ -128,7 +128,8 @@ export type EmailType =
   | "partner_payout"
   | "inbox_rejection"
   | "internal_alert"
-  | "partner_application_notify";
+  | "partner_application_notify"
+  | "daily_review_trigger";
 
 /**
  * Outcome of ONE delivery attempt against ONE path. `ok: false` means the

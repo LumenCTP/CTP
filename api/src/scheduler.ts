@@ -169,6 +169,9 @@ async function tick(): Promise<void> {
   await checkWeekly(now, todayStr);
   await checkMonthly(now, todayStr);
   checkRenewals(now, todayStr);
+  // Daily: internal self-trigger for the team's improvement review (one short
+  // internal prompt email, ~7:00 AM ET). Never throws — a failure only logs.
+  await checkDailyReviewTrigger(now);
   // Nightly offsite backup (3:00–5:59 AM ET, once per day). Failures are logged
   // by runBackupAndRetain and never crash the tick.
   await checkBackup(now);
@@ -772,6 +775,51 @@ function checkRenewals(now: Date, todayStr: string): void {
 
   // Persist after the full scan completes.
   setSchedulerState(db, "last_daily_renewal_date", todayStr);
+}
+
+// ── Daily Improvement-Review Trigger ─────────────────────
+
+// Internal-only recipient: the team's own compliance inbox. The prompt is a
+// bare trigger — NO client data and NO platform internals (owner
+// confidentiality directive), so the body is intentionally one short line.
+const DAILY_REVIEW_RECIPIENT = "cleartopay-compliance-0d8d884b@ctomail.io";
+const DAILY_REVIEW_SUBJECT = "[Daily] Run the ClearToPay improvement review";
+const DAILY_REVIEW_BODY =
+  "Run today's improvement review: fan out read-only UX + systems reviews and compile findings into /home/team/shared/daily-improvements/.";
+
+/**
+ * Once per calendar day (~7:00 AM America/New_York) emails a short internal
+ * prompt to the team's inbox telling the lead to run the daily improvement
+ * review. Idempotent via the persisted `last_daily_review_date` marker in
+ * scheduler_state (same pattern as last_daily_renewal_date / last_weekly_check_date),
+ * using the ET wall-clock date as the per-day key so the marker always reflects
+ * the calendar day the review is being prompted for. Written BEFORE the send
+ * (monthly-report pattern) so a restart can never re-fire the same day's prompt.
+ */
+export async function checkDailyReviewTrigger(now: Date = new Date()): Promise<void> {
+  const db = getDb();
+  // Reuse the scheduler's existing America/New_York wall-clock helper (the same
+  // DST-correct handling the weekly Monday-7am job uses) — fire on the first
+  // tick at or after 7:00 AM ET. The tick runs every 60s, so "~7:00 AM ET".
+  const ny = nyWallClock(now);
+  if (ny.hour < 7) return;
+  const dateKey = `${ny.year}-${String(ny.month).padStart(2, "0")}-${String(ny.day).padStart(2, "0")}`;
+  // At-most-once per ET calendar day, even across API restarts.
+  if (getSchedulerState(db, "last_daily_review_date") === dateKey) return;
+
+  console.log(`[scheduler] Daily improvement-review trigger ${dateKey} 07:00 AM ET (America/New_York) — sending internal prompt`);
+  // Marker written BEFORE the send (monthly-report pattern): the send goes out
+  // through the graph → smtp → queue chain, and the marker guarantees at most
+  // one prompt per day even if the process restarts mid-send.
+  setSchedulerState(db, "last_daily_review_date", dateKey);
+  try {
+    await sendEmail([DAILY_REVIEW_RECIPIENT], DAILY_REVIEW_SUBJECT, DAILY_REVIEW_BODY, undefined, undefined, "daily_review_trigger");
+    console.log(`[scheduler] Daily improvement-review prompt sent to ${DAILY_REVIEW_RECIPIENT}`);
+  } catch (err) {
+    // Never crash the tick. The marker stays set (at-most-once semantics); the
+    // sendEmail chain already wrote an 'error' email_log row on total failure.
+    console.error(`[scheduler] Daily improvement-review prompt send failed: ${String(err)}`);
+  }
 }
 
 // ── Start / Stop ───────────────────────────────────────
