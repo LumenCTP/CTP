@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 
 interface Commission {
@@ -40,7 +40,9 @@ export default function PartnerCommissions() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
     apiFetch("/api/partner/commissions")
       .then((res) => {
         if (!res.ok) throw new Error("Failed to fetch commissions");
@@ -51,10 +53,12 @@ export default function PartnerCommissions() {
         setLoading(false);
       })
       .catch((err) => {
-        setError(err.message);
+        setError(err?.message || "Failed to fetch commissions");
         setLoading(false);
       });
   }, []);
+
+  useEffect(load, [load]);
 
   const totalPending = commissions.filter((c) => c.status === "pending").reduce((s, c) => s + Number(c.commission_amount ?? 0), 0);
   const totalApproved = commissions.filter((c) => c.status === "approved" || c.status === "scheduled").reduce((s, c) => s + Number(c.commission_amount ?? 0), 0);
@@ -67,6 +71,11 @@ export default function PartnerCommissions() {
 
       {loading && <div className="loading">Loading commissions…</div>}
       {error && <div className="error-message">Error: {error}</div>}
+      {error && (
+        <button type="button" className="btn btn-primary" style={{ marginTop: 12 }} onClick={load}>
+          Try again
+        </button>
+      )}
       {!loading && !error && (
         <>
           <div className="partner-status-grid partner-summary-grid">

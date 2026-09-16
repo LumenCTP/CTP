@@ -109,10 +109,18 @@ export default function PartnerDashboard() {
 
   const load = useCallback(() => {
     setLoading(true);
+    setError(null);
+    // A non-OK response is a REAL failure — never fold it into an "empty"
+    // result. Each request throws on HTTP failure so genuine errors surface in
+    // the error branch instead of masquerading as "no data yet".
+    const mustOk = (what: string) => async (res: Response) => {
+      if (!res.ok) throw new Error(`Couldn't load ${what} (HTTP ${res.status})`);
+      return res.json();
+    };
     Promise.all([
-      apiFetch("/api/partner/me").then((res) => (res.ok ? res.json() : { partner: null })),
-      apiFetch("/api/partner/dashboard").then((res) => (res.ok ? res.json() : null)),
-      apiFetch("/api/partner/referrals").then((res) => (res.ok ? res.json() : { referrals: [] })),
+      apiFetch("/api/partner/me").then(mustOk("your profile")),
+      apiFetch("/api/partner/dashboard").then(mustOk("dashboard metrics")),
+      apiFetch("/api/partner/referrals").then(mustOk("your referrals")),
     ])
       .then(([me, dash, refs]) => {
         const partner = (me as { partner?: PartnerProfile })?.partner ?? null;
@@ -126,11 +134,10 @@ export default function PartnerDashboard() {
           return tb - ta;
         });
         setReferrals(rows);
-        if (!dash) setError("Unable to load partner dashboard data.");
         setLoading(false);
       })
       .catch((err) => {
-        setError(err.message || "Failed to load dashboard");
+        setError(err?.message || "Failed to load dashboard");
         setLoading(false);
       });
   }, []);
@@ -188,7 +195,15 @@ export default function PartnerDashboard() {
   }
 
   if (error) {
-    return <div className="dashboard"><h2 className="page-title">Partner Dashboard</h2><div className="error-message">Error: {error}</div></div>;
+    return (
+      <div className="dashboard">
+        <h2 className="page-title">Partner Dashboard</h2>
+        <div className="error-message">Error: {error}</div>
+        <button type="button" className="btn btn-primary" style={{ marginTop: 16 }} onClick={load}>
+          Try again
+        </button>
+      </div>
+    );
   }
 
   const name = profile?.first_name || profile?.last_name
@@ -199,6 +214,8 @@ export default function PartnerDashboard() {
   const referralCode = data?.referral_code || profile?.referral_code || null;
   // TODO: revert to www.cleartopayconstruction.com once the domain is restored
   const referralLink = data?.referral_link || (referralCode ? `https://cleartopay.ctonew.app/get-started?ref=${referralCode}` : null);
+
+  const nextPayout = Number(data?.next_expected_payout ?? 0);
 
   const stats = [
     { key: "total_referrals", label: "Total Referrals", icon: "👥", color: "#1a56db", value: data?.total_referrals ?? 0 },
@@ -263,10 +280,15 @@ export default function PartnerDashboard() {
       <section className="next-payout-card">
         <div className="next-payout-info">
           <span className="referral-code-label">Next payout</span>
-          <span className="next-payout-amount">{money(data?.next_expected_payout)}</span>
+          {nextPayout > 0 ? (
+            <span className="next-payout-amount">{money(nextPayout)}</span>
+          ) : (
+            <span className="next-payout-amount" style={{ color: "#6b7280", fontSize: 26 }}>No upcoming payout</span>
+          )}
           <p className="next-payout-caption">
-            Commissions accrued and approved since your last payout — this is the amount scheduled to be
-            paid on the next payout run.
+            {nextPayout > 0
+              ? "Commissions accrued and approved since your last payout — this is the amount scheduled to be paid on the next payout run."
+              : "No upcoming payout — commissions accrue once a referred client subscribes, then appear here."}
           </p>
         </div>
         <div className="next-payout-action">
@@ -312,7 +334,7 @@ export default function PartnerDashboard() {
         </div>
         {referrals.length === 0 ? (
           <p className="stripe-connect-hint" style={{ marginTop: 10 }}>
-            No referrals yet — share your link or submit your first referral.
+            No referred clients yet — share your referral link to get started.
           </p>
         ) : (
           <div className="table-wrapper" style={{ marginTop: 12 }}>

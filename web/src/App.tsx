@@ -143,7 +143,15 @@ function PartnerStatusPage() {
     return <LoadingScreen />;
   }
 
-  if (user?.role === "partner" && !needsPartnerSetup(user)) {
+  // Only partners may see a partner status banner. A signed-out visitor or a
+  // non-partner account reaching this route is redirected instead of being
+  // shown a fabricated "Application Pending" status for an account that has no
+  // partner application at all.
+  if (user?.role !== "partner") {
+    return <Navigate to={user ? "/app" : "/app/partner/login"} replace />;
+  }
+
+  if (!needsPartnerSetup(user)) {
     return <Navigate to="/app/partner/dashboard" replace />;
   }
 

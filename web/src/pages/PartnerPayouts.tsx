@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 
 interface Payout {
@@ -36,7 +36,9 @@ export default function PartnerPayouts() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
     apiFetch("/api/partner/payouts")
       .then((res) => {
         if (!res.ok) throw new Error("Failed to fetch payouts");
@@ -47,10 +49,12 @@ export default function PartnerPayouts() {
         setLoading(false);
       })
       .catch((err) => {
-        setError(err.message);
+        setError(err?.message || "Failed to fetch payouts");
         setLoading(false);
       });
   }, []);
+
+  useEffect(load, [load]);
 
   const totalPaid = payouts.filter((p) => p.status === "paid").reduce((s, p) => s + Number(p.amount ?? 0), 0);
 
@@ -61,6 +65,11 @@ export default function PartnerPayouts() {
 
       {loading && <div className="loading">Loading payouts…</div>}
       {error && <div className="error-message">Error: {error}</div>}
+      {error && (
+        <button type="button" className="btn btn-primary" style={{ marginTop: 12 }} onClick={load}>
+          Try again
+        </button>
+      )}
       {!loading && !error && (
         <>
           <div className="partner-status-grid partner-summary-grid">

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { apiFetch } from "../lib/api";
 
 interface Referral {
@@ -37,7 +37,9 @@ export default function PartnerReferrals() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const load = useCallback(() => {
+    setLoading(true);
+    setError(null);
     apiFetch("/api/partner/referrals")
       .then((res) => {
         if (!res.ok) throw new Error("Failed to fetch referrals");
@@ -55,10 +57,12 @@ export default function PartnerReferrals() {
         setLoading(false);
       })
       .catch((err) => {
-        setError(err.message);
+        setError(err?.message || "Failed to fetch referrals");
         setLoading(false);
       });
   }, []);
+
+  useEffect(load, [load]);
 
   return (
     <div className="dashboard">
@@ -67,6 +71,11 @@ export default function PartnerReferrals() {
 
       {loading && <div className="loading">Loading referrals…</div>}
       {error && <div className="error-message">Error: {error}</div>}
+      {error && (
+        <button type="button" className="btn btn-primary" style={{ marginTop: 12 }} onClick={load}>
+          Try again
+        </button>
+      )}
       {!loading && !error && (
         <div className="table-wrapper">
           <table className="data-table">
