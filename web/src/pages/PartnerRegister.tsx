@@ -124,9 +124,12 @@ export default function PartnerRegister() {
               </p>
             ) : null}
             {!code && w9Ok && <p style={{ margin: "0 0 12px" }}>Your W-9 was received.</p>}
-            <p style={{ margin: 0 }}>
-              Check your inbox for a link to set your password, then sign in to
-              your partner portal.
+            <p style={{ margin: "4px 0 0", fontWeight: 700 }}>
+              Check your email to set up your account.
+            </p>
+            <p style={{ margin: "4px 0 0" }}>
+              We sent you a secure link to create your username and password.
+              Then sign in to your partner portal to get started.
             </p>
           </div>
           <p style={{ textAlign: "center", marginTop: 16 }}>
