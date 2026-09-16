@@ -1633,6 +1633,40 @@ body {
   }
 }
 
+/* Next payout + referral list (partner dashboard) */
+.next-payout-card {
+  background: linear-gradient(135deg, #ecfdf5 0%, #fff 100%);
+  border: 1px solid #a7f3d0;
+  border-radius: var(--radius-lg);
+  padding: 18px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  box-shadow: var(--shadow-card);
+}
+.next-payout-info { display: flex; flex-direction: column; gap: 4px; }
+.next-payout-amount { font-size: 2rem; font-weight: 800; color: #059669; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.next-payout-caption { font-size: 0.85rem; color: var(--gray-500); max-width: 460px; margin: 0; }
+.next-payout-action { display: flex; gap: 8px; flex-wrap: wrap; }
+.referral-list-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.section-title { font-size: 1.05rem; font-weight: 700; margin: 0; color: var(--gray-900); }
+.demo-badge {
+  display: inline-block;
+  margin: 6px 0 0;
+  padding: 3px 10px;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #92400e;
+  background: #fef3c7;
+  border: 1px solid #fcd34d;
+  border-radius: 999px;
+  width: fit-content;
+}
 /* Referral share link (refer page) */
 .referral-share-card {
   background: #fff;

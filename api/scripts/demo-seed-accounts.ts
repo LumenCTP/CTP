@@ -14,6 +14,7 @@
 import { Database } from "bun:sqlite";
 import PDFDocument from "pdfkit";
 import { storagePut, storageList, storageDelete } from "../src/storage.ts";
+import { seedDemoPartnerData } from "./demo-partner-data.ts";
 
 const DB_PATH = "data/cleartopay.db";
 const CLIENT_EMAIL = "demo@cleartopaydemo.com";
@@ -361,31 +362,9 @@ const partnerRow = db
   });
 const partnerId = Number(partnerRow.lastInsertRowid);
 
-const referralA = db
-  .query(
-    `INSERT INTO referrals (partner_id, partner_code, referred_company, contact_name, contact_email, contact_phone, referral_date,
-       signup_date, subscription_start_date, subscription_plan, subscription_amount, customer_status, notes)
-     VALUES ($p, $code, 'Demo Referral Client One LLC', 'Lee Demo', 'lee@cleartopaydemo.com', '(555) 010-0002', date('now','-40 days'),
-       date('now','-32 days'), date('now','-30 days'), 'Monthly', 149, 'active', 'Sample referral for demonstration only')`,
-  )
-  .run({ $p: partnerId, $code: REFERRAL_CODE });
-const referralAId = Number(referralA.lastInsertRowid);
-
-db.query(
-  `INSERT INTO referrals (partner_id, partner_code, referred_company, contact_name, contact_email, contact_phone, referral_date,
-     customer_status, notes)
-   VALUES ($p, $code, 'Demo Referral Prospect Two Inc', 'Kim Demo', 'kim@cleartopaydemo.com', '(555) 010-0003', date('now','-6 days'),
-     'lead', 'Sample referral for demonstration only')`,
-).run({ $p: partnerId, $code: REFERRAL_CODE });
-
-db.query(
-  `INSERT INTO commissions (partner_id, referral_id, tenant_id, billing_period, eligible_revenue, commission_percentage, commission_amount, earned_date, status)
-   VALUES ($p, $r, NULL, $bp, 149, 25.0, 37.25, date('now','-32 days'), 'pending')`,
-).run({ $p: partnerId, $r: referralAId, $bp: new Date(Date.now() - 32 * 86400000).toISOString().slice(0, 7) });
-db.query(
-  `INSERT INTO commissions (partner_id, referral_id, tenant_id, billing_period, eligible_revenue, commission_percentage, commission_amount, earned_date, status)
-   VALUES ($p, $r, NULL, $bp, 149, 25.0, 37.25, date('now','-2 days'), 'approved')`,
-).run({ $p: partnerId, $r: referralAId, $bp: new Date(Date.now() - 2 * 86400000).toISOString().slice(0, 7) });
+// Canonical demo referrals/commissions/payouts (10 fake clients, 25% — the
+// same dataset the partner dashboard demo uses; see demo-partner-data.ts).
+const demoSeed = seedDemoPartnerData(db, partnerId, REFERRAL_CODE);
 
 db.close();
 
@@ -393,7 +372,7 @@ console.log(
   JSON.stringify(
     {
       client: { user_id: clientUserId, tenant_id: clientTenantId, client_id: clientId, email: CLIENT_EMAIL, password: clientPassword, inbox_slug: CLIENT_INBOX_SLUG },
-      partner: { user_id: partnerUserId, tenant_id: partnerTenantId, partner_id: partnerId, email: PARTNER_EMAIL, username: PARTNER_USERNAME, password: partnerPassword, referral_code: REFERRAL_CODE },
+      partner: { user_id: partnerUserId, tenant_id: partnerTenantId, partner_id: partnerId, email: PARTNER_EMAIL, username: PARTNER_USERNAME, password: partnerPassword, referral_code: REFERRAL_CODE, demo_referrals: demoSeed.referral_count, demo_commissions: demoSeed.commission_count, demo_next_payout: demoSeed.next_expected_payout },
       vendors: Object.fromEntries(vendorIds),
       documents_created: docCount,
     },

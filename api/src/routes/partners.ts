@@ -580,7 +580,7 @@ app.get("/api/partner/connect-status", requireAuth, requirePartner, (c) => {
 app.get("/api/partner/dashboard", requireAuth, requirePartner, (c) => {
   const db = getDb();
   const partnerId = c.get("partner_id") as number;
-  const partner = db.query("SELECT id, referral_code, w9_file_key, w9_filename FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number; referral_code: string | null; w9_file_key: string | null; w9_filename: string | null };
+  const partner = db.query("SELECT id, referral_code, w9_file_key, w9_filename, email FROM partners WHERE id = $id").get({ $id: partnerId }) as { id: number; referral_code: string | null; w9_file_key: string | null; w9_filename: string | null; email: string };
 
   const countBy = (where: string, params: Record<string, unknown> = {}) =>
     (db.query(`SELECT COUNT(*) as c FROM referrals WHERE partner_id = $pid AND ${where}`).get({ $pid: partnerId, ...params }) as { c: number }).c;
@@ -603,7 +603,11 @@ app.get("/api/partner/dashboard", requireAuth, requirePartner, (c) => {
 
   const w9Uploaded = !!partner.w9_file_key;
   const referringEnabled = !!partner.referral_code;
+  // Demo-partner flag so the portal UI can label sample figures as such
+  // (created exclusively by the demo seed scripts — never a real partner).
+  const demo = /@cleartopaydemo\.com$/i.test(partner.email) || partner.referral_code === "DEMOPART";
   return c.json({
+    demo,
     referral_code: partner.referral_code,
     referral_link: partner.referral_code ? `${PARTNER_REFERRAL_LINK_BASE}?ref=${partner.referral_code}` : null,
     // Explicit W-9 gate flags for the portal UI: referring is disabled until a

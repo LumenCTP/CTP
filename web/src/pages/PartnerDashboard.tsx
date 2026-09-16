@@ -36,7 +36,17 @@ interface PayoutRow {
   created_at: string | null;
 }
 
+interface Referral {
+  id: number;
+  referred_company: string | null;
+  contact_name: string | null;
+  contact_email: string | null;
+  referral_date: string | null;
+  customer_status: string;
+}
+
 interface DashboardData {
+  demo?: boolean;
   referral_code: string | null;
   referral_link: string | null;
   referring_enabled?: boolean;
@@ -65,6 +75,20 @@ function fmtDate(value: string | null | undefined): string {
   const d = new Date(value.includes("T") ? value : `${value}T00:00:00`);
   if (isNaN(d.getTime())) return value;
   return d.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+}
+
+// Status badge colors: lead=yellow, trial=blue, active=green,
+// past_due=orange, cancelled/refunded=red (same mapping as My Referrals).
+function statusBadge(status: string) {
+  const cls: Record<string, string> = {
+    lead: "badge-lead",
+    trial: "badge-trial",
+    active: "badge-active",
+    past_due: "badge-past_due",
+    cancelled: "badge-cancelled",
+    refunded: "badge-refunded",
+  };
+  return <span className={`badge ${cls[status] ?? "badge-lead"}`}>{status.replace("_", " ")}</span>;
 }
 
 // Small copy button that shows "Copied!" for 2 seconds after clicking.
@@ -101,6 +125,7 @@ function CopyButton({ text, label = "Copy" }: { text: string; label?: string }) 
 export default function PartnerDashboard() {
   const [profile, setProfile] = useState<PartnerProfile | null>(null);
   const [data, setData] = useState<DashboardData | null>(null);
+  const [referrals, setReferrals] = useState<Referral[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [connectBusy, setConnectBusy] = useState(false);
@@ -114,11 +139,20 @@ export default function PartnerDashboard() {
     Promise.all([
       apiFetch("/api/partner/me").then((res) => (res.ok ? res.json() : { partner: null })),
       apiFetch("/api/partner/dashboard").then((res) => (res.ok ? res.json() : null)),
+      apiFetch("/api/partner/referrals").then((res) => (res.ok ? res.json() : { referrals: [] })),
     ])
-      .then(([me, dash]) => {
+      .then(([me, dash, refs]) => {
         const partner = (me as { partner?: PartnerProfile })?.partner ?? null;
         setProfile(partner);
         setData(dash as DashboardData | null);
+        const rows = ((refs as { referrals?: Referral[] })?.referrals ?? []) as Referral[];
+        // Newest referral first.
+        rows.sort((a, b) => {
+          const ta = a.referral_date ? new Date(a.referral_date).getTime() : 0;
+          const tb = b.referral_date ? new Date(b.referral_date).getTime() : 0;
+          return tb - ta;
+        });
+        setReferrals(rows);
         if (!dash) setError("Unable to load partner dashboard data.");
         setLoading(false);
       })
@@ -215,6 +249,9 @@ export default function PartnerDashboard() {
         <div>
           <h2 className="page-title">Partner Dashboard</h2>
           {name && <p className="page-subtitle">{name}{company ? ` · ${company}` : ""}</p>}
+          {data?.demo && (
+            <p className="demo-badge" title="This is a demo partner. All clients, commissions and payouts shown are sample/demo data — not real clients and not real money.">Sample data</p>
+          )}
         </div>
         {referringEnabled ? (
           <Link to="/app/partner/refer" className="btn btn-primary">Refer a Client</Link>
@@ -249,6 +286,22 @@ export default function PartnerDashboard() {
         </section>
       )}
 
+      {/* Next payout — commissions accrued (approved/scheduled) since the last payout */}
+      <section className="next-payout-card">
+        <div className="next-payout-info">
+          <span className="referral-code-label">Next payout</span>
+          <span className="next-payout-amount">{money(data?.next_expected_payout)}</span>
+          <p className="next-payout-caption">
+            Commissions accrued and approved since your last payout — this is the amount scheduled to be
+            paid on the next payout run.
+          </p>
+        </div>
+        <div className="next-payout-action">
+          <Link to="/app/partner/payouts" className="btn btn-outline btn-sm">View payouts</Link>
+          <Link to="/app/partner/commissions" className="btn btn-outline btn-sm">View commissions</Link>
+        </div>
+      </section>
+
       <StripeConnectCard
         stripe={profile?.stripe}
         payouts={profile?.payouts}
@@ -277,6 +330,42 @@ export default function PartnerDashboard() {
           </div>
         ))}
       </div>
+
+      {/* Referral-client list */}
+      <section className="referral-code-card" style={{ marginTop: 20 }}>
+        <div className="referral-list-header">
+          <h3 className="section-title">Referred clients</h3>
+          <Link to="/app/partner/referrals" className="btn btn-outline btn-sm">View all referrals</Link>
+        </div>
+        {referrals.length === 0 ? (
+          <p className="stripe-connect-hint" style={{ marginTop: 10 }}>
+            No referrals yet — share your link or submit your first referral.
+          </p>
+        ) : (
+          <div className="table-wrapper" style={{ marginTop: 12 }}>
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Client</th>
+                  <th>Contact</th>
+                  <th>Referred</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {referrals.slice(0, 10).map((r) => (
+                  <tr key={r.id}>
+                    <td className="td-name">{r.referred_company || "—"}</td>
+                    <td>{r.contact_name || "—"}</td>
+                    <td>{fmtDate(r.referral_date)}</td>
+                    <td>{statusBadge(r.customer_status)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </section>
     </div>
   );
 }
