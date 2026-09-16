@@ -97,7 +97,7 @@ export function getTenantInboxAddress(tenantId?: number | null): string {
 // ── Email Sender ─────────────────────────────────────────
 
 /**
- * Which outbound path sendEmail() will take, in priority order:
+ * The FIRST outbound path sendEmail() attempts, in priority order:
  *   1. "graph" — Microsoft Graph sendMail (OAuth 2.0 client-credentials),
  *      active when M365_TENANT_ID + M365_CLIENT_ID + M365_CLIENT_SECRET are
  *      all set (the owner's Entra app registration; primary path).
@@ -105,6 +105,10 @@ export function getTenantInboxAddress(tenantId?: number | null): string {
  *      password), active when ClearToPaySMTP is set (works in tenants where
  *      SMTP client submission is enabled).
  *   3. "queue" — the platform outgoing_email_queue path (no M365 config).
+ * This is the STARTING point only: sendEmail() walks the whole chain at
+ * runtime and advances to the next path whenever one reports a failure
+ * (graph → smtp → queue), so a transient Graph or SMTP hiccup cannot silently
+ * drop a message. See sendEmail().
  * Exported so the harness can assert the ordering without sending anything.
  */
 export type DeliveryPath = "graph" | "smtp" | "queue";
@@ -115,18 +119,52 @@ export function getDeliveryPath(): DeliveryPath {
   return "queue";
 }
 
+/** Email categories recorded in email_log.email_type. */
+export type EmailType =
+  | "weekly_report"
+  | "monthly_report"
+  | "renewal_reminder"
+  | "password_reset"
+  | "partner_payout"
+  | "inbox_rejection"
+  | "internal_alert"
+  | "partner_application_notify";
+
+/**
+ * Outcome of ONE delivery attempt against ONE path. `ok: false` means the
+ * provider did not accept the message (HTTP/connection/auth failure), so the
+ * caller may advance to the next path: Graph and SMTP are synchronous
+ * request/response sends, so a rejection means "not sent" and trying another
+ * path cannot double-deliver.
+ */
+export type DeliveryAttemptResult = { ok: true } | { ok: false; error: string };
+
 /**
  * Sends email. Delivery is chosen centrally here so no call site can forget
- * the owner's outbound rules:
+ * the owner's outbound rules — and so a transient provider failure can never
+ * silently drop a message.
  *
- * - M365 Graph secrets set (primary, owner directive 2026-08-14): Microsoft
- *   Graph sendMail as EMAIL_FROM_ADDRESS with every message CC'd to
- *   documents@ (SMTP_CC_ADDRESS) — see deliverViaGraphMail().
- * - ClearToPaySMTP set (fallback): direct M365 SMTP delivery from
- *   EMAIL_FROM_ADDRESS with the same CC — see deliverViaM365Smtp().
- * - Neither set (dev/test): the platform queue path is used — a row goes to
- *   outgoing_email_queue for the process-queue worker and email_log records
- *   it as 'queued'.
+ * Runtime fallback chain, walked in order and advancing ONLY on failure:
+ *   1. M365 Graph secrets set (primary, owner directive 2026-08-14):
+ *      Microsoft Graph sendMail as EMAIL_FROM_ADDRESS with every message CC'd
+ *      to documents@ (SMTP_CC_ADDRESS) — see deliverViaGraphMail().
+ *   2. ClearToPaySMTP set: direct M365 SMTP delivery from EMAIL_FROM_ADDRESS
+ *      with the same CC — see deliverViaM365Smtp(). Reached only after Graph
+ *      reported a failure (transient 5xx / timeout / auth / throttling).
+ *   3. outgoing_email_queue (durable last resort, also the normal path in
+ *      dev/test when neither is configured): one queue row per recipient and
+ *      email_log 'queued', drained by the process-queue delivery worker / the
+ *      weekly run.
+ *
+ * No double-send is possible: Graph and SMTP are synchronous request/response
+ * sends, so a reported failure means the provider never accepted the message
+ * and the next path is safe to try.
+ *
+ * email_log gets exactly ONE terminal row per recipient: 'sent' (written by
+ * whichever path delivered), 'queued' (handed to the platform queue), or
+ * 'error' with the whole chain's error text when even the enqueue fails.
+ * Intermediate failures are never logged as 'error', so a message that lands
+ * on a fallback path cannot appear both failed and sent.
  *
  * From:     ClearToPay Compliance <EMAIL_FROM_ADDRESS>
  * Reply-To: EMAIL_REPLY_TO
@@ -137,7 +175,7 @@ export async function sendEmail(
   htmlBody: string,
   clientId?: number,
   vendorId?: number,
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "inbox_rejection" | "internal_alert" | "partner_application_notify",
+  emailType?: EmailType,
   attachments?: EmailAttachment[],
 ): Promise<void> {
   const db = getDb();
@@ -153,22 +191,75 @@ export async function sendEmail(
   console.log(`[email] Type: ${emailType ?? "manual"}`);
   console.log(`[email] Attachments: ${attachments ? attachments.map((a) => `${a.filename} (${a.contentType})`).join(", ") || "(none)" : "(none)"}`);
   console.log("══════════════════════════════════════════════");
-  if (path === "graph") {
-    // Microsoft Graph sendMail (primary). No queue row is created: the Graph
-    // sendMail conversation is the delivery, email_log is the audit trail,
-    // and the platform worker can never double-send.
-    await deliverViaGraphMail({ recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db });
-    return;
+  // Shared attempt arguments — every path gets the identical message.
+  const attemptArgs = { recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db };
+  // Failure trail for the paths that did NOT deliver. Used for the console
+  // warning and, only if the message ends up nowhere, for the single 'error'
+  // email_log record. Never written to email_log on a fallback that succeeds.
+  const failures: string[] = [];
+
+  // ── 1. Microsoft Graph sendMail (primary) ──
+  // No queue row is created on success: the Graph sendMail conversation is the
+  // delivery, email_log is the audit trail, and the platform worker can never
+  // double-send.
+  if (graphMailConfigured()) {
+    const graph = await deliverViaGraphMail(attemptArgs);
+    if (graph.ok) return;
+    failures.push(`graph: ${graph.error}`);
+    console.warn(`[email] Graph delivery failed — advancing to the next delivery path`);
   }
-  if (path === "smtp") {
-    // Direct M365 SMTP path — wins whenever ClearToPaySMTP is set. Every
-    // message is CC'd to the documents@ mailbox (owner directive). No queue
-    // row is created: the SMTP conversation is the delivery, email_log is
-    // the audit trail, and the platform worker can never double-send.
-    await deliverViaM365Smtp({ recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db });
-    return;
+
+  // ── 2. Direct M365 SMTP (fallback) ──
+  // Reached only when Graph reported failure (or when Graph is not configured
+  // at all but SMTP is). Same rules as Graph: synchronous send, no queue row.
+  if (smtpConfigured()) {
+    const smtp = await deliverViaM365Smtp(attemptArgs);
+    if (smtp.ok) return;
+    failures.push(`smtp: ${smtp.error}`);
+    console.warn(`[email] SMTP delivery failed — advancing to the next delivery path`);
   }
-  // ── Platform queue path (fallback when ClearToPaySMTP is absent) ──
+
+  // ── 3. Platform queue (durable last resort) ──
+  // Also the normal path in dev/test where neither Graph nor SMTP is
+  // configured. Writes one outgoing_email_queue row + one email_log 'queued'
+  // row per recipient, so the message survives this process and the delivery
+  // worker can still get it out.
+  try {
+    enqueueForDelivery(attemptArgs);
+    if (failures.length > 0) {
+      console.warn(`[email] Queued for the platform delivery worker after direct-path failure(s) — ${failures.join(" | ")}`);
+    }
+  } catch (err) {
+    // The queue is the last resort: if even that insert fails the message is
+    // genuinely undelivered, so record the WHOLE chain as one 'error' row per
+    // recipient (never a duplicate 'sent'/'queued' row).
+    const msg = err instanceof Error ? err.message : String(err);
+    failures.push(`queue: ${msg}`);
+    console.error(`[email] EVERY delivery path failed for "${subject}" → ${recipients.join(", ")}: ${failures.join(" | ")}`);
+    recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "error", errorMessage: failures.join(" | ") });
+  }
+}
+
+/**
+ * Platform queue path — inserts one outgoing_email_queue row plus one
+ * email_log 'queued' row per recipient. Attachment metadata is stored as JSON
+ * (the bytes stay in the storage layer and are resolved at claim time); the
+ * process-queue worker picks the rows up and acknowledges delivery via
+ * /api/emails/mark-sent, which flips the log row to 'sent'.
+ * Throws if the insert fails — sendEmail() converts that into an 'error'
+ * record carrying the whole fallback chain's error text.
+ */
+function enqueueForDelivery(args: {
+  recipients: string[];
+  subject: string;
+  htmlBody: string;
+  clientId?: number;
+  vendorId?: number;
+  emailType?: EmailType;
+  attachments?: EmailAttachment[];
+  db: ReturnType<typeof getDb>;
+}): void {
+  const { recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db } = args;
   // Log to email_log for every recipient
   const insertStmt = db.query(`
     INSERT INTO email_log (client_id, vendor_id, email_type, recipient_email, subject, status, sent_at)
@@ -244,9 +335,12 @@ function recordEmailLog(args: {
  * and records the outcome in email_log. Every message is CC'd to documents@
  * (SMTP_CC_ADDRESS) unless the recipient already IS documents@ — the CC is
  * deduped so the owner's mailbox never gets a duplicate of its own mail.
- * Delivery failures are logged and recorded on email_log as 'error' (never
- * silently retried); the platform path is NOT a fallback here because Graph
- * wins whenever the M365 secrets are present.
+ *
+ * Returns { ok: true } after recording email_log 'sent'. On failure it returns
+ * { ok: false, error } WITHOUT writing an email_log row: sendEmail() owns the
+ * terminal outcome, so a message that then succeeds on the SMTP fallback is
+ * never also logged as an error, and a message handed to the queue gets exactly
+ * one 'queued' row.
  */
 async function deliverViaGraphMail(args: {
   recipients: string[];
@@ -254,10 +348,10 @@ async function deliverViaGraphMail(args: {
   htmlBody: string;
   clientId?: number;
   vendorId?: number;
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "internal_alert";
+  emailType?: EmailType;
   attachments?: EmailAttachment[];
   db: ReturnType<typeof getDb>;
-}): Promise<void> {
+}): Promise<DeliveryAttemptResult> {
   const { recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db } = args;
   // Resolve attachment bytes (storage layer) for the Graph payload.
   const resolvedAtts = attachments && attachments.length > 0 ? await resolveEmailAttachments(attachments) : [];
@@ -281,10 +375,13 @@ async function deliverViaGraphMail(args: {
       })),
     });
     recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "sent" });
+    return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[graph-mail] Delivery failed for "${subject}" → ${recipients.join(", ")}: ${msg}`);
-    recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "error", errorMessage: msg });
+    // No email_log row here — sendEmail() records the terminal outcome of the
+    // whole fallback chain (this path may still be followed by SMTP/queue).
+    return { ok: false, error: msg };
   }
 }
 
@@ -295,9 +392,12 @@ async function deliverViaGraphMail(args: {
  * smtp.office365.com, and records the outcome in email_log. Every message
  * is CC'd to documents@ (SMTP_CC_ADDRESS) unless the recipient already IS
  * documents@ — the CC is deduped so the owner's mailbox never gets a
- * duplicate of its own mail. Delivery failures are logged and recorded on
- * email_log as 'error' (never silently retried); the platform path is NOT a
- * fallback here because SMTP wins whenever ClearToPaySMTP is present.
+ * duplicate of its own mail.
+ *
+ * Returns { ok: true } after recording email_log 'sent'. On failure it returns
+ * { ok: false, error } WITHOUT writing an email_log row: sendEmail() owns the
+ * terminal outcome of the chain (a failed SMTP attempt is followed by the
+ * platform queue, which records 'queued').
  */
 async function deliverViaM365Smtp(args: {
   recipients: string[];
@@ -305,10 +405,10 @@ async function deliverViaM365Smtp(args: {
   htmlBody: string;
   clientId?: number;
   vendorId?: number;
-  emailType?: "weekly_report" | "monthly_report" | "renewal_reminder" | "password_reset" | "partner_payout" | "internal_alert";
+  emailType?: EmailType;
   attachments?: EmailAttachment[];
   db: ReturnType<typeof getDb>;
-}): Promise<void> {
+}): Promise<DeliveryAttemptResult> {
   const { recipients, subject, htmlBody, clientId, vendorId, emailType, attachments, db } = args;
   // Resolve attachment bytes (storage layer) for the MIME payload.
   const resolvedAtts = attachments && attachments.length > 0 ? await resolveEmailAttachments(attachments) : [];
@@ -342,10 +442,13 @@ async function deliverViaM365Smtp(args: {
       mimeMessage,
     });
     recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "sent" });
+    return { ok: true };
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error(`[smtp] Delivery failed for "${subject}" → ${recipients.join(", ")}: ${msg}`);
-    recordEmailLog({ db, recipients, clientId, vendorId, emailType, subject, status: "error", errorMessage: msg });
+    // No email_log row here — sendEmail() records the terminal outcome of the
+    // whole fallback chain (this path may still be followed by the queue).
+    return { ok: false, error: msg };
   }
 }
 

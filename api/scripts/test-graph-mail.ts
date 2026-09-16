@@ -1,8 +1,10 @@
 #!/usr/bin/env bun
 // ─────────────────────────────────────────────────────────────────────────────
 // Test harness for the Microsoft Graph sendMail integration (api/src/graph-mail.ts
-// + the wiring in api/src/email.ts). NO real credentials: globalThis.fetch is
-// stubbed, so nothing leaves the machine.
+// + the wiring in api/src/email.ts), including the runtime fallback chain
+// (graph → smtp → queue). NO real credentials and NO network: globalThis.fetch
+// is stubbed for the Graph leg and nodemailer's transport factory is stubbed for
+// the SMTP leg, so nothing leaves the machine.
 //
 // Run:  cd api && bun run scripts/test-graph-mail.ts
 //       (run with the API stopped — see skill cleartopay-db-verify-offline —
@@ -18,12 +20,21 @@
 //      Authorization Bearer, JSON body incl. attachments + CC, saveToSentItems)
 //   5. sendEmail() Graph path: email_log 'sent' + NO queue row; CC dedupe
 //      when the recipient already IS documents@
-//   6. sendEmail() Graph path failure: email_log 'error' with [graph-mail] msg
-//   7. sendEmail() queue fallback (no M365/SMTP vars): outgoing_email_queue
-//      row + email_log 'queued' — the pre-existing platform path still works
+//   6. sendEmail() runtime fallback: Graph fails and SMTP is NOT configured →
+//      falls through to outgoing_email_queue + email_log 'queued' (exactly ONE
+//      terminal row per recipient — never a duplicate 'error'/'sent')
+//   7. sendEmail() queue path when nothing is configured (no M365/SMTP vars):
+//      outgoing_email_queue row + email_log 'queued' — the pre-existing
+//      platform path still works
+//   8. sendEmail() runtime fallback: Graph fails → M365 SMTP DELIVERS. This is
+//      the guarantee: the message still goes out immediately (no queue row, one
+//      'sent' log row), and the SMTP leg still carries the documents@ CC.
+//   9. sendEmail() runtime fallback: Graph fails → SMTP fails → queued, with
+//      CC dedupe honored on the SMTP leg and exactly one 'queued' row.
 //
 // Exit code: 0 only when ALL checks PASS.
 // ─────────────────────────────────────────────────────────────────────────────
+import nodemailer from "nodemailer";
 import { getDb } from "../src/db";
 import {
   buildGraphSendPayload,
@@ -37,6 +48,7 @@ import {
   GRAPH_DEFAULT_SCOPE,
 } from "../src/graph-mail";
 import { getDeliveryPath, sendEmail } from "../src/email";
+import { closeSmtpTransport } from "../src/smtp";
 
 const M365 = {
   M365_TENANT_ID: "tenant-abc-123",
@@ -118,6 +130,48 @@ function installFetchStub(): void {
 }
 function restoreFetch(): void {
   globalThis.fetch = originalFetch;
+}
+
+// ── SMTP transport stub ──────────────────────────────────
+// api/src/smtp.ts builds its nodemailer transport lazily (inside sendViaSmtp →
+// getTransport), so replacing the factory on the nodemailer module object keeps
+// the SMTP leg of the fallback chain fully offline: no socket is ever opened.
+// closeSmtpTransport() drops the module-level cached transport so each check can
+// switch the stub between "delivers" and "fails".
+interface SmtpAttempt {
+  /** Raw MIME message handed to transport.sendMail() (headers + body). */
+  mimeMessage: string;
+  /** SMTP envelope recipients (To + Cc, deduped) as smtp.ts passes them. */
+  envelopeTo: string[];
+}
+let smtpAttempts: SmtpAttempt[] = [];
+const originalCreateTransport = (nodemailer as any).createTransport;
+
+function installSmtpStub(mode: "success" | "failure"): void {
+  smtpAttempts = [];
+  closeSmtpTransport(); // drop any transport cached by a previous check
+  (nodemailer as any).createTransport = () => ({
+    sendMail: async (msg: any) => {
+      smtpAttempts.push({
+        mimeMessage: String(msg?.raw ?? ""),
+        envelopeTo: Array.isArray(msg?.envelope?.to) ? msg.envelope.to : [],
+      });
+      if (mode === "failure") {
+        throw new Error("stub SMTP failure: 535 5.7.139 SmtpClientAuthentication is disabled for the Tenant");
+      }
+      return { messageId: "<stub-smtp@cleartopay.test>", response: "250 2.6.0 <stub> Queued mail for delivery" };
+    },
+    close: () => {},
+  });
+}
+function restoreSmtpStub(): void {
+  closeSmtpTransport();
+  (nodemailer as any).createTransport = originalCreateTransport;
+}
+/** The Cc: header of a MIME message, or null when the header is absent. */
+function mimeCc(mime: string): string | null {
+  const m = /^Cc:(.*)$/im.exec(mime);
+  return m ? m[1].trim() : null;
 }
 
 // ── DB row tracking / cleanup ────────────────────────────
@@ -334,10 +388,11 @@ async function check5(): Promise<void> {
   }
 }
 
-// ── Check 6: sendEmail() Graph path failure ──────────────
+// ── Check 6: Graph failure, no SMTP → queue (no bogus 'error' row) ──
 async function check6(): Promise<void> {
-  console.log("── Check 6: sendEmail() Graph path — HTTP error → email_log 'error' ──");
+  console.log("── Check 6: Graph fails + no SMTP configured → queued fallback ──");
   setEnv(M365);
+  clearEnv(["ClearToPaySMTP"]);
   resetGraphTokenCache();
   installFetchStub();
   sendMailResponse = {
@@ -346,16 +401,27 @@ async function check6(): Promise<void> {
   };
   const db = getDb();
   const logBefore = maxId("email_log");
+  const queueBefore = maxId("outgoing_email_queue");
+  const sSubject = `${SUBJECT} graph-fail→queue`;
   try {
-    await sendEmail(["ceo@acme.test"], SUBJECT, BODY, undefined, undefined, "weekly_report");
+    await sendEmail(["ceo@acme.test"], sSubject, BODY, undefined, undefined, "password_reset");
+    const graphAttempts = calls.filter((c) => c.url.endsWith("/sendMail")).length;
     const logRows = db.query(
       "SELECT status, error_message FROM email_log WHERE id > $id AND subject = $subject",
-    ).all({ $id: logBefore, $subject: SUBJECT }) as Array<{ status: string; error_message: string | null }>;
-    const ok = logRows.length === 1 && logRows[0].status === "error" &&
-      (logRows[0].error_message ?? "").includes("[graph-mail]") && (logRows[0].error_message ?? "").includes("400");
-    if (!ok) console.error(`    ✗ email_log rows=${JSON.stringify(logRows)} (want 1 'error' row with [graph-mail] HTTP 400)`);
-    record(6, "email_log 'error' with Graph error body surfaced", ok, ok ? "error recorded" : "see failure above");
+    ).all({ $id: logBefore, $subject: sSubject }) as Array<{ status: string; error_message: string | null }>;
+    const queueRows = db.query(
+      "SELECT recipient_email, status FROM outgoing_email_queue WHERE id > $id AND subject = $subject",
+    ).all({ $id: queueBefore, $subject: sSubject }) as Array<{ recipient_email: string; status: string }>;
+    const ok =
+      check(graphAttempts === 1, "Graph attempted exactly once", graphAttempts, 1) &&
+      check(smtpAttempts.length === 0, "SMTP NOT attempted (not configured)", smtpAttempts.length, 0) &&
+      check(logRows.length === 1 && logRows[0].status === "queued",
+        "exactly ONE email_log row, status 'queued' (no duplicate 'error')", logRows, [{ status: "queued", error_message: null }]) &&
+      check(queueRows.length === 1 && queueRows[0].status === "queued",
+        "one queued outgoing_email_queue row", queueRows, [{ recipient_email: "ceo@acme.test", status: "queued" }]);
+    record(6, "Graph failure → queued with a single accurate log row", ok, ok ? "queue fallback verified" : "see failures above");
   } finally {
+    deleteRowsAfter("outgoing_email_queue", queueBefore);
     deleteRowsAfter("email_log", logBefore);
     restoreFetch();
     sendMailResponse = { status: 202, body: null };
@@ -397,6 +463,97 @@ async function check7(): Promise<void> {
   }
 }
 
+// ── Check 8: Graph fails → SMTP DELIVERS (the 2-minute guarantee) ──
+async function check8(): Promise<void> {
+  console.log("── Check 8: Graph fails → M365 SMTP delivers immediately ──");
+  setEnv({ ...M365, ClearToPaySMTP: "stub-app-password" });
+  resetGraphTokenCache();
+  installFetchStub();
+  installSmtpStub("success");
+  sendMailResponse = {
+    status: 500,
+    body: { error: { code: "ErrorInternalServerError", message: "Transient failure. Please retry." } },
+  };
+  const db = getDb();
+  const logBefore = maxId("email_log");
+  const queueBefore = maxId("outgoing_email_queue");
+  const sSubject = `${SUBJECT} graph-fail→smtp`;
+  try {
+    const started = Date.now();
+    await sendEmail(["partner@acme.test"], sSubject, BODY, undefined, undefined, "password_reset");
+    const elapsedMs = Date.now() - started;
+    const graphAttempts = calls.filter((c) => c.url.endsWith("/sendMail")).length;
+    const logRows = db.query(
+      "SELECT status, error_message FROM email_log WHERE id > $id AND subject = $subject",
+    ).all({ $id: logBefore, $subject: sSubject }) as Array<{ status: string; error_message: string | null }>;
+    const queueAfter = maxId("outgoing_email_queue");
+    const mime = smtpAttempts[0]?.mimeMessage ?? "";
+    const ok =
+      check(graphAttempts === 1, "Graph attempted first", graphAttempts, 1) &&
+      check(smtpAttempts.length === 1, "SMTP fallback attempted after the Graph failure", smtpAttempts.length, 1) &&
+      check(logRows.length === 1 && logRows[0].status === "sent" && logRows[0].error_message === null,
+        "exactly ONE email_log row, status 'sent' (no 'error', no duplicate)", logRows, [{ status: "sent", error_message: null }]) &&
+      check(queueAfter === queueBefore, "NO queue row (the SMTP leg was the delivery)", queueAfter, queueBefore) &&
+      check(mime.includes("To: partner@acme.test"), "SMTP MIME To: header", mime.split("\r\n").find((l) => l.startsWith("To:")), "To: partner@acme.test") &&
+      check(mimeCc(mime) === CC, "SMTP MIME Cc: still documents@ (dedupe rule intact)", mimeCc(mime), CC) &&
+      check(smtpAttempts[0]?.envelopeTo.includes(CC) === true, "SMTP envelope includes the documents@ CC", smtpAttempts[0]?.envelopeTo, [CC]) &&
+      check(elapsedMs < 10_000, "delivered synchronously (well inside the 2-minute window)", `${elapsedMs}ms`, "<10000ms");
+    record(8, "Graph failure → SMTP delivers, one 'sent' row, no queue row", ok, ok ? `delivered in ${elapsedMs}ms via SMTP` : "see failures above");
+    if (!ok) console.error(`    ✗ SMTP MIME head: ${JSON.stringify(mime.slice(0, 200))}`);
+  } finally {
+    deleteRowsAfter("outgoing_email_queue", queueBefore);
+    deleteRowsAfter("email_log", logBefore);
+    restoreSmtpStub();
+    restoreFetch();
+    sendMailResponse = { status: 202, body: null };
+  }
+}
+
+// ── Check 9: Graph fails → SMTP fails → queued (CC dedupe on the SMTP leg) ──
+async function check9(): Promise<void> {
+  console.log("── Check 9: Graph fails → SMTP fails → queued, CC dedupe intact ──");
+  setEnv({ ...M365, ClearToPaySMTP: "stub-app-password" });
+  resetGraphTokenCache();
+  installFetchStub();
+  installSmtpStub("failure");
+  sendMailResponse = {
+    status: 500,
+    body: { error: { code: "ErrorInternalServerError", message: "Transient failure. Please retry." } },
+  };
+  const db = getDb();
+  const logBefore = maxId("email_log");
+  const queueBefore = maxId("outgoing_email_queue");
+  const sSubject = `${SUBJECT} graph-fail→smtp-fail→queue`;
+  try {
+    // Recipient IS documents@ → the CC must be deduped on both legs.
+    await sendEmail([CC], sSubject, BODY, undefined, undefined, "password_reset");
+    const graphAttempts = calls.filter((c) => c.url.endsWith("/sendMail")).length;
+    const logRows = db.query(
+      "SELECT status, error_message FROM email_log WHERE id > $id AND subject = $subject",
+    ).all({ $id: logBefore, $subject: sSubject }) as Array<{ status: string; error_message: string | null }>;
+    const queueRows = db.query(
+      "SELECT recipient_email, status FROM outgoing_email_queue WHERE id > $id AND subject = $subject",
+    ).all({ $id: queueBefore, $subject: sSubject }) as Array<{ recipient_email: string; status: string }>;
+    const mime = smtpAttempts[0]?.mimeMessage ?? "";
+    const ok =
+      check(graphAttempts === 1, "Graph attempted", graphAttempts, 1) &&
+      check(smtpAttempts.length === 1, "SMTP attempted after the Graph failure", smtpAttempts.length, 1) &&
+      check(mimeCc(mime) === null, "SMTP MIME has NO Cc: when the recipient IS documents@ (dedupe)", mimeCc(mime), null) &&
+      check(eq(smtpAttempts[0]?.envelopeTo, [CC]), "SMTP envelope has the recipient exactly once", smtpAttempts[0]?.envelopeTo, [CC]) &&
+      check(logRows.length === 1 && logRows[0].status === "queued",
+        "exactly ONE email_log row, status 'queued'", logRows, [{ status: "queued", error_message: null }]) &&
+      check(queueRows.length === 1 && queueRows[0].recipient_email === CC && queueRows[0].status === "queued",
+        "one queued row for the recipient", queueRows, [{ recipient_email: CC, status: "queued" }]);
+    record(9, "Graph + SMTP failures → queued, CC dedupe honored", ok, ok ? "full chain verified" : "see failures above");
+  } finally {
+    deleteRowsAfter("outgoing_email_queue", queueBefore);
+    deleteRowsAfter("email_log", logBefore);
+    restoreSmtpStub();
+    restoreFetch();
+    sendMailResponse = { status: 202, body: null };
+  }
+}
+
 // ── main ─────────────────────────────────────────────────
 async function main(): Promise<void> {
   console.log("══════════════════════════════════════════════════════");
@@ -415,11 +572,14 @@ async function main(): Promise<void> {
     await check5();
     await check6();
     await check7();
+    await check8();
+    await check9();
   } catch (err) {
     console.error(`[harness] UNEXPECTED ERROR: ${err instanceof Error ? err.stack : String(err)}`);
     exitCode = 1;
   } finally {
     restoreFetch();
+    restoreSmtpStub();
     resetEnv();
   }
   console.log("");
