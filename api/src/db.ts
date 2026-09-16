@@ -576,6 +576,11 @@ function runMigrations(db: Database): void {
   `);
   ensureColumn(db, "vendors", "address TEXT", "address");
   ensureColumn(db, "vendors", "normalized_key TEXT", "normalized_key");
+  // Branded-inbox sender routing (owner directive 2026-09-10): inbound mail is
+  // routed to a tenant by the sender's address, matched against every vendor
+  // email column. insurance_agent_email lets a vendor's agent send COIs from
+  // their own address and still land on the right tenant.
+  ensureColumn(db, "vendors", "insurance_agent_email TEXT", "insurance_agent_email");
   ensureColumn(db, "clients", "normalized_key TEXT", "normalized_key");
   db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_clients_tenant_normalized ON clients(tenant_id, normalized_key) WHERE normalized_key IS NOT NULL; CREATE UNIQUE INDEX IF NOT EXISTS idx_vendors_client_normalized ON vendors(client_id, normalized_key) WHERE normalized_key IS NOT NULL;");
 

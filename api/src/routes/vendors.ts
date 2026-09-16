@@ -92,7 +92,7 @@ app.post("/api/vendors", async (c) => {
   try {
     const db = getDb();
     const body = await c.req.json();
-    const { client_id, name, contact_name, contact_email, contact_phone, address } = body;
+    const { client_id, name, contact_name, contact_email, contact_phone, insurance_agent_email, address } = body;
 
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       return c.json({ error: "Vendor name is required" }, 400);
@@ -126,8 +126,8 @@ app.post("/api/vendors", async (c) => {
     }
 
     const result = db.query(`
-      INSERT INTO vendors (tenant_id, client_id, name, address, normalized_key, contact_name, contact_email, contact_phone)
-      VALUES ($tenant_id, $client_id, $name, $address, $key, $contact_name, $contact_email, $contact_phone)
+      INSERT INTO vendors (tenant_id, client_id, name, address, normalized_key, contact_name, contact_email, contact_phone, insurance_agent_email)
+      VALUES ($tenant_id, $client_id, $name, $address, $key, $contact_name, $contact_email, $contact_phone, $insurance_agent_email)
     `).run({
       $tenant_id: c.get("tenant_id") as number,
       $client_id: client_id,
@@ -137,6 +137,7 @@ app.post("/api/vendors", async (c) => {
       $contact_name: contact_name?.trim() || null,
       $contact_email: contact_email?.trim() || null,
       $contact_phone: contact_phone?.trim() || null,
+      $insurance_agent_email: insurance_agent_email?.trim() || null,
     });
 
     const newId = Number(result.lastInsertRowid);
@@ -147,7 +148,7 @@ app.post("/api/vendors", async (c) => {
       VALUES ($vendor_id, $client_id, 'needs_review', 'hold')
     `).run({ $vendor_id: newId, $client_id: client_id });
 
-    logAudit(db, "vendor", newId, "created", { client_id, name: trimmedName, address: trimmedAddress, contact_name, contact_email, contact_phone });
+    logAudit(db, "vendor", newId, "created", { client_id, name: trimmedName, address: trimmedAddress, contact_name, contact_email, contact_phone, insurance_agent_email });
 
     // Return the new vendor with client name
     const vendor = db.query(`
@@ -179,7 +180,7 @@ app.put("/api/vendors/:id", async (c) => {
     }
 
     const body = await c.req.json();
-    const { client_id, name, contact_name, contact_email, contact_phone, address } = body;
+    const { client_id, name, contact_name, contact_email, contact_phone, insurance_agent_email, address } = body;
 
     if (!name || typeof name !== "string" || name.trim().length === 0) {
       return c.json({ error: "Vendor name is required" }, 400);
@@ -217,6 +218,7 @@ app.put("/api/vendors/:id", async (c) => {
       UPDATE vendors
       SET client_id = $client_id, name = $name, address = $address, normalized_key = $key,
           contact_name = $contact_name, contact_email = $contact_email, contact_phone = $contact_phone,
+          insurance_agent_email = $insurance_agent_email,
           updated_at = datetime('now')
       WHERE id = $id
     `).run({
@@ -229,9 +231,10 @@ app.put("/api/vendors/:id", async (c) => {
       $contact_name: contact_name?.trim() || null,
       $contact_email: contact_email?.trim() || null,
       $contact_phone: contact_phone?.trim() || null,
+      $insurance_agent_email: insurance_agent_email?.trim() || null,
     });
 
-    logAudit(db, "vendor", id, "updated", { client_id, name: trimmedName, address: trimmedAddress, contact_name, contact_email, contact_phone });
+    logAudit(db, "vendor", id, "updated", { client_id, name: trimmedName, address: trimmedAddress, contact_name, contact_email, contact_phone, insurance_agent_email });
 
     // Return updated vendor
     const vendor = db.query(`

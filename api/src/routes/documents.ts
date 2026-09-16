@@ -3,7 +3,7 @@ import { serverError } from "../errors";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { getDb } from "../db";
-import { slugFromToAddress } from "../lib/inbox";
+import { slugFromToAddress, isSharedInboxAddress, resolveTenantIdForInbound } from "../lib/inbox";
 import { QUEUE_SECRET } from "../secrets";
 import { logAudit, requireQueueSecret } from "../middleware";
 import { extractDocumentInfoFromBytes } from "../extract";
@@ -151,89 +151,142 @@ app.post("/api/inbox/ingest", async (c) => {
 // the whole email. Identical re-posts (poller retry after a mid-request crash)
 // are recognized via a content dedup key and skipped, so retries never
 // re-ingest documents as duplicates.
+// POST /api/inbox/receive — receive raw inbound email from a mailbox poller
+// (external agent pipeline OR the built-in Graph mailbox poller — the
+// scheduler calls the same core via ingestInboundEmail below).
+//
+// ROUTING (owner directive 2026-09-10 — branded inbox): every client-visible
+// submission address is documents@cleartopayconstruction.com, so the recipient
+// no longer identifies the tenant. The tenant is resolved from the SENDER's
+// address, matched against every vendor email column (contact_email,
+// insurance_agent_email). SAFETY GUARD: a sender that matches zero tenants or
+// multiple tenants is NEVER assigned — the message is queued UNROUTED
+// (processed=0, error=UNROUTED…, no tenant) for human review. Legacy
+// per-tenant aliases in to_address remain a transition-only fallback and are
+// ignored once the address is the shared branded inbox itself.
+//
+// Per-attachment fault tolerance (P1): a single bad attachment (HEIC photo,
+// Word doc, oversize file) must NOT fail the whole email. Valid attachments
+// are ingested, rejected ones are recorded on the inbound record with a
+// human-readable reason, and the sender is auto-notified. The endpoint always
+// returns 200 with a per-attachment result array so the poller never re-sends
+// the whole email. Identical re-posts (poller retry after a mid-request crash)
+// are recognized via a content dedup key and skipped, so retries never
+// re-ingest documents as duplicates.
 app.post("/api/inbox/receive", async (c) => {
   const denied = requireQueueSecret(c); if (denied) return denied;
   try {
     const body = await c.req.json();
-    const slug = slugFromToAddress(String(body.to_address || ""));
-    if (!slug || !Array.isArray(body.attachments)) return c.json({ error: "to_address with a tenant address and attachments are required" }, 400);
-    const db = getDb();
-    const t = db.query("SELECT id FROM tenants WHERE inbox_slug=$slug COLLATE NOCASE").get({ $slug: slug }) as { id: number } | undefined;
-    if (!t) return c.json({ error: "Unknown tenant slug" }, 404);
-    const senderEmail = typeof body.from_address === "string" && body.from_address.trim() ? body.from_address.trim() : null;
-
-    // ── Idempotency: same email re-posted (same content) → acknowledge, don't re-ingest ──
-    const dedupKey = inboxDedupKey(body);
-    const existing = dedupKey ? db.query("SELECT id FROM inbox_queue WHERE dedup_key=$key").get({ $key: dedupKey }) as { id: number } | undefined : undefined;
-    if (existing) {
-      console.log(`[inbox/receive] duplicate email (dedup_key ${dedupKey.slice(0, 12)}…) — acknowledging without re-ingesting (queue row ${existing.id})`);
-      return c.json({ queued: true, duplicate: true, queue_id: existing.id, documents: [], ingested_count: 0, rejected_count: 0 }, 200);
-    }
-
-    const raw = { ...body, tenant_slug: slug };
-    const q = db.query("INSERT INTO inbox_queue (raw_email_json,processed,dedup_key) VALUES ($raw,1,$key)").run({ $raw: JSON.stringify(raw), $key: dedupKey });
-    const queueId = Number(q.lastInsertRowid);
-    const results: Array<{ filename: string; status: "ingested" | "rejected"; document?: Record<string, unknown>; reason?: string }> = [];
-    const rejected: Array<{ filename: string; reason: string }> = [];
-
-    for (const a of body.attachments) {
-      const filename = a && typeof a.filename === "string" && a.filename.trim() ? a.filename : "attachment";
-      const reject = (reason: string) => { results.push({ filename, status: "rejected", reason }); rejected.push({ filename, reason }); };
-      // Per-attachment shape check — a malformed attachment rejects only itself.
-      if (!a || typeof a.filename !== "string" || typeof a.content_base64 !== "string" || typeof a.content_type !== "string") {
-        reject("attachment is missing its filename, content, or file type");
-        continue;
-      }
-      let content: Uint8Array;
-      try {
-        content = Uint8Array.from(atob(a.content_base64.replace(/^data:[^;]+;base64,/, "")), (ch) => ch.charCodeAt(0));
-      } catch {
-        reject("attachment data could not be read — please send the file again");
-        continue;
-      }
-      const validation = validateAttachment({ filename, contentType: a.content_type, size: content.length });
-      if (!validation.ok) { reject(validation.reason); continue; }
-      try {
-        const document = await ingestDocumentAttachment({ db, tenantId: t.id, filename, content, contentType: a.content_type, senderName: body.from_name, senderEmail });
-        results.push({ filename, status: "ingested", document: document as unknown as Record<string, unknown> });
-      } catch (err) {
-        console.error(`[inbox/receive] ingest failed for ${filename}:`, err);
-        reject("the file could not be saved — please send it again");
-      }
-    }
-
-    // ── Persist rejections on the inbound record (auditable) + audit log ──
-    if (rejected.length > 0) {
-      db.query("UPDATE inbox_queue SET rejected_attachments=$rejected, processed_at=datetime('now') WHERE id=$id").run({ $rejected: JSON.stringify(rejected), $id: queueId });
-      for (const r of rejected) logAudit(db, "inbox_email", queueId, "attachment_rejected", { filename: r.filename, reason: r.reason, tenant_id: t.id, sender_email: senderEmail });
-    }
-
-    // ── Sender notification: plain-language reply about the rejected files ──
-    // Delivered through the normal outbound path (graph/smtp/queue) so it is
-    // tracked in email_log like every other message. Never fails the 200 the
-    // poller depends on — a delivery problem is logged, not thrown.
-    if (rejected.length > 0 && senderEmail) {
-      try {
-        const inboxAddress = getTenantInboxAddress(t.id);
-        await sendEmail(
-          [senderEmail],
-          "Some documents you sent couldn't be read",
-          buildInboxRejectionEmail(rejected, inboxAddress),
-          null, null, "inbox_rejection",
-        );
-      } catch (err) {
-        console.error("[inbox/receive] rejection notification failed:", err);
-      }
-    }
-
-    const ingested = results.filter((r) => r.status === "ingested");
-    return c.json({ queued: true, queue_id: queueId, documents: results, ingested_count: ingested.length, rejected_count: rejected.length }, 200);
+    if (!Array.isArray(body.attachments)) return c.json({ error: "attachments are required" }, 400);
+    const result = await ingestInboundEmail(getDb(), body);
+    return c.json(result.httpBody, result.httpStatus as 200);
   } catch (err) {
     console.error("[inbox/receive]", err);
     return serverError(c, err, 400);
   }
 });
-
+/**
+ * Shared inbound-email ingestion core used by the HTTP /api/inbox/receive
+ * route AND the built-in Graph mailbox poller (scheduler) so both paths
+ * route, dedupe, and ingest identically.
+ *
+ * Routing: sender-first (exact-one tenant via vendor email columns); legacy
+ * per-tenant alias in to_address only as a transition fallback and never for
+ * the shared branded inbox. Unambiguous sender → ingest + processed=1.
+ * No/multiple matches → queue row kept at processed=0 with error "UNROUTED…",
+ * no tenant attached, for human review (scheduler re-resolves on later ticks).
+ */
+export async function ingestInboundEmail(
+  db: ReturnType<typeof getDb>,
+  body: Record<string, unknown>,
+): Promise<{ httpStatus: number; httpBody: Record<string, unknown>; queueId: number | null; routed: boolean; tenantId: number | null }> {
+  const senderEmail = typeof body.from_address === "string" && body.from_address.trim() ? body.from_address.trim() : null;
+  const toAddr = String(body.to_address || "");
+  // ── Idempotency: same email re-posted (same content) → acknowledge, don't re-ingest ──
+  const dedupKey = inboxDedupKey(body);
+  const existing = dedupKey ? db.query("SELECT id FROM inbox_queue WHERE dedup_key=$key").get({ $key: dedupKey }) as { id: number } | undefined : undefined;
+  if (existing) {
+    console.log(`[inbox/receive] duplicate email (dedup_key ${dedupKey.slice(0, 12)}…) — acknowledging without re-ingesting (queue row ${existing.id})`);
+    return { httpStatus: 200, httpBody: { queued: true, duplicate: true, queue_id: existing.id, documents: [], ingested_count: 0, rejected_count: 0 }, queueId: existing.id, routed: true, tenantId: null };
+  }
+  // ── Tenant resolution: sender-first (exact-one match required) ──
+  const resolved = resolveTenantIdForInbound(db, senderEmail);
+  let tenantId: number | null = resolved.tenantId;
+  let routeNote = `sender ${senderEmail ?? "(none)"} matched ${resolved.matchCount} tenant(s)`;
+  // Transition fallback: legacy per-tenant alias, only when the recipient is
+  // NOT the shared branded inbox (a document@… recipient carries no tenant).
+  if (tenantId === null && !isSharedInboxAddress(toAddr)) {
+    const slug = slugFromToAddress(toAddr);
+    if (slug) {
+      const t = db.query("SELECT id FROM tenants WHERE inbox_slug=$slug COLLATE NOCASE").get({ $slug: slug }) as { id: number } | undefined;
+      if (t) { tenantId = t.id; routeNote = `legacy alias ${toAddr} → tenant ${t.id}`; }
+    }
+  }
+  if (tenantId === null) {
+    // SAFETY GUARD: no unambiguous tenant — leave UNROUTED (processed=0, no
+    // tenant) for human review. Re-posts dedupe; adding the vendor's email to
+    // the right client later lets the scheduler route this queued mail.
+    const why = `UNROUTED: ${routeNote} — manual review required`;
+    const q = db.query("INSERT INTO inbox_queue (raw_email_json,processed,dedup_key,error) VALUES ($raw,0,$key,$err)").run({ $raw: JSON.stringify({ ...body, tenant_slug: null }), $key: dedupKey, $err: why });
+    const queueId = Number(q.lastInsertRowid);
+    console.warn(`[inbox/receive] ${why} (queue row ${queueId})`);
+    return { httpStatus: 200, httpBody: { queued: true, routed: false, queue_id: queueId, reason: why, documents: [], ingested_count: 0, rejected_count: 0 }, queueId, routed: false, tenantId: null };
+  }
+  const raw = { ...body, tenant_slug: isSharedInboxAddress(toAddr) ? null : slugFromToAddress(toAddr), tenant_id: tenantId };
+  const q = db.query("INSERT INTO inbox_queue (raw_email_json,processed,dedup_key) VALUES ($raw,1,$key)").run({ $raw: JSON.stringify(raw), $key: dedupKey });
+  const queueId = Number(q.lastInsertRowid);
+  const results: Array<{ filename: string; status: "ingested" | "rejected"; document?: Record<string, unknown>; reason?: string }> = [];
+  const rejected: Array<{ filename: string; reason: string }> = [];
+  for (const a of body.attachments) {
+    const filename = a && typeof a.filename === "string" && a.filename.trim() ? a.filename : "attachment";
+    const reject = (reason: string) => { results.push({ filename, status: "rejected", reason }); rejected.push({ filename, reason }); };
+    // Per-attachment shape check — a malformed attachment rejects only itself.
+    if (!a || typeof a.filename !== "string" || typeof a.content_base64 !== "string" || typeof a.content_type !== "string") {
+      reject("attachment is missing its filename, content, or file type");
+      continue;
+    }
+    let content: Uint8Array;
+    try {
+      content = Uint8Array.from(atob(a.content_base64.replace(/^data:[^;]+;base64,/, "")), (ch) => ch.charCodeAt(0));
+    } catch {
+      reject("attachment data could not be read — please send the file again");
+      continue;
+    }
+    const validation = validateAttachment({ filename, contentType: a.content_type, size: content.length });
+    if (!validation.ok) { reject(validation.reason); continue; }
+    try {
+      const document = await ingestDocumentAttachment({ db, tenantId, filename, content, contentType: a.content_type, senderName: body.from_name, senderEmail });
+      results.push({ filename, status: "ingested", document: document as unknown as Record<string, unknown> });
+    } catch (err) {
+      console.error(`[inbox/receive] ingest failed for ${filename}:`, err);
+      reject("the file could not be saved — please send it again");
+    }
+  }
+  // ── Persist rejections on the inbound record (auditable) + audit log ──
+  if (rejected.length > 0) {
+    db.query("UPDATE inbox_queue SET rejected_attachments=$rejected, processed_at=datetime('now') WHERE id=$id").run({ $rejected: JSON.stringify(rejected), $id: queueId });
+    for (const r of rejected) logAudit(db, "inbox_email", queueId, "attachment_rejected", { filename: r.filename, reason: r.reason, tenant_id: tenantId, sender_email: senderEmail });
+  }
+  // ── Sender notification: plain-language reply about the rejected files ──
+  // Delivered through the normal outbound path (graph/smtp/queue) so it is
+  // tracked in email_log like every other message. Never fails the 200 the
+  // poller depends on — a delivery problem is logged, not thrown.
+  if (rejected.length > 0 && senderEmail) {
+    try {
+      const inboxAddress = getTenantInboxAddress(tenantId);
+      await sendEmail(
+        [senderEmail],
+        "Some documents you sent couldn't be read",
+        buildInboxRejectionEmail(rejected, inboxAddress),
+        null, null, "inbox_rejection",
+      );
+    } catch (err) {
+      console.error("[inbox/receive] rejection notification failed:", err);
+    }
+  }
+  const ingested = results.filter((r) => r.status === "ingested");
+  return { httpStatus: 200, httpBody: { queued: true, routed: true, queue_id: queueId, documents: results, ingested_count: ingested.length, rejected_count: rejected.length }, queueId, routed: true, tenantId };
+}
 // ── Inbox email idempotency key ─────────────────────────
 // Deterministic SHA-256 over the poller payload (message identity fields when
 // present + every attachment's filename/type/content). Stored on inbox_queue

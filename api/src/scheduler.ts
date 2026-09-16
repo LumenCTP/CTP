@@ -1,5 +1,6 @@
 import { getDb } from "./db";
-import { slugFromToAddress } from "./lib/inbox";
+import { slugFromToAddress, isSharedInboxAddress, resolveTenantIdForInbound } from "./lib/inbox";
+import { pollDocumentsMailbox } from "./lib/graph-inbox-poll";
 import { findDueReminderWindow, renewalExpiryPhrase } from "./renewals";
 import { gatherReportData, generatePdfReport, generateExcelReport } from "./reports";
 import {
@@ -23,6 +24,7 @@ import { runBackupAndRetain } from "./backups";
 
 let schedulerInterval: ReturnType<typeof setInterval> | null = null;
 let inboxPollInterval: ReturnType<typeof setInterval> | null = null;
+let graphInboxPollInterval: ReturnType<typeof setInterval> | null = null;
 
 /**
  * The API's real internal listen port — mirrors index.ts `export default
@@ -35,29 +37,38 @@ export const INTERNAL_API_PORT = 3001;
 function inboxPollTick(): void {
   try {
     const db = getDb();
-    const rows = db.query("SELECT id, raw_email_json FROM inbox_queue WHERE processed = 0 ORDER BY id LIMIT 5").all() as Array<{ id: number; raw_email_json: string }>;
+    const rows = db.query("SELECT id, raw_email_json, error FROM inbox_queue WHERE processed = 0 ORDER BY id LIMIT 5").all() as Array<{ id: number; raw_email_json: string; error: string | null }>;
     if (rows.length === 0) return;
     console.log(`[inbox-poll] Processing ${rows.length} queued emails`);
     for (const row of rows) {
       try {
         const email = JSON.parse(row.raw_email_json);
-        // Extract slug from to_address — supports both the current
-        // "<Slug>@cleartopayconstruction.com" format and the legacy
-        // "…+<slug>@ctomail.io" +subaddress format.
+        // Branded-inbox routing (owner directive 2026-09-10): the recipient is
+        // always documents@…, so the tenant comes from the SENDER (vendor
+        // email columns, exact-one match). Legacy per-tenant aliases in
+        // to_address remain a transition fallback only when the recipient is
+        // NOT the shared inbox.
         const toAddr = email.to_address || "";
-        const tenantSlug = slugFromToAddress(toAddr) || null;
-
-        if (!tenantSlug) {
-          db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now'), error = 'no slug in to_address' WHERE id = ?", [row.id]);
-          continue;
+        const senderEmail = typeof email.from_address === "string" && email.from_address.trim() ? email.from_address.trim() : null;
+        const resolved = resolveTenantIdForInbound(db, senderEmail);
+        let tenant: { id: number } | undefined = resolved.tenantId !== null
+          ? (db.query("SELECT id FROM tenants WHERE id = ?").get(resolved.tenantId) as { id: number } | undefined)
+          : undefined;
+        if (!tenant && !isSharedInboxAddress(toAddr)) {
+          const tenantSlug = slugFromToAddress(toAddr) || null;
+          if (tenantSlug) {
+            tenant = db.query("SELECT id FROM tenants WHERE inbox_slug = ? COLLATE NOCASE").get(tenantSlug) as { id: number } | undefined;
+          }
         }
-
-        const tenant = db.query("SELECT id FROM tenants WHERE inbox_slug = ? COLLATE NOCASE").get(tenantSlug) as { id: number } | undefined;
         if (!tenant) {
-          db.run("UPDATE inbox_queue SET processed = 1, processed_at = datetime('now'), error = 'tenant not found' WHERE id = ?", [row.id]);
+          // SAFETY GUARD: no unambiguous tenant — keep the row UNROUTED
+          // (processed=0, no tenant) for human review; each later tick
+          // re-resolves, so adding the vendor's email to the right client
+          // routes the queued mail automatically.
+          const why = `UNROUTED: sender ${senderEmail ?? "(none)"} matched ${resolved.matchCount} tenant(s) — manual review required`;
+          if ((row.error || "") !== why) db.run("UPDATE inbox_queue SET error = ? WHERE id = ?", [why, row.id]);
           continue;
         }
-
         // Process attachments
         const attachments = email.attachments || [];
         for (const a of attachments) {
@@ -83,7 +94,6 @@ function inboxPollTick(): void {
     console.error("[inbox-poll] tick error:", err);
   }
 }
-
 // ── Persisted scheduler state ────────────────────────────
 // Last-run markers live in the scheduler_state table (see db.ts) so an API
 // restart can never re-fire the weekly/monthly/daily batches (double-send).
@@ -779,6 +789,13 @@ export function startScheduler(): void {
   schedulerInterval = setInterval(tick, 60_000);
   inboxPollTick();
   inboxPollInterval = setInterval(inboxPollTick, 5 * 60_000);
+  // Branded inbox (owner directive 2026-09-10): poll the documents@ mailbox
+  // via Microsoft Graph Mail.Read every 2 minutes so vendor emails route into
+  // the same ingest core as /api/inbox/receive. Idempotent + self-CC guarded.
+  pollDocumentsMailbox().catch((err) => console.error("[graph-inbox-poll] initial poll error:", err));
+  graphInboxPollInterval = setInterval(() => {
+    pollDocumentsMailbox().catch((err) => console.error("[graph-inbox-poll] poll error:", err));
+  }, 2 * 60_000);
 
   // Delivery-failure watchdog every 30 minutes (internally rate-limited to at
   // most one alert per category per hour).
@@ -791,8 +808,10 @@ export function stopScheduler(): void {
   if (schedulerInterval) {
     clearInterval(schedulerInterval);
     if (inboxPollInterval) clearInterval(inboxPollInterval);
+    if (graphInboxPollInterval) clearInterval(graphInboxPollInterval);
     if (watchdogInterval) clearInterval(watchdogInterval);
     inboxPollInterval = null;
+    graphInboxPollInterval = null;
     schedulerInterval = null;
     watchdogInterval = null;
     console.log("[scheduler] Email scheduler stopped");

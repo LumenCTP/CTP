@@ -79,10 +79,11 @@ export function parseAttachmentsJson(raw: string | null): EmailAttachment[] {
 // ── Tenant Inbox Address ──────────────────────────────────
 
 /**
- * Builds the tenant's custom document-submission inbox address
- * (e.g. cleartopay-compliance-0d8d884b+ABCCompany@ctomail.io)
- * from the tenant's inbox_slug. Falls back to the global sender address when
- * the tenant has no slug (or the lookup fails).
+ * The client-visible document-submission inbox address. Since the branded
+ * inbox directive (2026-09-10) this is ALWAYS the single shared address
+ * documents@cleartopayconstruction.com for every tenant (buildInboxAddress
+ * ignores the slug). Falls back to the global sender address if the lookup
+ * fails.
  */
 export function getTenantInboxAddress(tenantId?: number | null): string {
   if (tenantId) {
