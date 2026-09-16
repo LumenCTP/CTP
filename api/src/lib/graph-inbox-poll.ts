@@ -83,6 +83,23 @@ export async function pollDocumentsMailbox(): Promise<{ checked: number; process
   const listUrl = `${process.env.GRAPH_API_BASE || "https://graph.microsoft.com/v1.0"}/users/${encodeURIComponent(box)}/messages?$top=10&$filter=hasAttachments eq true and isRead eq false&$select=id,subject,from,toRecipients,ccRecipients,hasAttachments,internetMessageId,receivedDateTime`;
   const { body } = await graphJson(token, listUrl);
   const messages: GraphMessage[] = Array.isArray(body?.value) ? body.value : [];
+  // The poll set is "unread AND has attachments" ($top=10). Anything we decide
+  // NOT to ingest must be marked read, or it stays in that window on every
+  // future poll: our own CC'd report copies alone would eventually fill the 10
+  // slots and hide a real vendor submission. Best-effort — a failure here only
+  // costs a repeated skip, never a lost document.
+  const apiBase = process.env.GRAPH_API_BASE || "https://graph.microsoft.com/v1.0";
+  const markRead = async (id: string) => {
+    try {
+      await graphJson(token, `${apiBase}/users/${encodeURIComponent(box)}/messages/${encodeURIComponent(id)}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ isRead: true }),
+      });
+    } catch (err) {
+      console.error(`[graph-inbox-poll] could not mark msg ${id} read:`, err instanceof Error ? err.message : err);
+    }
+  };
   let processed = 0, skipped = 0, failed = 0;
   for (const msg of messages) {
     try {
@@ -91,10 +108,10 @@ export async function pollDocumentsMailbox(): Promise<{ checked: number; process
       const ccs = (msg.ccRecipients ?? []).map((r) => r.emailAddress?.address?.trim().toLowerCase() ?? "").filter(Boolean);
       // Skip our own outbound (weekly/monthly reports CC the shared inbox so
       // they could otherwise be re-ingested as compliance documents).
-      if (own.includes(sender)) { skipped++; continue; }
+      if (own.includes(sender)) { skipped++; await markRead(msg.id); continue; }
       const addressedToUs = tos.length === 0 || tos.includes(box);
       const selfCc = ccs.includes(box) && !tos.includes(box);
-      if (!addressedToUs || selfCc) { skipped++; console.log(`[graph-inbox-poll] skipping msg ${msg.id} (self-CC or not addressed to ${box})`); continue; }
+      if (!addressedToUs || selfCc) { skipped++; console.log(`[graph-inbox-poll] skipping msg ${msg.id} (self-CC or not addressed to ${box})`); await markRead(msg.id); continue; }
       // Download attachments (file attachments only).
       const attUrl = `${process.env.GRAPH_API_BASE || "https://graph.microsoft.com/v1.0"}/users/${encodeURIComponent(box)}/messages/${encodeURIComponent(msg.id)}/attachments`;
       const attRes = await graphJson(token, attUrl);
@@ -106,7 +123,7 @@ export async function pollDocumentsMailbox(): Promise<{ checked: number; process
         if (!a.name || !a.contentType || !a.contentBytes) continue;
         atts.push({ filename: a.name, content_type: a.contentType, content_base64: a.contentBytes });
       }
-      if (atts.length === 0) { skipped++; continue; }
+      if (atts.length === 0) { skipped++; await markRead(msg.id); continue; }
       const result = await ingestInboundEmail(getDb(), {
         to_address: box,
         from_address: msg.from?.emailAddress?.address ?? null,
@@ -120,11 +137,7 @@ export async function pollDocumentsMailbox(): Promise<{ checked: number; process
       if (!result.routed) console.warn(`[graph-inbox-poll] msg ${msg.id} ${result.httpBody.reason ?? "UNROUTED"} (queue ${result.queueId})`);
       else console.log(`[graph-inbox-poll] ingested msg ${msg.id} → tenant ${result.tenantId} (queue ${result.queueId})`);
       // Mark read so the poll set shrinks; dedup_key already guards re-delivery.
-      await graphJson(token, `${process.env.GRAPH_API_BASE || "https://graph.microsoft.com/v1.0"}/users/${encodeURIComponent(box)}/messages/${encodeURIComponent(msg.id)}`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ isRead: true }),
-      });
+      await markRead(msg.id);
     } catch (err) {
       failed++;
       console.error(`[graph-inbox-poll] message ${msg.id} failed:`, err instanceof Error ? err.message : err);
