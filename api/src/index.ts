@@ -38,7 +38,22 @@ app.notFound((c) => {
   return c.json({ error: "Not found" }, 404);
 });
 
-app.use("/*", cors());
+// CORS allowlist (defense-in-depth). Auth is Bearer-token based (no cookies),
+// and the SPA calls same-origin /api via the marketing-site proxy — but never
+// answer browser CORS preflights from unknown origins. Server-to-server calls
+// (no Origin header, e.g. curl / scheduler / API-to-API) are unaffected.
+const ALLOWED_ORIGINS = [
+  "https://www.cleartopayconstruction.com",
+  "https://cleartopay.ctonew.app",
+  "https://cleartopay-dev.ctonew.app",
+  "http://localhost:5173",
+];
+app.use("/*", cors({
+  origin: (origin: string) => {
+    if (!origin) return "*"; // non-browser client — no Origin header
+    return ALLOWED_ORIGINS.includes(origin) ? origin : null; // null → no CORS headers → browser blocks
+  },
+}));
 
 // All tenant-owned data endpoints require both authentication and a tenant.
 // Keeping this as a path middleware prevents a newly-added data route from

@@ -13,8 +13,20 @@ import { sendEmail, buildPasswordResetEmail, buildSetupPasswordEmail } from "./e
 import { getAppBaseUrl } from "./app-base-url";
 import { buildInboxAddress } from "./lib/inbox";
 import { logPartnerAudit } from "./routes/partners";
+import { rateLimitAuth } from "./rate-limit";
 
 const app = new Hono();
+
+// ── Auth rate limits (in-memory sliding window; see rate-limit.ts) ──────
+// Credential/abuse throttles. Login is the most attacked surface (10 per 10
+// minutes per IP + per identifier); password flows are email-abusable (3/hour);
+// account creation is spam-prone (5/hour). Defense against brute force and
+// enumeration — limits apply per IP AND per identifier, whichever hits first.
+const TEN_MIN_MS = 10 * 60 * 1000;
+const HOUR_MS = 60 * 60 * 1000;
+const LOGIN_LIMIT = 10;
+const PASSWORD_FLOW_LIMIT = 3;
+const REGISTER_LIMIT = 5;
 
 // ── Auth Routes ─────────────────────────────────────────
 
@@ -23,14 +35,18 @@ app.post("/api/auth/register", async (c) => {
     const body = await c.req.json();
     const { full_name, company_name, email, password, referral_code, plan, subscription_plan } = body;
 
+    // Throttle account creation before any validation/DB work (per IP + email).
+    const denied = rateLimitAuth(c, "register", typeof email === "string" ? email : "", REGISTER_LIMIT, REGISTER_LIMIT, HOUR_MS);
+    if (denied) return denied;
+
     if (!company_name || typeof company_name !== "string" || company_name.trim().length === 0) {
       return c.json({ error: "Company name is required" }, 400);
     }
     if (!email || typeof email !== "string" || !email.includes("@")) {
       return c.json({ error: "Valid email is required" }, 400);
     }
-    if (!password || typeof password !== "string" || password.length < 6) {
-      return c.json({ error: "Password must be at least 6 characters" }, 400);
+    if (!password || typeof password !== "string" || password.length < 10) {
+      return c.json({ error: "Password must be at least 10 characters" }, 400);
     }
 
     // Owner requirement: the account profile name IS the company name. When the
@@ -170,6 +186,12 @@ app.post("/api/auth/login", async (c) => {
     const body = await c.req.json();
     const { email, username, password } = body;
 
+    // Throttle credential attempts (per IP + per username/email) BEFORE the
+    // lookup — this is the brute-force surface.
+    const loginId = (typeof username === "string" && username.trim()) ? username : (typeof email === "string" ? email : "");
+    const loginDenied = rateLimitAuth(c, "login", loginId, LOGIN_LIMIT, LOGIN_LIMIT, TEN_MIN_MS);
+    if (loginDenied) return loginDenied;
+
     // Partners sign in with username + password; client users keep email +
     // password. Either identifier is accepted here — if a username is present
     // it wins, otherwise the lookup falls back to email.
@@ -182,23 +204,23 @@ app.post("/api/auth/login", async (c) => {
 
     const db = getDb();
     let user: { id: number; full_name: string; company_name: string; email: string; password_hash: string; role: string; username: string | null } | undefined;
-    let notFoundError = "";
+    // One generic failure message for every wrong-credential path — never
+    // reveals whether the username/email exists or the password was wrong.
+    const INVALID_CREDENTIALS = "Invalid credentials";
     if (typeof username === "string" && username.trim()) {
       user = db.query(
         "SELECT id, full_name, company_name, email, password_hash, role, username FROM users WHERE username = $username COLLATE NOCASE"
       ).get({ $username: username.trim() }) as typeof user;
-      notFoundError = "Invalid username or password";
     } else {
       user = db.query(
         "SELECT id, full_name, company_name, email, password_hash, role, username FROM users WHERE email = $email"
       ).get({
         $email: String(email).trim().toLowerCase(),
       }) as typeof user;
-      notFoundError = "Invalid email or password";
     }
 
     if (!user) {
-      return c.json({ error: notFoundError }, 401);
+      return c.json({ error: INVALID_CREDENTIALS }, 401);
     }
 
     const valid = await Bun.password.verify(password, user.password_hash).catch(() => false);
@@ -206,7 +228,7 @@ app.post("/api/auth/login", async (c) => {
       if (user.password_hash === "webhook_placeholder") {
         return c.json({ error: "Account needs password setup", needs_password: true, email: user.email }, 401);
       }
-      return c.json({ error: notFoundError }, 401);
+      return c.json({ error: INVALID_CREDENTIALS }, 401);
     }
 
     const token = await createAuthToken({
@@ -250,8 +272,8 @@ app.post("/api/auth/set-password", async (c) => {
   try {
     const body = await c.req.json();
     const newPassword = typeof body.new_password === "string" ? body.new_password : "";
-    if (newPassword.length < 6) {
-      return c.json({ error: "Password must be at least 6 characters" }, 400);
+    if (newPassword.length < 10) {
+      return c.json({ error: "Password must be at least 10 characters" }, 400);
     }
     const db = getDb();
 
@@ -355,6 +377,9 @@ app.post("/api/auth/send-setup-link", async (c) => {
     const body = await c.req.json();
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
     if (!email) return c.json({ error: "Email is required" }, 400);
+    // Throttle setup-link requests (per IP + email) — 3/hour.
+    const deniedSetup = rateLimitAuth(c, "setup-link", email, PASSWORD_FLOW_LIMIT, PASSWORD_FLOW_LIMIT, HOUR_MS);
+    if (deniedSetup) return deniedSetup;
     const db = getDb();
     const user = db.query("SELECT id, full_name, password_hash FROM users WHERE email = $email").get({ $email: email }) as { id: number; full_name: string; password_hash: string } | undefined;
     // Never reveal whether an email exists: a user that doesn't exist (or that
@@ -387,6 +412,10 @@ app.post("/api/auth/forgot-password", async (c) => {
     const body = await c.req.json();
     const email = typeof body.email === "string" ? body.email.trim().toLowerCase() : "";
     if (!email) return c.json({ error: "Email is required" }, 400);
+    // Throttle reset requests (per IP + email) — 3/hour. Always returns the
+    // same success body below regardless of whether the account exists.
+    const deniedReset = rateLimitAuth(c, "forgot-password", email, PASSWORD_FLOW_LIMIT, PASSWORD_FLOW_LIMIT, HOUR_MS);
+    if (deniedReset) return deniedReset;
     const db = getDb();
     const user = db.query("SELECT id, full_name FROM users WHERE email = $email").get({ $email: email }) as { id: number; full_name: string } | undefined;
 
@@ -416,8 +445,11 @@ app.post("/api/auth/reset-password", async (c) => {
     const body = await c.req.json();
     const token = typeof body.token === "string" ? body.token.trim() : "";
     const newPassword = typeof body.new_password === "string" ? body.new_password : "";
-    if (!token || newPassword.length < 6) {
-      return c.json({ error: "A valid token and a password of at least 6 characters are required" }, 400);
+    // Throttle reset-password attempts (per IP; per email when supplied) — 3/hour.
+    const deniedResetPw = rateLimitAuth(c, "reset-password", typeof body.email === "string" ? body.email : "", PASSWORD_FLOW_LIMIT, PASSWORD_FLOW_LIMIT, HOUR_MS);
+    if (deniedResetPw) return deniedResetPw;
+    if (!token || newPassword.length < 10) {
+      return c.json({ error: "A valid token and a password of at least 10 characters are required" }, 400);
     }
     const db = getDb();
     const user = db.query(

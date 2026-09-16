@@ -54,7 +54,7 @@ export default function SetPassword() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError("");
-    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    if (password.length < 10) return setError("Password must be at least 10 characters.");
     if (password !== confirm) return setError("Passwords do not match.");
     if (needsUsername && !/^[a-zA-Z0-9._-]{3,30}$/.test(username.trim())) {
       return setError("Username must be 3–30 characters and use only letters, numbers, dots, underscores, or hyphens.");

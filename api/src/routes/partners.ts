@@ -8,6 +8,7 @@ import { sendEmail, buildSetupPasswordEmail } from "../email";
 import { getAppBaseUrl } from "../app-base-url";
 import { storagePut, storageGetStream, storageDelete } from "../storage";
 import { validateAttachment, isHeicFile } from "../attachments";
+import { rateLimitAuth } from "../rate-limit";
 
 const app = new Hono();
 
@@ -126,6 +127,10 @@ app.post("/api/partners/apply", async (c) => {
       body = await c.req.json().catch(() => ({}));
     }
     const { first_name, last_name, company_name, email, phone, address, website, states_served, partner_type, tax_info_status, preferred_payout_method, hear_about_us } = body as Record<string, string | undefined>;
+
+    // Throttle partner applications (per IP + email) — 5/hour, same as signup.
+    const applyDenied = rateLimitAuth(c, "partner-apply", email ?? "", 5, 5, 60 * 60 * 1000);
+    if (applyDenied) return applyDenied;
 
     if (!first_name || typeof first_name !== "string" || !first_name.trim()) return c.json({ error: "first_name is required" }, 400);
     if (!last_name || typeof last_name !== "string" || !last_name.trim()) return c.json({ error: "last_name is required" }, 400);

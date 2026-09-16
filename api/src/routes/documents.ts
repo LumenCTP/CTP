@@ -4,7 +4,6 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { getDb } from "../db";
 import { slugFromToAddress, isSharedInboxAddress, resolveTenantIdForInbound } from "../lib/inbox";
-import { QUEUE_SECRET } from "../secrets";
 import { logAudit, requireQueueSecret } from "../middleware";
 import { extractDocumentInfoFromBytes } from "../extract";
 import { mapCOIToEntities } from "../mapping";
@@ -127,7 +126,17 @@ app.post("/api/inbox/ingest", async (c) => {
     if (!Array.isArray(body?.attachments) || body.attachments.length === 0) return c.json({error:"attachments must be a non-empty array"},400);
     const db = getDb();
     let tenantId = c.get("tenant_id") as number | undefined;
-    if (!tenantId && c.req.header("X-Queue-Secret") === QUEUE_SECRET && typeof body.tenant_slug === "string") { const t = db.query("SELECT id FROM tenants WHERE inbox_slug=$slug COLLATE NOCASE").get({$slug:body.tenant_slug}) as {id:number}|undefined; if (!t) return c.json({error:"Unknown tenant_slug"},404); tenantId=t.id; }
+    // Queue-worker calls carry X-Queue-Secret instead of a JWT. Gate through
+    // requireQueueSecret (constant-time compare) — a missing/invalid secret
+    // simply falls through to the "Tenant is required" 401 below.
+    if (!tenantId && typeof body.tenant_slug === "string") {
+      const denied = requireQueueSecret(c);
+      if (!denied) {
+        const t = db.query("SELECT id FROM tenants WHERE inbox_slug=$slug COLLATE NOCASE").get({$slug:body.tenant_slug}) as {id:number}|undefined;
+        if (!t) return c.json({error:"Unknown tenant_slug"},404);
+        tenantId = t.id;
+      }
+    }
     if (!tenantId) return c.json({error:"Tenant is required"},401);
     const clientId = body.client_id == null ? null : Number(body.client_id), vendorId = body.vendor_id == null ? null : Number(body.vendor_id);
     if (clientId !== null && !Number.isInteger(clientId) || vendorId !== null && !Number.isInteger(vendorId)) return c.json({error:"Invalid client_id or vendor_id"},400);

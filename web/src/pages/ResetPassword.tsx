@@ -15,7 +15,7 @@ export default function ResetPassword() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError("");
-    if (password.length < 6) return setError("Password must be at least 6 characters.");
+    if (password.length < 10) return setError("Password must be at least 10 characters.");
     if (password !== confirm) return setError("Passwords do not match.");
     setSubmitting(true);
     try {
@@ -61,7 +61,7 @@ export default function ResetPassword() {
                   type="password"
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
-                  placeholder="At least 6 characters"
+                  placeholder="At least 10 characters"
                   autoComplete="new-password"
                   autoFocus
                 />

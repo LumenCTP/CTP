@@ -51,8 +51,8 @@ export default function Register() {
       setError("Email is required.");
       return;
     }
-    if (!password || password.length < 6) {
-      setError("Password must be at least 6 characters.");
+    if (!password || password.length < 10) {
+      setError("Password must be at least 10 characters.");
       return;
     }
     if (password !== confirmPassword) {
@@ -138,7 +138,7 @@ export default function Register() {
               type="password"
               value={password}
               onChange={(e) => setPassword(e.target.value)}
-              placeholder="At least 6 characters"
+              placeholder="At least 10 characters"
               autoComplete="new-password"
             />
           </div>
