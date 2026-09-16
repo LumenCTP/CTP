@@ -197,10 +197,11 @@ app.post("/api/partners/apply", async (c) => {
     logPartnerAudit(db, partnerId, "application_approved", { referral_code: null, method: "instant" }, null, normalizedEmail);
     logAudit(db, "partner", partnerId, "partner_application", { email: normalizedEmail, partner_type: partner_type.trim(), status: "approved", referral_code: null });
 
-    // Email the set-password link through the normal sendEmail path (Graph
-    // Mail primary; SMTP/queue fallback). A delivery hiccup must not fail the
-    // application itself — the partner is already approved, and can re-request
-    // a setup link if needed.
+    // Email the set-password link through the normal sendEmail path, which
+    // walks the runtime fallback chain (Graph → SMTP → platform queue) so a
+    // transient Graph failure still delivers inside the 2-minute window.
+    // A delivery hiccup must not fail the application itself — the partner is
+    // already approved, and can re-request a setup link if needed.
     try {
       const setupLink = `${getAppBaseUrl()}/app/set-password?token=${encodeURIComponent(token)}&email=${encodeURIComponent(normalizedEmail)}`;
       await sendEmail([normalizedEmail], "Set up your ClearToPay password", buildSetupPasswordEmail(fullName, setupLink), undefined, undefined, "password_reset");

@@ -9,10 +9,11 @@ import type { Transporter } from "nodemailer";
 // and every message is CC'd to the documents@ mailbox (the M365 Sent folder
 // then doubles as an automatic backup).
 //
-// When ClearToPaySMTP is NOT set (dev/test environments), the platform
-// delivery path (outgoing_email_queue + process-queue worker) remains the
-// fallback — see sendEmail() in email.ts. SMTP wins whenever the env var is
-// present.
+// Delivery is orchestrated by sendEmail() in email.ts, which walks the runtime
+// fallback chain graph → smtp → queue: this SMTP path is attempted when Graph
+// is not configured OR when a Graph send reported failure, and if this path
+// fails too the message falls through to the platform outgoing_email_queue
+// path (dev/test environments with no M365 config go straight to the queue).
 
 export const SMTP_CC_ADDRESS = "documents@cleartopayconstruction.com";
 
