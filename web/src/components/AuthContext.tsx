@@ -125,8 +125,13 @@ export function needsPartnerSetup(user: User | null): boolean {
 }
 
 // Fetch partner-specific data from /api/partner/me and attach it to the user
-// object. Non-approved partners still get their partner row back (status
-// pending/rejected/suspended); only a user with no partner record 403s.
+// object. Only the partner's REAL status from the API may gate the portal: an
+// unreachable API or an upstream/proxy error (502/500/HTML error page) must
+// never be read as "your application is pending", because that locks an
+// approved partner out of their own portal over a transient blip. On any
+// non-definitive answer the last known status is kept (and the portal guard
+// re-verifies on entry), so the worst case is a stale status being retried,
+// never a fabricated pending gate.
 async function withPartnerData(token: string, user: User): Promise<User> {
   if (user.role !== "partner") return user;
   try {
@@ -136,18 +141,26 @@ async function withPartnerData(token: string, user: User): Promise<User> {
     if (res.ok) {
       const data = (await res.json()) as { partner?: Record<string, unknown> };
       const p = data.partner || {};
+      const status = typeof p.status === "string" && p.status ? p.status : null;
+      // 200 without a partner payload (e.g. an HTML page from a proxy) is not
+      // an answer about the partner — keep the status we already had.
+      if (!status) return user;
       return {
         ...user,
         partner_id: (p.id as number) ?? null,
-        partner_status: (p.status as string) ?? null,
+        partner_status: status,
         referral_code: (p.referral_code as string) ?? null,
         username: (p.username as string) ?? user.username ?? null,
       };
     }
-    // No partner record (or error) — treat as not yet approved.
-    return { ...user, partner_id: null, partner_status: "pending", referral_code: null };
+    if (res.status === 403 || res.status === 404) {
+      // Definitive answer: this account has no partner record at all.
+      return { ...user, partner_id: null, partner_status: "pending", referral_code: null };
+    }
+    return user;
   } catch {
-    return { ...user, partner_status: user.partner_status ?? "pending" };
+    // Network failure — keep the last known status (never fabricate "pending").
+    return user;
   }
 }
 

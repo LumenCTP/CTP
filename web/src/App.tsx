@@ -121,9 +121,31 @@ function AppShell() {
 }
 
 // Full-page status shown to partners whose application is pending/rejected/
-// suspended — they must be approved before using the portal.
+// suspended — they must be approved before using the portal. Approved partners
+// must never be parked here: the real status is re-checked on mount and the
+// partner is sent straight into the portal as soon as the API says approved.
 function PartnerStatusPage() {
-  const { user } = useAuth();
+  const { user, loading, refreshUser } = useAuth();
+  const [checking, setChecking] = useState(true);
+
+  useEffect(() => {
+    if (loading) return;
+    if (user?.role !== "partner") {
+      setChecking(false);
+      return;
+    }
+    setChecking(true);
+    refreshUser().finally(() => setChecking(false));
+  }, [loading, user?.role, refreshUser]);
+
+  if (loading || (checking && user?.role === "partner")) {
+    return <LoadingScreen />;
+  }
+
+  if (user?.role === "partner" && !needsPartnerSetup(user)) {
+    return <Navigate to="/app/partner/dashboard" replace />;
+  }
+
   const status = user?.partner_status ?? "pending";
 
   const copy: Record<string, { title: string; message: string }> = {
@@ -166,18 +188,21 @@ function PartnerStatusPage() {
 }
 
 // Guards the partner portal: only approved partners may pass. Anyone else is
-// redirected away. If partner status isn't loaded yet (e.g. right after login),
-// it is fetched via /api/partner/me through refreshUser() before deciding.
+// redirected away. Unless the cached status is already a definitive "approved",
+// the status is re-fetched via /api/partner/me through refreshUser() before
+// deciding — so a partner who was approved after their status was last cached
+// (or whose cached status came from an API blip) still gets straight in.
 function PartnerRoute() {
   const { user, loading, refreshUser } = useAuth();
   const [verifying, setVerifying] = useState(false);
+  const mustVerify = user?.role === "partner" && user.partner_status !== "approved";
 
   useEffect(() => {
-    if (user?.role === "partner" && !user.partner_status && !loading) {
+    if (mustVerify && !loading) {
       setVerifying(true);
       refreshUser().finally(() => setVerifying(false));
     }
-  }, [user, loading, refreshUser]);
+  }, [mustVerify, loading, refreshUser]);
 
   if (loading || verifying) {
     return <LoadingScreen />;

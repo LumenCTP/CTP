@@ -185,7 +185,13 @@ export function createTenantForUser(
   // the 30-day trial, or an immediate charge) before the app (and its data
   // routes) unlock. The webhook / checkout-confirm path flips the tenant to
   // TRIAL (trialing subscription) or ACTIVE (paid) once checkout completes.
-  const status = opts?.subscription_status || "PENDING";
+  // Partner accounts are the exception: partners are NOT a paywalled tier (they
+  // sign in to their own portal), so a partner's tenant is never created on the
+  // PENDING paywall status — otherwise requireTenant 402s their API calls.
+  const ownerRole = (db.query("SELECT role FROM users WHERE id = $uid").get({ $uid: userId }) as { role: string | null } | undefined)?.role ?? null;
+  const status = (opts?.subscription_status || "PENDING") === "PENDING" && ownerRole === "partner"
+    ? "ACTIVE"
+    : (opts?.subscription_status || "PENDING");
   // Per-company slug: company name with all non-alphanumeric characters
   // removed, case preserved ("ABC Company" → "ABCCompany").
   const base = companyNameToSlug(name);

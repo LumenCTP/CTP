@@ -685,9 +685,14 @@ function runMigrations(db: Database): void {
   ensureColumn(db, "outgoing_email_queue", "attachments TEXT", "attachments");
 
   // Backfill legacy/test users so every authenticated user has an isolated tenant.
-  const legacyUsers = db.query("SELECT id, company_name FROM users WHERE tenant_id IS NULL").all() as Array<{ id: number; company_name: string }>;
+  // Partner accounts are NOT a paywalled tier: they get their own portal and must
+  // never be gated on a client subscription status, so their tenant is created
+  // ACTIVE. Client tenants keep the PENDING paywall status (they flip to TRIAL /
+  // ACTIVE through Stripe checkout).
+  const legacyUsers = db.query("SELECT id, company_name, role FROM users WHERE tenant_id IS NULL").all() as Array<{ id: number; company_name: string; role: string | null }>;
   for (const user of legacyUsers) {
-    const tenantResult = db.query(`INSERT INTO tenants (name, owner_user_id, subscription_status) VALUES ($name, $uid, 'PENDING')`).run({ $name: user.company_name || "My Company", $uid: user.id });
+    const backfillStatus = user.role === "partner" ? "ACTIVE" : "PENDING";
+    const tenantResult = db.query(`INSERT INTO tenants (name, owner_user_id, subscription_status) VALUES ($name, $uid, $status)`).run({ $name: user.company_name || "My Company", $uid: user.id, $status: backfillStatus });
     const tenantId = Number(tenantResult.lastInsertRowid);
     db.query("INSERT INTO setup_wizard (tenant_id, status, current_step, company_name, completed_at) VALUES ($tid, 'COMPLETED', 'completed', $name, datetime('now'))").run({ $tid: tenantId, $name: user.company_name || "My Company" });
     db.query("UPDATE users SET tenant_id = $tid WHERE id = $uid").run({ $tid: tenantId, $uid: user.id });
@@ -698,6 +703,19 @@ function runMigrations(db: Database): void {
       db.query("UPDATE vendors SET tenant_id = $tid WHERE tenant_id IS NULL").run({ $tid: tenantId });
       db.query("UPDATE documents SET tenant_id = $tid WHERE tenant_id IS NULL").run({ $tid: tenantId });
     }
+  }
+
+  // Repair partner tenants that were created earlier on the client paywall
+  // status. Partners use their own portal and are never gated on a client
+  // subscription status, so a partner-owned tenant must not sit on PENDING
+  // (which 402s every tenant data route through requireTenant). Idempotent.
+  const repairedPartnerTenants = db.query(`
+    UPDATE tenants SET subscription_status = 'ACTIVE', updated_at = datetime('now')
+    WHERE UPPER(COALESCE(subscription_status, '')) = 'PENDING'
+      AND owner_user_id IN (SELECT id FROM users WHERE role = 'partner')
+  `).run();
+  if (repairedPartnerTenants.changes > 0) {
+    console.log(`[db] Activated ${repairedPartnerTenants.changes} partner tenant(s) — partners are not a paywalled tier`);
   }
 
   // Required-docs coverage amounts: client_required_documents.coverage_requirement
