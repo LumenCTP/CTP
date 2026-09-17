@@ -879,8 +879,8 @@ export function buildPartnerTransferPaidEmail(partnerName: string, amount: numbe
     [
       `Hi ${partnerName},`,
       `Your partner commission payout of <strong>${formatted}</strong> has been <strong>completed</strong> and transferred to your connected account.`,
-      `Stripe transfer reference: <strong>${transferId}</strong>.`,
-      `No action is needed from you. The funds are now in your Stripe account and will be available according to your payout schedule.`,
+      `Transfer reference: <strong>${transferId}</strong>.`,
+      `No action is needed from you. The funds are now in your connected payout account and will be available according to your payout schedule.`,
     ],
     "Questions? Reply to this email and our team will help.",
   );
@@ -893,7 +893,7 @@ export function buildPartnerTransferFailedEmail(partnerName: string, amount: num
     [
       `Hi ${partnerName},`,
       `We attempted to transfer your partner commission payout of <strong>${formatted}</strong>, but the transfer <strong>failed</strong>.`,
-      `Stripe transfer reference: <strong>${transferId}</strong>.`,
+      `Transfer reference: <strong>${transferId}</strong>.`,
       `Reason: <strong>${reason || "unknown"}</strong>.`,
       `Your payout stays recorded as failed on your account. Please check that your payout details are correct (bank account, onboarding requirements), then contact us and we will retry.`,
     ],
