@@ -9,7 +9,20 @@ const app = new Hono();
 
 // ── Vendors ────────────────────────────────────────────
 
-// GET /api/vendors — list all vendors with client name, compliance/payment status
+// Email types that are addressed TO a vendor (an outreach the vendor received).
+// renewal_reminder: expiring-document nudge (scheduler.ts + manual send in
+// routes/emails.ts). inbox_rejection: "some documents you sent couldn't be
+// read" reply from the compliance inbox. Any future vendor-facing type must be
+// added here or it will not show up as outreach.
+const VENDOR_FACING_EMAIL_TYPES = "'renewal_reminder', 'inbox_rejection'";
+
+// GET /api/vendors — list all vendors with client name, compliance/payment status,
+// and the last vendor-facing email this tenant has on file for them.
+//
+// email_log has NO tenant_id column, so outreach is scoped by joining it to the
+// requesting tenant's own vendor rows (vendors.tenant_id = $tenant_id). The
+// sub-join carries the same guard so a row can never be attributed across
+// tenants even if a vendor_id were reused.
 app.get("/api/vendors", (c) => {
   try {
     const db = getDb();
@@ -21,10 +34,21 @@ app.get("/api/vendors", (c) => {
         v.insurance_agent_email,
         COALESCE(cs.status, 'needs_review') AS compliance_status,
         COALESCE(cs.payment_status, 'hold') AS payment_status,
+        le.sent_at AS last_emailed_at,
+        le.email_type AS last_email_type,
+        le.status AS last_email_status,
         v.created_at, v.updated_at
       FROM vendors v
       JOIN clients c ON v.client_id = c.id
       LEFT JOIN compliance_status cs ON cs.vendor_id = v.id
+      LEFT JOIN email_log le ON le.id = (
+        SELECT el.id FROM email_log el
+        WHERE el.vendor_id = v.id
+          AND el.vendor_id IN (SELECT id FROM vendors WHERE tenant_id = $tenant_id)
+          AND el.email_type IN (${VENDOR_FACING_EMAIL_TYPES})
+        ORDER BY el.sent_at DESC, el.id DESC
+        LIMIT 1
+      )
     `;
 
     const params: Record<string, unknown> = { $tenant_id: c.get("tenant_id") as number };
