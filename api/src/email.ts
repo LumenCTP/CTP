@@ -129,7 +129,8 @@ export type EmailType =
   | "inbox_rejection"
   | "internal_alert"
   | "partner_application_notify"
-  | "daily_review_trigger";
+  | "daily_review_trigger"
+  | "vendor_request";
 
 /**
  * Outcome of ONE delivery attempt against ONE path. `ok: false` means the
@@ -687,6 +688,75 @@ export function buildRenewalReminderEmail(
 </html>`;
 }
 
+
+// ── Vendor document request (client-initiated) ────────────────────────────
+// Sent when the client clicks "Request updated docs" on a vendor
+// (POST /api/vendors/:id/request-docs): asks the vendor to submit updated
+// compliance documents for the listed types. Vendor-facing copy only — plain
+// language, no platform internals, no new legal/insurance wording: the closing
+// disclaimer is the SAME sentence already used by buildRenewalReminderEmail's
+// footer (owner directive: no legal copy ships without owner sign-off).
+export function buildVendorRequestEmail(
+  vendorName: string,
+  clientName: string,
+  documentTypes: string[],
+  inboxAddress: string,
+  contactName?: string | null,
+): string {
+  // Vendor/client names and doc types come from the DB (and, for document_types,
+  // from a client-supplied request body) — escape before interpolating.
+  const esc = (s: string) => s.replace(/[<>&"]/g, (ch) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", '"': "&quot;" })[ch] as string);
+  const attentionLine = contactName && contactName.trim()
+    ? `<p style="margin: 0 0 12px; font-size: 14px; color: #374151;">Attention: <strong>${esc(contactName.trim())}</strong></p>`
+    : "";
+  const docList = documentTypes
+    .map((t) => `<li style="margin: 0 0 6px; font-size: 14px; color: #374151;">${esc(t)}</li>`)
+    .join("\n      ");
+
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="font-family: Arial, Helvetica, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: #1a56db; padding: 20px; border-radius: 8px 8px 0 0;">
+    <h1 style="color: #fff; margin: 0; font-size: 18px;">Updated compliance documents requested</h1>
+  </div>
+
+  <div style="border: 1px solid #e5e7eb; border-top: none; padding: 20px; border-radius: 0 0 8px 8px;">
+    ${attentionLine}
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      Hello ${esc(vendorName)},
+    </p>
+
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      <strong>${esc(clientName)}</strong> has asked us to request updated compliance documents for your company.
+      Please email the following to their compliance records:
+    </p>
+
+    <ul style="margin: 0 0 20px; padding-left: 22px;">
+      ${docList}
+    </ul>
+
+    <p style="margin: 0 0 12px; font-size: 14px; color: #374151;">
+      Send them by email to <a href="mailto:${inboxAddress}" style="color: #1a56db;">${inboxAddress}</a>.
+      You do not need to reply to this message — just send the documents to that address and they will be added to the file.
+    </p>
+
+    <p style="margin: 0; font-size: 14px; color: #374151;">
+      Thank you for your help keeping these records current.
+    </p>
+  </div>
+
+  <p style="margin: 16px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">
+    This is an automated request from ClearToPay Compliance on behalf of your client.
+  </p>
+
+  <p style="margin: 8px 0 0; font-size: 11px; color: #9ca3af; text-align: center;">
+    ClearToPay does not verify coverage or make payment decisions. Your client remains responsible for its requirements and payment decisions.
+  </p>
+</body>
+</html>`;
+}
 
 // Inbox Rejection Reply: automatic plain-language reply to the sender of an
 // inbound email whose attachment(s) could not be accepted (HEIC photo,

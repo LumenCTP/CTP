@@ -48,6 +48,8 @@ function emailTypeLabel(type: string): string {
       return "renewal reminder";
     case "inbox_rejection":
       return "submission rejection";
+    case "vendor_request":
+      return "document request";
     default:
       return type.replace(/_/g, " ");
   }

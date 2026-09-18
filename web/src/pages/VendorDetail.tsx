@@ -26,6 +26,8 @@ export default function VendorDetail() {
   const [documents, setDocuments] = useState<DocumentListItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [recalculating, setRecalculating] = useState(false);
+  const [requesting, setRequesting] = useState(false);
+  const [requestNotice, setRequestNotice] = useState<{ kind: "success" | "error"; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -64,6 +66,33 @@ export default function VendorDetail() {
     finally { setRecalculating(false); }
   }
 
+  // Ask the vendor for updated compliance documents. The API derives the doc
+  // types (missing / expired / expiring / below the required coverage limit)
+  // when none are passed, sends ONE email to the vendor, and logs it as a
+  // 'vendor_request' outreach. Success/error is reported inline.
+  async function requestDocs() {
+    if (!vendor || requesting) return;
+    if (!window.confirm(`Email ${vendor.name} a request for updated compliance documents?`)) return;
+    setRequesting(true); setRequestNotice(null);
+    try {
+      const res = await apiFetch(`/api/vendors/${vendor.id}/request-docs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      const body = await res.json().catch(() => ({} as { error?: string; code?: string; recipient?: string }));
+      if (!res.ok) {
+        if (body?.code === "no_email_on_file") {
+          throw new Error("No email on file for this vendor — add a contact email first.");
+        }
+        throw new Error(body?.error || "Unable to send the request");
+      }
+      setRequestNotice({ kind: "success", text: `Request sent to ${body?.recipient ?? "the vendor"}` });
+    } catch (err) {
+      setRequestNotice({ kind: "error", text: err instanceof Error ? err.message : "Unable to send the request" });
+    } finally { setRequesting(false); }
+  }
+
   if (loading) return <div className="page-container"><div className="loading">Loading vendor details…</div></div>;
   if (error || !vendor) return <div className="page-container"><div className="error-message">{error || "Vendor not found"}</div><Link className="btn btn-outline" to="/app/vendors">Back to Vendors</Link></div>;
 
@@ -73,6 +102,11 @@ export default function VendorDetail() {
       {statusBadge(vendor.payment_status)}
     </div>
     {error && <div className="error-message" style={{ marginBottom: 16 }}>{error}</div>}
+    {requestNotice && (
+      <div className={requestNotice.kind === "success" ? "success-message" : "error-message"} style={{ marginBottom: 16 }}>
+        {requestNotice.text}
+      </div>
+    )}
     <div className="document-detail-layout">
       <section className="document-viewer-card">
         <h3>Vendor Information</h3>
@@ -89,6 +123,8 @@ export default function VendorDetail() {
         <p style={{ marginBottom: 10 }}><strong>Compliance:</strong> {statusBadge(vendor.compliance_status)}</p>
         <p><strong>Payment:</strong> {statusBadge(vendor.payment_status)}</p>
         <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={recalculate} disabled={recalculating}>{recalculating ? "Recalculating…" : "Recalculate Compliance"}</button>
+        <button className="btn btn-outline" style={{ marginTop: 20, marginLeft: 10 }} onClick={requestDocs} disabled={requesting}>{requesting ? "Sending…" : "Request updated docs"}</button>
+        <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>Emails this vendor a request for the documents they are missing, expired, expiring, or below your required coverage limit. It goes to the vendor's contact email (or insurance agent email on file).</p>
       </section>
       <section className="card extraction-form-card">
         <h3>Compliance by Document Type</h3>

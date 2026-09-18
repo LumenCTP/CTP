@@ -4,6 +4,8 @@ import { getDb } from "../db";
 import { entityKey } from "../entities";
 import { findPossibleDuplicateVendor } from "../mapping";
 import { logAudit } from "../middleware";
+import { sendEmail, buildVendorRequestEmail, getTenantInboxAddress } from "../email";
+import { calculateVendorCompliance } from "../compliance";
 
 const app = new Hono();
 
@@ -12,9 +14,11 @@ const app = new Hono();
 // Email types that are addressed TO a vendor (an outreach the vendor received).
 // renewal_reminder: expiring-document nudge (scheduler.ts + manual send in
 // routes/emails.ts). inbox_rejection: "some documents you sent couldn't be
-// read" reply from the compliance inbox. Any future vendor-facing type must be
-// added here or it will not show up as outreach.
-const VENDOR_FACING_EMAIL_TYPES = "'renewal_reminder', 'inbox_rejection'";
+// read" reply from the compliance inbox. vendor_request: the client-initiated
+// "Request updated docs" email sent from the vendor detail page. Any future
+// vendor-facing type must be added here or it will not show up as outreach.
+const VENDOR_FACING_EMAIL_TYPES = "'renewal_reminder', 'inbox_rejection', 'vendor_request'";
+
 
 // GET /api/vendors — list all vendors with client name, compliance/payment status,
 // and the last vendor-facing email this tenant has on file for them.
@@ -296,6 +300,134 @@ app.delete("/api/vendors/:id", (c) => {
     db.query("DELETE FROM vendors WHERE id = $id AND tenant_id = $tenant_id").run({ $id: id, $tenant_id: c.get("tenant_id") as number });
 
     return c.json({ success: true });
+  } catch (err) {
+    return serverError(c, err);
+  }
+});
+
+// POST /api/vendors/:id/request-docs — ask a vendor for updated compliance
+// documents. Optional body { document_types: string[] }; when omitted (or
+// empty) the doc types are derived from the vendor's live compliance detail —
+// every required type that is missing, expired, expiring soon, or below the
+// client's required coverage limit (the types that actually need a fresh
+// document from the vendor). Types the client only needs to REVIEW
+// (needs_review / unreviewed docs) are NOT requested: the client resolves those
+// internally, so asking the vendor for another copy would be noise.
+//
+// Exactly ONE email goes out through the normal sendEmail chain (Graph → SMTP →
+// queue), logged to email_log as email_type 'vendor_request' with vendor_id and
+// client_id set. Vendor-facing copy only (no platform internals, existing
+// disclaimer sentence).
+//
+// Strictly tenant-scoped: the vendor row is looked up by id AND tenant_id, so a
+// cross-tenant id is a 404 and the caller's own tenant can never be bypassed.
+const REQUESTABLE_STATUSES = new Set(["missing", "expired", "expiring_soon", "below_limit"]);
+
+app.post("/api/vendors/:id/request-docs", async (c) => {
+  try {
+    const db = getDb();
+    const tenantId = c.get("tenant_id") as number;
+    const id = Number(c.req.param("id"));
+    if (!Number.isInteger(id) || id < 1) {
+      return c.json({ error: "Vendor not found" }, 404);
+    }
+
+    const vendor = db.query(`
+      SELECT v.id, v.client_id, v.name, v.contact_name, v.contact_email,
+             v.insurance_agent_email, cl.name AS client_name
+      FROM vendors v
+      JOIN clients cl ON cl.id = v.client_id
+      WHERE v.id = $id AND v.tenant_id = $tenant_id
+    `).get({ $id: id, $tenant_id: tenantId }) as {
+      id: number; client_id: number; name: string; contact_name: string | null;
+      contact_email: string | null; insurance_agent_email: string | null; client_name: string;
+    } | undefined;
+    if (!vendor) {
+      return c.json({ error: "Vendor not found" }, 404);
+    }
+
+    // Body is optional — an absent or non-JSON body means "derive the list".
+    const body = await c.req.json().catch(() => ({}) as Record<string, unknown>);
+    let documentTypes: string[] = [];
+    const requested = (body as { document_types?: unknown }).document_types;
+    if (requested !== undefined) {
+      if (!Array.isArray(requested) || requested.some((t) => typeof t !== "string" || t.trim().length === 0)) {
+        return c.json({ error: "document_types must be an array of non-empty strings" }, 400);
+      }
+      // Trim, drop blanks, de-duplicate (case-insensitive), cap the list so a
+      // hostile body cannot bloat the email.
+      const seen = new Set<string>();
+      for (const raw of requested as string[]) {
+        const t = raw.trim().slice(0, 80);
+        const key = t.toLowerCase();
+        if (!t || seen.has(key)) continue;
+        seen.add(key);
+        documentTypes.push(t);
+        if (documentTypes.length >= 20) break;
+      }
+      if (documentTypes.length === 0) {
+        return c.json({ error: "document_types must contain at least one document type" }, 400);
+      }
+    }
+
+    if (documentTypes.length === 0) {
+      // Derive from the live compliance detail (same engine the dashboard and
+      // reports use, so the request always matches what the client sees).
+      const detail = calculateVendorCompliance(vendor.id, vendor.client_id, tenantId);
+      documentTypes = detail.details
+        .filter((d) => REQUESTABLE_STATUSES.has(d.status))
+        .map((d) => d.document_type);
+      if (documentTypes.length === 0) {
+        return c.json({
+          error: "This vendor has no missing, expired, expiring, or below-limit documents — nothing to request. You can still request specific document types.",
+        }, 400);
+      }
+    }
+
+    // Recipient: vendor contact first, then the insurance agent on file. Both
+    // empty is a client-side fix (the UI tells the client to add one).
+    const contactEmail = (vendor.contact_email ?? "").trim();
+    const agentEmail = (vendor.insurance_agent_email ?? "").trim();
+    const recipient = contactEmail || agentEmail;
+    const recipientSource = contactEmail ? "contact_email" : "insurance_agent_email";
+    if (!recipient) {
+      return c.json({
+        error: "No email on file for this vendor — add a contact email first.",
+        code: "no_email_on_file",
+      }, 400);
+    }
+
+    const inboxAddress = getTenantInboxAddress(tenantId);
+    const subject = `Action needed: updated compliance documents for ${vendor.client_name}`;
+    const emailBody = buildVendorRequestEmail(
+      vendor.name,
+      vendor.client_name,
+      documentTypes,
+      inboxAddress,
+      vendor.contact_name,
+    );
+
+    // One email, through the normal chain. sendEmail() records exactly one
+    // terminal email_log row ('sent' via Graph/SMTP, or 'queued' on the
+    // platform queue path) — this route never writes a second log row.
+    await sendEmail([recipient], subject, emailBody, vendor.client_id, vendor.id, "vendor_request");
+
+    logAudit(db, "vendor", vendor.id, "docs_requested", {
+      recipient,
+      recipient_source: recipientSource,
+      document_types: documentTypes,
+    });
+
+    return c.json({
+      success: true,
+      vendor_id: vendor.id,
+      client_id: vendor.client_id,
+      recipient,
+      recipient_source: recipientSource,
+      email_type: "vendor_request",
+      subject,
+      document_types: documentTypes,
+    });
   } catch (err) {
     return serverError(c, err);
   }

@@ -30,6 +30,7 @@ function emailTypeLabel(type: string): string {
     case "weekly_report": return "Weekly Report";
     case "monthly_report": return "Monthly Report";
     case "renewal_reminder": return "Renewal Reminder";
+    case "vendor_request": return "Vendor request";
     default: return type;
   }
 }
@@ -39,6 +40,7 @@ function emailTypeColor(type: string): string {
     case "weekly_report": return "#1a56db";
     case "monthly_report": return "#059669";
     case "renewal_reminder": return "#d97706";
+    case "vendor_request": return "#7c3aed";
     default: return "#6b7280";
   }
 }
@@ -107,7 +109,7 @@ export default function EmailLog() {
       </div>
 
       <p className="page-subtitle">
-        View all emails sent by the system, including weekly reports, monthly reports, and renewal reminders.
+        View all emails sent by the system, including weekly reports, monthly reports, renewal reminders, and vendor document requests.
       </p>
 
       {/* ── Filter ── */}
