@@ -197,6 +197,10 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
       for (const type of requiredTypes) {
         const col = COV_COL[type];
         if (!col) continue;
+        // A type the vendor has NO document for is a plain "Missing: …" — the
+        // coverage gate never ran on it, so it must not also claim the limit is
+        // unreadable (that read as two contradictory reasons on one card).
+        if (!presentTypes.has(type)) continue;
         const required = parseCoverageRequirement(requirementFor.get(`${row.client_id}:${type}`) ?? null);
         if (required == null) continue;
         const extracted = coverageByVendorType.get(`${row.vendor_id}:${type}`) ?? null;

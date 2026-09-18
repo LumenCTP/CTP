@@ -97,6 +97,32 @@ U_S=$(jq -r '.details[0].status' "$TMPD/detail.json"); U_P=$(jq -r '.payment_sta
 echo "  status=$U_S payment=$U_P coverage_status=$U_CS"
 [ "$U_S" = "compliant" ] && [ "$U_P" = "approved" ] && [ "$U_CS" = "null" ] || { echo "  FAIL unparseable requirement must skip the gate"; FAIL=1; }
 
+echo "--- case missing_type (vendor has NO doc of a gated type)"
+# Regression guard for the dashboard-reason nit: a fully missing required type
+# must show ONLY "Missing: …" — the coverage gate never ran on it, so the reason
+# must not also claim the limit is unreadable (two contradictory reasons).
+sqlite3 "$DB" "DELETE FROM document_extractions WHERE document_id=$DID; DELETE FROM documents WHERE id=$DID;"
+sleep 1
+curl -s -m 15 -X POST "$API/api/compliance/recalculate" -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' -d "{\"vendor_id\":$VID,\"client_id\":$CID}" -o "$TMPD/recalc.json"
+curl -s -m 15 "$API/api/vendors/$VID/compliance-detail" -H "Authorization: Bearer $TOKEN" -o "$TMPD/detail.json"
+curl -s -m 15 "$API/api/dashboard/clear-to-pay" -H "Authorization: Bearer $TOKEN" -o "$TMPD/dash.json"
+M_S=$(jq -r '.details[0].status' "$TMPD/detail.json"); M_P=$(jq -r '.payment_status' "$TMPD/detail.json")
+M_CS=$(jq -r '.details[0].coverage_status' "$TMPD/detail.json")
+M_REASON=$(jq -r --argjson v "$VID" '.vendors[] | select(.vendor_id==$v) | .reason' "$TMPD/dash.json")
+echo "  status=$M_S payment=$M_P coverage_status=$M_CS"
+echo "  dashboard reason: $M_REASON"
+[ "$M_S" = "missing" ] || { echo "  FAIL missing type status: expected missing got $M_S"; FAIL=1; }
+[ "$M_P" = "hold" ]    || { echo "  FAIL missing type payment: expected hold got $M_P"; FAIL=1; }
+case "$M_REASON" in
+  *"Missing: $DOC_TYPE"*) echo "  OK reason contains: Missing: $DOC_TYPE" ;;
+  *) echo "  FAIL reason missing the Missing: line: $M_REASON"; FAIL=1 ;;
+esac
+case "$M_REASON" in
+  *"not readable"*) echo "  FAIL fully-missing type must not also say 'not readable': $M_REASON"; FAIL=1 ;;
+  *) echo "  OK no spurious coverage-limit reason on a missing type" ;;
+esac
+
 echo "### cleanup"
 sqlite3 "$DB" "DELETE FROM compliance_status WHERE vendor_id=$VID;
 DELETE FROM document_extractions WHERE document_id=$DID;

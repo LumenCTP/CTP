@@ -321,14 +321,30 @@ export interface DocLevelRow {
   contact: string;
 }
 
-function docTypeStatusLabel(status: string): string {
-  switch (status) {
+function docTypeStatusLabel(d: {
+  status: string;
+  document_type?: string;
+  coverage_status?: PerTypeDetail["coverage_status"];
+  coverage_required?: string | null;
+  coverage_extracted?: number | null;
+}): string {
+  // Coverage-gated rows carry the SAME human-readable phrase the dashboard, the
+  // CSV export and the AI chat use (with both amounts) instead of the raw engine
+  // token — "below_limit" must never reach a client-facing report. The two cases
+  // mirror the UI: below → "…below required…" (drives Hold), unreadable →
+  // "…coverage limit not readable" (drives Review).
+  if (d.status === "below_limit" || (d.status === "needs_review" && d.coverage_status === "unreadable")) {
+    const [cov] = coverageIssueTexts([d as PerTypeDetail]);
+    if (cov) return cov;
+  }
+  switch (d.status) {
     case "missing": return "Missing";
     case "expired": return "Expired";
     case "expiring_soon": return "Expiring Soon";
     case "needs_review": return "Needs Review";
     case "compliant": return "Compliant";
-    default: return status;
+    case "below_limit": return "Coverage Below Requirement";
+    default: return d.status;
   }
 }
 
@@ -346,7 +362,7 @@ export function expandDocumentRows(vendors: ReportVendor[]): DocLevelRow[] {
       rows.push({
         vendor_name: v.vendor_name,
         document_type: d.document_type,
-        status_label: docTypeStatusLabel(d.status),
+        status_label: docTypeStatusLabel(d),
         expiration_label: d.expiration_date ? formatDate(d.expiration_date) : "—",
         contact: v.contact_name || v.contact_email || "—",
       });
@@ -782,7 +798,7 @@ function buildVendorSheet(
   sheet.columns = [
     { header: "Vendor Name", key: "vendor_name", width: 30 },
     { header: "Document Type", key: "document_type", width: 24 },
-    { header: "Status", key: "status", width: 16 },
+    { header: "Status", key: "status", width: 42 },
     { header: "Expiration Date", key: "expiration_date", width: 18 },
     { header: "Contact Name", key: "contact_name", width: 22 },
     { header: "Contact Email", key: "contact_email", width: 28 },
@@ -809,7 +825,7 @@ function buildVendorSheet(
       sheet.addRow({
         vendor_name: v.vendor_name,
         document_type: d.document_type,
-        status: docTypeStatusLabel(d.status),
+        status: docTypeStatusLabel(d),
         expiration_date: d.expiration_date ? formatDate(d.expiration_date) : "",
         contact_name: v.contact_name || "",
         contact_email: v.contact_email || "",
