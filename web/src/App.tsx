@@ -21,6 +21,7 @@ const Reports = lazy(() => import("./pages/Reports"));
 const NeedsReview = lazy(() => import("./pages/NeedsReview"));
 const EmailLog = lazy(() => import("./pages/EmailLog"));
 const Billing = lazy(() => import("./pages/Billing"));
+const VendorEmails = lazy(() => import("./pages/VendorEmails"));
 const Login = lazy(() => import("./pages/Login"));
 const Register = lazy(() => import("./pages/Register"));
 const SetupWizard = lazy(() => import("./pages/SetupWizard"));
@@ -397,6 +398,7 @@ export default function App() {
               <Route index element={<Dashboard />} />
               <Route path="clients" element={<Clients />} />
               <Route path="vendors" element={<Vendors />} />
+              <Route path="vendor-emails" element={<VendorEmails />} />
               <Route path="vendors/:id" element={<VendorDetail />} />
               <Route path="documents" element={<Documents />} />
               <Route path="documents/:id" element={<DocumentDetail />} />

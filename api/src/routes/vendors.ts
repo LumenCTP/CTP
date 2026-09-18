@@ -18,6 +18,7 @@ app.get("/api/vendors", (c) => {
     let sql = `
       SELECT v.id, v.client_id, c.name AS client_name,
         v.name, v.contact_name, v.contact_email, v.contact_phone,
+        v.insurance_agent_email,
         COALESCE(cs.status, 'needs_review') AS compliance_status,
         COALESCE(cs.payment_status, 'hold') AS payment_status,
         v.created_at, v.updated_at

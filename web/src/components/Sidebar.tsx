@@ -6,6 +6,7 @@ const navItems = [
   { to: "/app", label: "Dashboard", icon: "⌂" },
   { to: "/app/clients", label: "Clients", icon: "▦" },
   { to: "/app/vendors", label: "Vendors", icon: "👥" },
+  { to: "/app/vendor-emails", label: "Vendor Emails", icon: "📧" },
   { to: "/app/documents", label: "Documents", icon: "📄" },
   { to: "/app/reports", label: "Reports", icon: "📊" },
   { to: "/app/needs-review", label: "Needs Review", icon: "⚠" },
