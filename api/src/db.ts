@@ -834,6 +834,45 @@ function runMigrations(db: Database): void {
     CREATE INDEX IF NOT EXISTS idx_chat_messages_tenant_created ON chat_messages(tenant_id, created_at);
   `);
   console.log("[db] chat_messages table ready");
+
+  // ── Projects / Jobsite Grouping ───────────────────────────
+  // Clients group vendors by project ("job") so they can ask "is everyone on
+  // Project X clear to pay?". projects is tenant-scoped exactly like clients and
+  // vendors (tenant_id NOT NULL + every query filters on it); vendor_projects is
+  // a pure link table — it carries no tenant_id of its own, so tenant isolation
+  // is enforced by joining THROUGH projects and vendors (both tenant-scoped) on
+  // every read and write. A UNIQUE(vendor_id, project_id) pair makes "assign
+  // this vendor to this project" idempotent (INSERT OR IGNORE); ON DELETE
+  // CASCADE on both FKs means deleting a project or a vendor removes its links.
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tenant_id INTEGER NOT NULL,
+      name TEXT NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+    );
+
+    CREATE TABLE IF NOT EXISTS vendor_projects (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      vendor_id INTEGER NOT NULL,
+      project_id INTEGER NOT NULL,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      UNIQUE (vendor_id, project_id),
+      FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
+      FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_projects_tenant_id ON projects(tenant_id);
+    CREATE INDEX IF NOT EXISTS idx_vendor_projects_project_id ON vendor_projects(project_id);
+    CREATE INDEX IF NOT EXISTS idx_vendor_projects_vendor_id ON vendor_projects(vendor_id);
+    -- Two projects in the same tenant may not share a name (case-insensitive);
+    -- the routes check this first and return a friendly 409, so the index is
+    -- defense-in-depth against a race.
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_tenant_name ON projects(tenant_id, name COLLATE NOCASE);
+  `);
+  console.log("[db] projects + vendor_projects tables ready");
   console.log("[db] Migrations complete — all tables ready");
 }
 

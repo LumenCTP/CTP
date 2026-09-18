@@ -18,6 +18,16 @@ interface VendorFormData {
   contact_phone: string;
 }
 
+/**
+ * A project (jobsite) the client can filter the vendor list by. The dropdown
+ * only appears once at least one project exists — with no projects the vendor
+ * list looks exactly as it did before the Projects feature.
+ */
+interface ProjectOption {
+  id: number;
+  name: string;
+}
+
 const emptyForm: VendorFormData = {
   client_id: 0,
   name: "",
@@ -39,6 +49,9 @@ export default function Vendors() {
 
   // Filter
   const [filterClientId, setFilterClientId] = useState<number | null>(null);
+  // Project (jobsite) filter — only offered when this tenant has projects.
+  const [filterProjectId, setFilterProjectId] = useState<number | null>(null);
+  const [projects, setProjects] = useState<ProjectOption[]>([]);
 
   // Modal state
   const [showModal, setShowModal] = useState(false);
@@ -56,7 +69,7 @@ export default function Vendors() {
     if (!importFile || !importClientId) return;
     setImporting(true); setImportResult(null);
     const data = new FormData(); data.append("file", importFile); data.append("client_id", String(importClientId));
-    try { const res = await apiFetch("/api/import/vendors", { method: "POST", body: data }); const result = await res.json(); if (!res.ok) throw new Error(result.error || "Import failed"); setImportResult(result); await fetchVendors(filterClientId); }
+    try { const res = await apiFetch("/api/import/vendors", { method: "POST", body: data }); const result = await res.json(); if (!res.ok) throw new Error(result.error || "Import failed"); setImportResult(result); await fetchVendors(filterClientId, filterProjectId); }
     catch (e) { setImportResult({ imported: 0, errors: [{ row: 0, error: e instanceof Error ? e.message : "Import failed" }] }); }
     finally { setImporting(false); }
   }
@@ -85,15 +98,30 @@ export default function Vendors() {
     }
   }, []);
 
+  // ── Fetch projects (for the filter dropdown) ──
+  // Failure is silently ignored: the project filter is a convenience, and a
+  // tenant with no projects (or an older API) must still see the full list.
+
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await apiFetch("/api/projects");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (Array.isArray(data)) setProjects(data.map((p: ProjectOption) => ({ id: p.id, name: p.name })));
+    } catch {
+      // silently ignore — the vendor list works without the project filter
+    }
+  }, []);
+
   // ── Fetch vendors ────────────────────────────
 
-  const fetchVendors = useCallback(async (clientId: number | null) => {
+  const fetchVendors = useCallback(async (clientId: number | null, projectId: number | null) => {
     try {
-      let url = "/api/vendors";
-      if (clientId) {
-        url += `?client_id=${clientId}`;
-      }
-      const res = await apiFetch(url);
+      const params = new URLSearchParams();
+      if (clientId) params.set("client_id", String(clientId));
+      if (projectId) params.set("project_id", String(projectId));
+      const query = params.toString();
+      const res = await apiFetch(`/api/vendors${query ? `?${query}` : ""}`);
       if (!res.ok) throw new Error("Failed to fetch vendors");
       const data: VendorListItem[] = await res.json();
       setVendors(data);
@@ -106,12 +134,13 @@ export default function Vendors() {
 
   useEffect(() => {
     fetchClients();
-  }, [fetchClients]);
+    fetchProjects();
+  }, [fetchClients, fetchProjects]);
 
   useEffect(() => {
     setLoading(true);
-    fetchVendors(filterClientId);
-  }, [filterClientId, fetchVendors]);
+    fetchVendors(filterClientId, filterProjectId);
+  }, [filterClientId, filterProjectId, fetchVendors]);
 
   // ── Recalculate Compliance ────────────────────
 
@@ -137,7 +166,7 @@ export default function Vendors() {
         `Recalculated: ${summary.approved} approved, ${summary.review} review, ${summary.hold} hold`
       );
       // Refresh the vendor list
-      await fetchVendors(filterClientId);
+      await fetchVendors(filterClientId, filterProjectId);
     } catch (err) {
       setRecalcMessage(
         `Error: ${err instanceof Error ? err.message : "Recalculation failed"}`
@@ -238,7 +267,7 @@ export default function Vendors() {
         throw new Error(errData.error || "Save failed");
       }
 
-      await fetchVendors(filterClientId);
+      await fetchVendors(filterClientId, filterProjectId);
       closeModal();
     } catch (err) {
       setFormError(err instanceof Error ? err.message : "Save failed");
@@ -257,7 +286,7 @@ export default function Vendors() {
         throw new Error(errData.error || "Delete failed");
       }
       setDeletingId(null);
-      await fetchVendors(filterClientId);
+      await fetchVendors(filterClientId, filterProjectId);
     } catch (err) {
       alert(err instanceof Error ? err.message : "Delete failed");
     }
@@ -314,7 +343,7 @@ export default function Vendors() {
         </div>
       )}
 
-      {/* ── Client Filter ── */}
+      {/* ── Client + Project Filter ── */}
       <div className="filter-bar">
         <label htmlFor="vendor-client-filter">Filter by Client:</label>
         <select
@@ -333,12 +362,40 @@ export default function Vendors() {
             </option>
           ))}
         </select>
+
+        {/* Project filter appears only once this tenant has at least one project,
+            so tenants that don't use projects see the page unchanged. */}
+        {projects.length > 0 && (
+          <>
+            <label htmlFor="vendor-project-filter">Project:</label>
+            <select
+              id="vendor-project-filter"
+              className="form-select"
+              value={filterProjectId ?? ""}
+              onChange={(e) => {
+                const val = e.target.value;
+                setFilterProjectId(val ? Number(val) : null);
+              }}
+            >
+              <option value="">All Projects</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </>
+        )}
       </div>
 
       {/* ── Vendors Table ── */}
       {vendors.length === 0 ? (
         <p className="page-subtitle">
-          No vendors yet. Add your first vendor to get started.
+          {filterProjectId
+            ? "No vendors are assigned to this project yet — assign them from the Projects page."
+            : filterClientId
+              ? "No vendors found for this client."
+              : "No vendors yet. Add your first vendor to get started."}
         </p>
       ) : (
         <div className="table-wrapper mobile-cards">

@@ -8,6 +8,7 @@ import { QUEUE_SECRET, TOKEN_SECRET } from "./secrets";
 // accidentally becoming a cross-tenant data leak.
 export const TENANT_DATA_PATHS = [
   "/api/clients", "/api/clients/*", "/api/vendors", "/api/vendors/*",
+  "/api/projects", "/api/projects/*",
   "/api/documents", "/api/documents/*", "/api/needs-review",
   "/api/dashboard/stats", "/api/dashboard/*", "/api/compliance/*", "/api/reports/*", "/api/audit/*",
   "/api/emails/*",

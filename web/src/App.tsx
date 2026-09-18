@@ -14,6 +14,8 @@ import Paywall from "./pages/Paywall";
 const Dashboard = lazy(() => import("./pages/Dashboard"));
 const Clients = lazy(() => import("./pages/Clients"));
 const Vendors = lazy(() => import("./pages/Vendors"));
+const Projects = lazy(() => import("./pages/Projects"));
+const ProjectDetail = lazy(() => import("./pages/ProjectDetail"));
 const VendorDetail = lazy(() => import("./pages/VendorDetail"));
 const Documents = lazy(() => import("./pages/Documents"));
 const DocumentDetail = lazy(() => import("./pages/DocumentDetail"));
@@ -398,6 +400,8 @@ export default function App() {
               <Route index element={<Dashboard />} />
               <Route path="clients" element={<Clients />} />
               <Route path="vendors" element={<Vendors />} />
+              <Route path="projects" element={<Projects />} />
+              <Route path="projects/:id" element={<ProjectDetail />} />
               <Route path="vendor-emails" element={<VendorEmails />} />
               <Route path="vendors/:id" element={<VendorDetail />} />
               <Route path="documents" element={<Documents />} />

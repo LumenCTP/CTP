@@ -5,74 +5,34 @@ import { entityKey } from "../entities";
 import { findPossibleDuplicateVendor } from "../mapping";
 import { logAudit } from "../middleware";
 import { sendEmail, buildVendorRequestEmail, getTenantInboxAddress } from "../email";
-import { calculateVendorCompliance, refreshMissingScores } from "../compliance";
+import { calculateVendorCompliance } from "../compliance";
+import { listVendorsForTenant } from "../lib/vendor-list";
 
 const app = new Hono();
 
 // ── Vendors ────────────────────────────────────────────
 
-// Email types that are addressed TO a vendor (an outreach the vendor received).
-// renewal_reminder: expiring-document nudge (scheduler.ts + manual send in
-// routes/emails.ts). inbox_rejection: "some documents you sent couldn't be
-// read" reply from the compliance inbox. vendor_request: the client-initiated
-// "Request updated docs" email sent from the vendor detail page. Any future
-// vendor-facing type must be added here or it will not show up as outreach.
-const VENDOR_FACING_EMAIL_TYPES = "'renewal_reminder', 'inbox_rejection', 'vendor_request'";
-
-
 // GET /api/vendors — list all vendors with client name, compliance/payment status,
 // and the last vendor-facing email this tenant has on file for them.
 //
-// email_log has NO tenant_id column, so outreach is scoped by joining it to the
-// requesting tenant's own vendor rows (vendors.tenant_id = $tenant_id). The
-// sub-join carries the same guard so a row can never be attributed across
-// tenants even if a vendor_id were reused.
+// Optional filters: ?client_id= (one client) and ?project_id= (the vendors
+// assigned to one project — the "which vendors are on this job?" view).
+//
+// The query itself lives in lib/vendor-list.ts so this list and
+// GET /api/projects/:id/vendors can never drift apart. It filters
+// vendors.tenant_id = $tenant_id on the outer table and scopes the email_log
+// sub-join to this tenant's own vendors (email_log has no tenant_id column), so
+// a row can never be attributed across tenants even if a vendor_id were reused.
 app.get("/api/vendors", (c) => {
   try {
-    const db = getDb();
     const tenantId = c.get("tenant_id") as number;
     const clientId = c.req.query("client_id");
+    const projectId = c.req.query("project_id");
 
-    // Cheap self-healing backfill: fills the derived score columns for vendors
-    // whose compliance row predates the score feature. One no-op SELECT once
-    // every vendor has been scored.
-    refreshMissingScores(tenantId);
-
-    let sql = `
-      SELECT v.id, v.client_id, c.name AS client_name,
-        v.name, v.contact_name, v.contact_email, v.contact_phone,
-        v.insurance_agent_email,
-        COALESCE(cs.status, 'needs_review') AS compliance_status,
-        COALESCE(cs.payment_status, 'hold') AS payment_status,
-        cs.compliance_score, cs.score_label,
-        le.sent_at AS last_emailed_at,
-        le.email_type AS last_email_type,
-        le.status AS last_email_status,
-        v.created_at, v.updated_at
-      FROM vendors v
-      JOIN clients c ON v.client_id = c.id
-      LEFT JOIN compliance_status cs ON cs.vendor_id = v.id
-      LEFT JOIN email_log le ON le.id = (
-        SELECT el.id FROM email_log el
-        WHERE el.vendor_id = v.id
-          AND el.vendor_id IN (SELECT id FROM vendors WHERE tenant_id = $tenant_id)
-          AND el.email_type IN (${VENDOR_FACING_EMAIL_TYPES})
-        ORDER BY el.sent_at DESC, el.id DESC
-        LIMIT 1
-      )
-    `;
-
-    const params: Record<string, unknown> = { $tenant_id: tenantId };
-    sql += " WHERE v.tenant_id = $tenant_id";
-
-    if (clientId) {
-      sql += " AND v.client_id = $client_id";
-      params.$client_id = Number(clientId);
-    }
-
-    sql += " ORDER BY v.name ASC";
-
-    const vendors = db.query(sql).all(params);
+    const vendors = listVendorsForTenant(tenantId, {
+      clientId: clientId ? Number(clientId) : null,
+      projectId: projectId ? Number(projectId) : null,
+    });
     return c.json(vendors);
   } catch (err) {
     return serverError(c, err);
