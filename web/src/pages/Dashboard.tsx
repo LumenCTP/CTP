@@ -22,6 +22,60 @@ interface ClearToPayVendor {
   reason?: string;
 }
 
+/**
+ * One project in the dashboard's "By project" section (GET
+ * /api/dashboard/clear-to-pay → projects). The counts come from the same
+ * readiness query the Projects page uses, so the two can never disagree.
+ */
+interface ClearToPayProjectGroup {
+  project_id: number;
+  project_name: string;
+  vendor_count: number;
+  approved_count: number;
+  review_count: number;
+  hold_count: number;
+  all_clear: boolean;
+  vendors: ClearToPayVendor[];
+}
+
+/** The Details cell for a vendor row (shared by the flat and per-project tables). */
+function vendorDetails(vendor: ClearToPayVendor): string {
+  return vendor.reason ?? (vendor.missing_documents.length
+    ? `Missing: ${vendor.missing_documents.join(", ")}`
+    : vendor.earliest_expiring_date
+      ? `${vendor.earliest_expiring_type ?? "Document"} expires ${new Date(`${vendor.earliest_expiring_date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}`
+      : "All required documents current");
+}
+
+/** One-line readiness read for a project (same wording as the Projects page). */
+function projectReadinessText(project: ClearToPayProjectGroup): string {
+  if (project.vendor_count === 0) return "No vendors assigned yet";
+  if (project.all_clear) return `All ${project.vendor_count} approved for payment`;
+  const parts: string[] = [];
+  if (project.approved_count) parts.push(`${project.approved_count} approved`);
+  if (project.review_count) parts.push(`${project.review_count} review`);
+  if (project.hold_count) parts.push(`${project.hold_count} hold`);
+  return parts.join(" · ");
+}
+
+/** Vendor rows for both readiness tables (identical columns). */
+function readinessRows(vendors: ClearToPayVendor[]) {
+  return vendors.map((vendor) => (
+    <tr key={vendor.vendor_id}>
+      <td data-label="Vendor"><a href={`/app/vendors/${vendor.vendor_id}`}>{vendor.vendor_name}</a></td>
+      <td data-label="Client">{vendor.client_name}</td>
+      <td data-label="Compliance"><span className={`readiness-badge badge-${vendor.compliance_status}`}>{vendor.compliance_status.replace("_", " ")}</span></td>
+      <td data-label="Score"><ComplianceScore score={vendor.compliance_score} label={vendor.score_label} /></td>
+      <td data-label="Details">{vendorDetails(vendor)}</td>
+    </tr>
+  ));
+}
+
+const readinessTableHeader = (
+  <thead><tr><th>Vendor</th><th>Client</th><th>Compliance</th><th>Score</th><th>Details</th></tr></thead>
+);
+
+
 interface MetricCard {
   key: keyof DashboardStats;
   label: string;
@@ -47,6 +101,9 @@ export default function Dashboard() {
   const [error, setError] = useState<string | null>(null);
   const [showGuide, setShowGuide] = useState(false);
   const [clearToPay, setClearToPay] = useState<ClearToPayVendor[]>([]);
+  const [clearToPayProjects, setClearToPayProjects] = useState<ClearToPayProjectGroup[]>([]);
+  const [unassignedVendors, setUnassignedVendors] = useState(0);
+  const [expandedProjects, setExpandedProjects] = useState<Record<number, boolean>>({});
   const [expandedSections, setExpandedSections] = useState<Record<string, boolean>>({ approved: true, review: true, hold: true });
 
   useEffect(() => {
@@ -60,7 +117,16 @@ export default function Dashboard() {
     ])
       .then(([data, documents, readiness]) => {
         setStats(data);
-        setClearToPay((readiness as { vendors?: ClearToPayVendor[] }).vendors ?? []);
+        // `projects` is empty for a tenant that doesn't use projects — the
+        // By-project section is then not rendered at all.
+        const payload = readiness as {
+          vendors?: ClearToPayVendor[];
+          projects?: ClearToPayProjectGroup[];
+          unassigned_vendor_count?: number;
+        };
+        setClearToPay(payload.vendors ?? []);
+        setClearToPayProjects(payload.projects ?? []);
+        setUnassignedVendors(payload.unassigned_vendor_count ?? 0);
         // Compute the doc count from THIS fetch (not the stale state value —
         // setDocumentCount's new value isn't visible in this closure yet).
         const freshDocumentCount = Array.isArray(documents) ? documents.length : (documents as { documents?: unknown[] }).documents?.length ?? 0;
@@ -153,6 +219,53 @@ export default function Dashboard() {
         </div>
       )}
 
+      {/* ── By project: "is everyone on Project X clear to pay?" ──
+          Only rendered when the tenant actually uses projects, so a tenant
+          without projects sees the dashboard exactly as it was. */}
+      {clearToPayProjects.length > 0 && (
+        <section className="clear-to-pay-card" aria-labelledby="by-project-title">
+          <div className="clear-to-pay-heading">
+            <div>
+              <h3 id="by-project-title">By Project</h3>
+              <p>Payment readiness for the vendors on each of your projects.</p>
+            </div>
+            <Link className="setup-guide-link" to="/app/projects">Manage projects</Link>
+          </div>
+          <p style={{ margin: "0 0 12px", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted, #6b7280)" }}>Statuses below are informational flags based on documents on file and your configured criteria. Review source documents and verify coverage with your insurance agent or broker before making payment or coverage decisions.</p>
+          {clearToPayProjects.map((project) => {
+            const open = expandedProjects[project.project_id] === true;
+            const tone = project.all_clear ? "approved" : project.hold_count > 0 ? "hold" : "review";
+            return (
+              <div className={`readiness-section readiness-${tone}`} key={project.project_id}>
+                <button
+                  className="readiness-section-header"
+                  aria-expanded={open}
+                  onClick={() => setExpandedProjects((current) => ({ ...current, [project.project_id]: !open }))}
+                >
+                  <span><span className="readiness-chevron">{open ? "▾" : "▸"}</span>{project.project_name}</span>
+                  <span style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    {project.all_clear && <span className="badge badge-approved">All clear</span>}
+                    <span className="readiness-count">{project.vendor_count}</span>
+                  </span>
+                </button>
+                <div style={{ padding: "10px 16px 0", fontSize: 13, color: "var(--text-muted, #6b7280)" }}>
+                  <Link to={`/app/projects/${project.project_id}`} style={{ color: "var(--blue, #1a56db)", fontWeight: 600 }}>{project.project_name}</Link>
+                  {" — "}{projectReadinessText(project)}
+                </div>
+                {open && (project.vendors.length === 0
+                  ? <div className="readiness-empty">No vendors assigned to this project yet. Open the project to assign them.</div>
+                  : <div className="readiness-table-wrap mobile-cards"><table className="readiness-table">{readinessTableHeader}<tbody>{readinessRows(project.vendors)}</tbody></table></div>)}
+              </div>
+            );
+          })}
+          {unassignedVendors > 0 && (
+            <p style={{ margin: "12px 0 0", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted, #6b7280)" }}>
+              {unassignedVendors} vendor{unassignedVendors === 1 ? " is" : "s are"} not assigned to a project yet. Assign them from a project's page to include them here — this does not change their payment status.
+            </p>
+          )}
+        </section>
+      )}
+
       <section className="clear-to-pay-card" aria-labelledby="clear-to-pay-title">
         <div className="clear-to-pay-heading">
           <div><h3 id="clear-to-pay-title">Clear-to-Pay Summary</h3><p>Vendor payment readiness for the current payment week.</p></div>
@@ -167,10 +280,7 @@ export default function Dashboard() {
             <button className="readiness-section-header" onClick={() => setExpandedSections((current) => ({ ...current, [status]: !current[status] }))} aria-expanded={open}>
               <span><span className="readiness-chevron">{open ? "▾" : "▸"}</span>{labels[status]}</span><span className="readiness-count">{vendors.length}</span>
             </button>
-            {open && (vendors.length === 0 ? <div className="readiness-empty">No vendors in this category.</div> : <div className="readiness-table-wrap mobile-cards"><table className="readiness-table"><thead><tr><th>Vendor</th><th>Client</th><th>Compliance</th><th>Score</th><th>Details</th></tr></thead><tbody>{vendors.map((vendor) => {
-              const details = vendor.reason ?? (vendor.missing_documents.length ? `Missing: ${vendor.missing_documents.join(", ")}` : vendor.earliest_expiring_date ? `${vendor.earliest_expiring_type ?? "Document"} expires ${new Date(`${vendor.earliest_expiring_date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "All required documents current");
-              return <tr key={vendor.vendor_id}><td data-label="Vendor"><a href={`/app/vendors/${vendor.vendor_id}`}>{vendor.vendor_name}</a></td><td data-label="Client">{vendor.client_name}</td><td data-label="Compliance"><span className={`readiness-badge badge-${vendor.compliance_status}`}>{vendor.compliance_status.replace("_", " ")}</span></td><td data-label="Score"><ComplianceScore score={vendor.compliance_score} label={vendor.score_label} /></td><td data-label="Details">{details}</td></tr>;
-            })}</tbody></table></div>)}
+            {open && (vendors.length === 0 ? <div className="readiness-empty">No vendors in this category.</div> : <div className="readiness-table-wrap mobile-cards"><table className="readiness-table">{readinessTableHeader}<tbody>{readinessRows(vendors)}</tbody></table></div>)}
           </div>;
         })}
       </section>

@@ -2,8 +2,87 @@ import { Hono } from "hono";
 import { serverError } from "../errors";
 import { getDb } from "../db";
 import { calculatePaymentWeek, getTenantPaymentWeekStartDay, parseCoverageRequirement, refreshMissingScores } from "../compliance";
+import { listProjectSummaries, projectAssignmentsForVendors } from "../lib/projects";
 
 const app = new Hono();
+
+/** One row of the dashboard's Clear-to-Pay vendor list (see /api/dashboard/clear-to-pay). */
+interface ClearToPayVendor {
+  vendor_id: number;
+  vendor_name: string;
+  client_id: number;
+  client_name: string;
+  compliance_status: string;
+  payment_status: string;
+  compliance_score: number | null;
+  score_label: string | null;
+  missing_documents: string[];
+  earliest_expiring_date: string | null;
+  earliest_expiring_type: string | null;
+  reason: string;
+}
+
+/**
+ * A project's answer to "is everyone on Project X clear to pay?".
+ *
+ * The counts are NOT recomputed here: they come from lib/projects
+ * (PROJECT_SUMMARY_SQL), the exact query behind GET /api/projects, so the
+ * dashboard and the Projects page can never show different numbers for the same
+ * project. `vendors` is the dashboard's own vendor rows filtered to the project,
+ * which is what the client drills into.
+ */
+interface ClearToPayProjectGroup {
+  project_id: number;
+  project_name: string;
+  vendor_count: number;
+  approved_count: number;
+  review_count: number;
+  hold_count: number;
+  all_clear: boolean;
+  vendors: ClearToPayVendor[];
+}
+
+/**
+ * Group the dashboard's vendors by project.
+ *
+ * Returns [] for a tenant with no projects — the dashboard then renders exactly
+ * the flat Clear-to-Pay view it always has. `assignedVendorIds` is returned so
+ * the caller can report how many vendors are on no project at all.
+ */
+function buildProjectGroups(
+  tenantId: number,
+  vendors: ClearToPayVendor[],
+): { groups: ClearToPayProjectGroup[]; assignedVendorIds: Set<number> } {
+  const assignedVendorIds = new Set<number>();
+  const summaries = listProjectSummaries(tenantId);
+  if (summaries.length === 0) return { groups: [], assignedVendorIds };
+
+  const assignments = projectAssignmentsForVendors(tenantId, vendors.map((v) => v.vendor_id));
+  const vendorIdsByProject = new Map<number, Set<number>>();
+  for (const a of assignments) {
+    assignedVendorIds.add(a.vendor_id);
+    const ids = vendorIdsByProject.get(a.project_id);
+    if (ids) ids.add(a.vendor_id);
+    else vendorIdsByProject.set(a.project_id, new Set([a.vendor_id]));
+  }
+
+  const groups = summaries.map((p) => {
+    const ids = vendorIdsByProject.get(p.id) ?? new Set<number>();
+    return {
+      project_id: p.id,
+      project_name: p.name,
+      vendor_count: p.vendor_count,
+      approved_count: p.approved_count,
+      review_count: p.review_count,
+      hold_count: p.hold_count,
+      all_clear: p.all_clear,
+      vendors: vendors.filter((v) => ids.has(v.vendor_id)),
+    };
+  });
+
+  return { groups, assignedVendorIds };
+}
+
 
 // ── Dashboard Stats ───────────────────────────────────
 
@@ -102,7 +181,11 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
     }>;
 
     if (rows.length === 0) {
-      return c.json({ vendors: [] });
+      // No vendor readiness rows — but the tenant may still have projects, and
+      // the Projects page would show them. Return the same keys either way so
+      // the SPA never has to branch on a missing field.
+      const empty = buildProjectGroups(tenantId, []);
+      return c.json({ vendors: [], projects: empty.groups, unassigned_vendor_count: 0 });
     }
 
     // Batch the per-vendor lookups: 3 queries TOTAL (required docs by client,
@@ -190,7 +273,7 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
       }
     }
 
-    const vendors = rows.map((row) => {
+    const vendors: ClearToPayVendor[] = rows.map((row) => {
       const requiredTypes = requiredByClient.get(row.client_id) ?? [];
       const presentTypes = presentByVendor.get(row.vendor_id) ?? new Set<string>();
       const missingDocuments = requiredTypes.filter((type) => !presentTypes.has(type));
@@ -239,7 +322,20 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
       };
     });
 
-    return c.json({ vendors });
+    const { groups: projects, assignedVendorIds } = buildProjectGroups(tenantId, vendors);
+
+    return c.json({
+      vendors,
+      // Per-project grouping — "is everyone on Project X clear to pay?".
+      // Empty for a tenant with no projects, which leaves the flat view above
+      // exactly as it was.
+      projects,
+      // Vendors on this dashboard that belong to no project. A nudge only:
+      // being unassigned says nothing about a vendor's compliance.
+      unassigned_vendor_count: projects.length === 0
+        ? 0
+        : vendors.filter((v) => !assignedVendorIds.has(v.vendor_id)).length,
+    });
   } catch (err) {
     return serverError(c, err);
   }

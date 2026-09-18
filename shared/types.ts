@@ -290,6 +290,25 @@ export interface ClearToPayVendorItem {
   reason?: string;
 }
 
+/**
+ * One project's readiness in GET /api/dashboard/clear-to-pay (`projects`) — the
+ * dashboard's "By project" section, which answers "is everyone on Project X
+ * clear to pay?". The counts come from the same query as GET /api/projects, so
+ * the two views can never disagree. Empty (`[]`) for a tenant with no projects.
+ */
+export interface ClearToPayProjectItem {
+  project_id: number;
+  project_name: string;
+  vendor_count: number;
+  approved_count: number;
+  review_count: number;
+  hold_count: number;
+  /** True only when the project has at least one vendor and all are approved. */
+  all_clear: boolean;
+  /** The dashboard's vendor rows that are assigned to this project. */
+  vendors: ClearToPayVendorItem[];
+}
+
 // ── Compliance Detail ──────────────────────────────────
 
 export interface CompliancePerTypeDetail {

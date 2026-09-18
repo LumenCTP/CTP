@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { serverError } from "../errors";
 import path from "node:path";
 import { getDb } from "../db";
-import { gatherReportData, generatePdfReport, generateExcelReport } from "../reports";
+import { gatherReportData, generatePdfReport, generateExcelReport, generateCsvReport } from "../reports";
 import { storageGetStream, storagePut } from "../storage";
 
 const app = new Hono();
@@ -95,17 +95,9 @@ app.post("/api/reports/clear-to-pay", async (c) => {
 
     if (format === "csv") {
       const csvFilename = `ClearToPay_${clientSlug}_${timestamp}.csv`;
-      const esc = (v: unknown) => `"${String(v ?? "").replace(/"/g, '""')}"`;
-      const rows: string[] = ["Section,Vendor,Contact,Status,Reason,Document,Expiration,Missing Documents"];
-      const addVendor = (section: string, v: any) => rows.push([section, v.vendor_name, v.contact_email || v.contact_name || "", v.payment_status, v.reason || "", "", "", ""].map(esc).join(","));
-      reportData.approved.forEach(v => addVendor("Approved", v));
-      reportData.review.forEach(v => addVendor("Review", v));
-      reportData.hold.forEach(v => addVendor("Hold", v));
-      reportData.expiring_during_week.forEach(e => rows.push(["Expiring", e.vendor_name, "", "", "", e.document_type, e.expiration_date, ""].map(esc).join(",")));
-      reportData.missing_docs.forEach(m => rows.push(["Missing", m.vendor_name, "", "", "", "", "", m.missing_types.join("; ")].map(esc).join(",")));
-      rows.push([]);
-      rows.push([`This report reflects documents on file and client-configured criteria as of ${reportData.report_date}. It is an administrative aid only, not legal or insurance advice. AI-extracted data may contain errors. ClearToPay does not verify coverage adequacy or approve payment; the client is responsible for final payment and coverage decisions.`].map(esc).join(","));
-      const csv = Buffer.from(rows.join("\r\n") + "\r\n", "utf8");
+      // Built by reports.ts so the CSV carries the same by-project grouping as
+      // the PDF and workbook (and so the flat rows can't drift from them).
+      const csv = Buffer.from(generateCsvReport(reportData), "utf8");
       await storagePut(reportKey(csvFilename), csv, "text/csv; charset=utf-8");
       return new Response(csv, { headers: { "Content-Type": "text/csv; charset=utf-8", "Content-Disposition": `attachment; filename="${csvFilename}"`, "X-Report-Summary": summaryHeader } });
     }

@@ -3,6 +3,7 @@ import { serverError } from "../errors";
 import { getDb } from "../db";
 import { logAudit } from "../middleware";
 import { listVendorsForTenant } from "../lib/vendor-list";
+import { PROJECT_SUMMARY_SQL, listProjectSummaries, shapeProjectSummary, type ProjectSummaryRow } from "../lib/projects";
 
 const app = new Hono();
 
@@ -56,68 +57,15 @@ function parseId(raw: unknown): number | null {
   return Number.isInteger(n) && n > 0 ? n : null;
 }
 
-/**
- * Projects with a live readiness summary.
- *
- * vendor_count counts only vendors that still belong to this tenant, and the
- * three payment-status buckets sum to it exactly (a vendor whose link survived a
- * vendor deletion can never inflate the counts), so the client sees a total that
- * always adds up. A project with no vendors reads as 0/0/0.
- */
-const PROJECT_SUMMARY_SQL = `
-  SELECT p.id, p.name, p.created_at, p.updated_at,
-    COUNT(v.id) AS vendor_count,
-    SUM(CASE WHEN v.id IS NOT NULL AND COALESCE(cs.payment_status, 'hold') = 'approved' THEN 1 ELSE 0 END) AS approved_count,
-    SUM(CASE WHEN v.id IS NOT NULL AND COALESCE(cs.payment_status, 'hold') = 'review' THEN 1 ELSE 0 END) AS review_count,
-    SUM(CASE WHEN v.id IS NOT NULL AND COALESCE(cs.payment_status, 'hold') = 'hold' THEN 1 ELSE 0 END) AS hold_count
-  FROM projects p
-  LEFT JOIN vendor_projects vp ON vp.project_id = p.id
-  LEFT JOIN vendors v ON v.id = vp.vendor_id AND v.tenant_id = p.tenant_id
-  LEFT JOIN compliance_status cs ON cs.vendor_id = v.id
-  WHERE p.tenant_id = $tenant_id
-`;
-
-interface ProjectSummaryRow {
-  id: number;
-  name: string;
-  created_at: string;
-  updated_at: string;
-  vendor_count: number;
-  approved_count: number;
-  review_count: number;
-  hold_count: number;
-}
-
-/** Numbers come back as SQLite ints/null — normalize so the API shape is stable. */
-function shapeSummary(row: ProjectSummaryRow): Record<string, unknown> {
-  const vendorCount = Number(row.vendor_count ?? 0);
-  const approved = Number(row.approved_count ?? 0);
-  const review = Number(row.review_count ?? 0);
-  const hold = Number(row.hold_count ?? 0);
-  return {
-    id: row.id,
-    name: row.name,
-    vendor_count: vendorCount,
-    approved_count: approved,
-    review_count: review,
-    hold_count: hold,
-    // "Everyone on this project is approved for payment" — only claimable when
-    // the project actually has vendors and every one of them is approved.
-    all_clear: vendorCount > 0 && approved === vendorCount && review === 0 && hold === 0,
-    created_at: row.created_at,
-    updated_at: row.updated_at,
-  };
-}
+// PROJECT_SUMMARY_SQL + shapeProjectSummary live in lib/projects.ts so the
+// dashboard's "By project" section reads the SAME query as this endpoint (the
+// numbers can never disagree).
 
 // ── GET /api/projects — list projects with vendor count + readiness summary ──
 app.get("/api/projects", (c) => {
   try {
-    const db = getDb();
     const tenantId = c.get("tenant_id") as number;
-    const rows = db.query(
-      `${PROJECT_SUMMARY_SQL} GROUP BY p.id ORDER BY p.name COLLATE NOCASE ASC`
-    ).all({ $tenant_id: tenantId }) as ProjectSummaryRow[];
-    return c.json(rows.map(shapeSummary));
+    return c.json(listProjectSummaries(tenantId));
   } catch (err) {
     return serverError(c, err);
   }
@@ -136,7 +84,7 @@ app.get("/api/projects/:id", (c) => {
     ).get({ $tenant_id: tenantId, $id: id }) as ProjectSummaryRow | undefined;
     if (!row) return c.json({ error: "Project not found" }, 404);
 
-    return c.json(shapeSummary(row));
+    return c.json(shapeProjectSummary(row));
   } catch (err) {
     return serverError(c, err);
   }
@@ -230,7 +178,7 @@ app.put("/api/projects/:id", async (c) => {
 
     const row = db.query(`${PROJECT_SUMMARY_SQL} AND p.id = $id GROUP BY p.id`)
       .get({ $tenant_id: tenantId, $id: id }) as ProjectSummaryRow | undefined;
-    return c.json(row ? shapeSummary(row) : { id, name });
+    return c.json(row ? shapeProjectSummary(row) : { id, name });
   } catch (err) {
     return serverError(c, err);
   }
