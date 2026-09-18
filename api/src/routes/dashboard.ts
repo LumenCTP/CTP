@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { serverError } from "../errors";
 import { getDb } from "../db";
-import { calculatePaymentWeek, getTenantPaymentWeekStartDay, parseCoverageRequirement } from "../compliance";
+import { calculatePaymentWeek, getTenantPaymentWeekStartDay, parseCoverageRequirement, refreshMissingScores } from "../compliance";
 
 const app = new Hono();
 
@@ -82,10 +82,13 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
   try {
     const db = getDb();
     const tenantId = c.get("tenant_id") as number;
+    // Fill the derived score columns for any vendor that predates the score
+    // feature (no-op SELECT once every vendor is scored).
+    refreshMissingScores(tenantId);
     const rows = db.query(`
       SELECT v.id AS vendor_id, v.name AS vendor_name,
              cl.id AS client_id, cl.name AS client_name,
-             cs.status, cs.payment_status
+             cs.status, cs.payment_status, cs.compliance_score, cs.score_label
       FROM compliance_status cs
       JOIN vendors v ON v.id = cs.vendor_id
       JOIN clients cl ON cl.id = cs.client_id
@@ -95,6 +98,7 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
     `).all({ $tenant_id: tenantId }) as Array<{
       vendor_id: number; vendor_name: string; client_id: number; client_name: string;
       status: string; payment_status: string;
+      compliance_score: number | null; score_label: string | null;
     }>;
 
     if (rows.length === 0) {
@@ -224,6 +228,10 @@ app.get("/api/dashboard/clear-to-pay", (c) => {
         client_name: row.client_name,
         compliance_status: missingDocuments.length > 0 ? "missing" : row.status,
         payment_status: row.payment_status,
+        // Derived 0-100 vendor score + band, straight from the engine's rollup
+        // (null only for a vendor that has never been scored).
+        compliance_score: row.compliance_score ?? null,
+        score_label: row.score_label ?? null,
         missing_documents: missingDocuments,
         earliest_expiring_date: expiring?.expiration_date ?? null,
         earliest_expiring_type: expiring?.document_type ?? null,

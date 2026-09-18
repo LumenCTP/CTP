@@ -5,7 +5,7 @@ import { entityKey } from "../entities";
 import { findPossibleDuplicateVendor } from "../mapping";
 import { logAudit } from "../middleware";
 import { sendEmail, buildVendorRequestEmail, getTenantInboxAddress } from "../email";
-import { calculateVendorCompliance } from "../compliance";
+import { calculateVendorCompliance, refreshMissingScores } from "../compliance";
 
 const app = new Hono();
 
@@ -30,7 +30,13 @@ const VENDOR_FACING_EMAIL_TYPES = "'renewal_reminder', 'inbox_rejection', 'vendo
 app.get("/api/vendors", (c) => {
   try {
     const db = getDb();
+    const tenantId = c.get("tenant_id") as number;
     const clientId = c.req.query("client_id");
+
+    // Cheap self-healing backfill: fills the derived score columns for vendors
+    // whose compliance row predates the score feature. One no-op SELECT once
+    // every vendor has been scored.
+    refreshMissingScores(tenantId);
 
     let sql = `
       SELECT v.id, v.client_id, c.name AS client_name,
@@ -38,6 +44,7 @@ app.get("/api/vendors", (c) => {
         v.insurance_agent_email,
         COALESCE(cs.status, 'needs_review') AS compliance_status,
         COALESCE(cs.payment_status, 'hold') AS payment_status,
+        cs.compliance_score, cs.score_label,
         le.sent_at AS last_emailed_at,
         le.email_type AS last_email_type,
         le.status AS last_email_status,
@@ -55,7 +62,7 @@ app.get("/api/vendors", (c) => {
       )
     `;
 
-    const params: Record<string, unknown> = { $tenant_id: c.get("tenant_id") as number };
+    const params: Record<string, unknown> = { $tenant_id: tenantId };
     sql += " WHERE v.tenant_id = $tenant_id";
 
     if (clientId) {
@@ -83,6 +90,7 @@ app.get("/api/vendors/:id", (c) => {
         v.name, v.contact_name, v.contact_email, v.contact_phone,
         COALESCE(cs.status, 'needs_review') AS compliance_status,
         COALESCE(cs.payment_status, 'hold') AS payment_status,
+        cs.compliance_score, cs.score_label,
         v.created_at, v.updated_at
       FROM vendors v
       JOIN clients c ON v.client_id = c.id
@@ -171,11 +179,23 @@ app.post("/api/vendors", async (c) => {
 
     const newId = Number(result.lastInsertRowid);
 
-    // Create initial compliance status
+    // Create initial compliance status. The score columns stay NULL here and are
+    // filled by the engine run below, so a scoring failure can never block
+    // vendor creation.
     db.query(`
       INSERT INTO compliance_status (vendor_id, client_id, status, payment_status)
       VALUES ($vendor_id, $client_id, 'needs_review', 'hold')
     `).run({ $vendor_id: newId, $client_id: client_id });
+
+    // Run the compliance engine once so the new vendor's row carries a real
+    // status / payment status / derived score immediately. A failure here must
+    // not turn a successful creation into an error — the score is backfilled by
+    // refreshMissingScores() on the next vendor-list or dashboard read.
+    let score: { compliance_score: number | null; score_label: string | null } = { compliance_score: null, score_label: null };
+    try {
+      const engine = calculateVendorCompliance(newId, client_id, c.get("tenant_id") as number);
+      score = { compliance_score: engine.compliance_score, score_label: engine.score_label };
+    } catch { /* backfilled on next read */ }
 
     logAudit(db, "vendor", newId, "created", { client_id, name: trimmedName, address: trimmedAddress, contact_name, contact_email, contact_phone, insurance_agent_email });
 
@@ -189,9 +209,9 @@ app.post("/api/vendors", async (c) => {
       FROM vendors v
       JOIN clients c ON v.client_id = c.id
       WHERE v.id = $id AND v.tenant_id = $tenant_id
-    `).get({ $id: newId, $tenant_id: c.get("tenant_id") as number });
+    `).get({ $id: newId, $tenant_id: c.get("tenant_id") as number }) as Record<string, unknown> | undefined;
 
-    return c.json(vendor, 201);
+    return c.json({ ...(vendor ?? {}), ...score }, 201);
   } catch (err) {
     return serverError(c, err);
   }

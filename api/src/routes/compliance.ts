@@ -66,6 +66,8 @@ app.get("/api/vendors/:id/compliance-detail", (c) => {
       client_name: client?.name ?? "Unknown",
       status: result.status,
       payment_status: result.payment_status,
+      compliance_score: result.compliance_score,
+      score_label: result.score_label,
       details: result.details,
     });
   } catch (err) {

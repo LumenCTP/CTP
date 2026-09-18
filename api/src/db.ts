@@ -97,6 +97,11 @@ function runMigrations(db: Database): void {
         CHECK (status IN ('compliant', 'expiring_soon', 'expired', 'needs_review')),
       payment_status TEXT NOT NULL DEFAULT 'hold'
         CHECK (payment_status IN ('approved', 'review', 'hold')),
+      -- Derived per-vendor compliance score (0-100) + band ('Good'|'Fair'|'Poor').
+      -- Written by the compliance engine's upsert on every recalculation; read
+      -- directly by the vendor list / dashboard so the UI never recomputes it.
+      compliance_score INTEGER,
+      score_label TEXT,
       calculated_at TEXT NOT NULL DEFAULT (datetime('now')),
       FOREIGN KEY (vendor_id) REFERENCES vendors(id) ON DELETE CASCADE,
       FOREIGN KEY (client_id) REFERENCES clients(id) ON DELETE CASCADE
@@ -464,6 +469,12 @@ function runMigrations(db: Database): void {
     db.exec("CREATE INDEX IF NOT EXISTS idx_compliance_status_status ON compliance_status(status)");
     console.log("[db] Rebuilt compliance_status table — status CHECK now includes 'below_limit'");
   }
+  // ── Per-vendor compliance score columns (0-100 + band) ────────────────────
+  // Purely derived data: written by the compliance engine's upsert on every
+  // recalculation, never edited by hand. Existing rows start NULL and are
+  // backfilled by refreshMissingScores() on the next vendor-list/dashboard read.
+  ensureColumn(db, "compliance_status", "compliance_score INTEGER", "compliance_score");
+  ensureColumn(db, "compliance_status", "score_label TEXT", "score_label");
 
   // Per-tenant company logo (TopBar branding): object-storage key under
   // logos/tenant-<id>.<ext>; NULL until the tenant uploads one.

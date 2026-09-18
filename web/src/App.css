@@ -296,6 +296,22 @@ body {
 .badge-expired, .badge-missing { color: var(--red); background: var(--red-light); }
 .readiness-empty { padding: 16px; color: var(--gray-500); font-size: .88rem; }
 
+/* ── Per-vendor compliance score badge (0-100 + band) ── */
+.score-badge {
+  display: inline-block;
+  padding: 3px 9px;
+  border-radius: 999px;
+  font-size: .75rem;
+  font-weight: 700;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.score-badge-good { color: var(--green); background: var(--green-light); }
+.score-badge-fair { color: var(--amber); background: var(--amber-light); }
+.score-badge-poor { color: var(--red); background: var(--red-light); }
+.score-badge-none { color: var(--gray-500); background: var(--gray-100); font-weight: 500; }
+.score-badge-lg { font-size: .95rem; padding: 5px 14px; }
+
 /* ── Dashboard ─────────────────────────────────────── */
 
 .dashboard {

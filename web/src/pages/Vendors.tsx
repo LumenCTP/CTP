@@ -1,6 +1,7 @@
 import { Link } from "react-router-dom";
 import { apiFetch } from "../lib/api";
 import { downloadFile } from "../lib/files";
+import ComplianceScore from "../components/ComplianceScore";
 import { useEffect, useState, useCallback } from "react";
 import type {
   VendorListItem,
@@ -348,6 +349,7 @@ export default function Vendors() {
                 <th>Client</th>
                 <th>Contact Email</th>
                 <th>Compliance Status</th>
+                <th>Score</th>
                 <th>Payment Status</th>
                 <th>Actions</th>
               </tr>
@@ -359,6 +361,9 @@ export default function Vendors() {
                   <td data-label="Client">{vendor.client_name}</td>
                   <td data-label="Email">{vendor.contact_email || "—"}</td>
                   <td data-label="Compliance">{statusBadge(vendor.compliance_status)}</td>
+                  <td data-label="Score">
+                    <ComplianceScore score={vendor.compliance_score} label={vendor.score_label} />
+                  </td>
                   <td data-label="Payment">{statusBadge(vendor.payment_status)}</td>
                   <td className="td-actions">
                     <button

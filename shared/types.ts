@@ -2,6 +2,11 @@
 
 export type ComplianceStatus = "compliant" | "expiring_soon" | "expired" | "needs_review" | "below_limit";
 export type PaymentStatus = "approved" | "review" | "hold";
+/**
+ * Color band for the derived per-vendor compliance score (0-100):
+ * >= 80 "Good" (green), 40-79 "Fair" (amber), < 40 "Poor" (red).
+ */
+export type ScoreLabel = "Good" | "Fair" | "Poor";
 export type DocumentType = "COI" | "W-9" | "Workers Comp" | "Commercial Auto" | "General Liability" | "Umbrella" | "Business License" | "Other";
 
 export const ALL_DOCUMENT_TYPES: DocumentType[] = [
@@ -155,6 +160,13 @@ export interface VendorListItem {
   contact_phone: string | null;
   compliance_status: ComplianceStatus;
   payment_status: PaymentStatus;
+  /**
+   * Derived per-vendor compliance score (0-100) averaged over the client's
+   * required document types. `null` until the vendor has been scored.
+   */
+  compliance_score: number | null;
+  /** Score band: >= 80 "Good", 40-79 "Fair", < 40 "Poor". */
+  score_label: ScoreLabel | null;
   created_at: string;
   updated_at: string;
 }
@@ -258,6 +270,26 @@ export interface DashboardStats {
   weekly_reports_configured?: boolean;
 }
 
+/**
+ * One vendor row from GET /api/dashboard/clear-to-pay (the "Clear-to-Pay
+ * Summary" cards): payment readiness plus the vendor's derived compliance score.
+ */
+export interface ClearToPayVendorItem {
+  vendor_id: number;
+  vendor_name: string;
+  client_id: number;
+  client_name: string;
+  compliance_status: string;
+  payment_status: PaymentStatus;
+  /** Derived 0-100 score, or null for a vendor that has never been scored. */
+  compliance_score: number | null;
+  score_label: ScoreLabel | null;
+  missing_documents: string[];
+  earliest_expiring_date: string | null;
+  earliest_expiring_type: string | null;
+  reason?: string;
+}
+
 // ── Compliance Detail ──────────────────────────────────
 
 export interface CompliancePerTypeDetail {
@@ -280,6 +312,9 @@ export interface ComplianceDetailResponse {
   client_name: string;
   status: ComplianceStatus;
   payment_status: PaymentStatus;
+  /** Derived 0-100 compliance score (see api/src/compliance.ts). */
+  compliance_score: number;
+  score_label: ScoreLabel;
   details: CompliancePerTypeDetail[];
 }
 

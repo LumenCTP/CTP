@@ -22,7 +22,14 @@ export interface VendorComplianceResult {
   status: ComplianceStatus;
   payment_status: PaymentStatus;
   details: PerTypeDetail[];
+  /** Derived 0-100 compliance score (see computeComplianceScore). */
+  compliance_score: number;
+  /** Score band: >= 80 "Good", 40-79 "Fair", < 40 "Poor". */
+  score_label: ScoreLabel;
 }
+
+/** Color/label band for the derived per-vendor compliance score. */
+export type ScoreLabel = "Good" | "Fair" | "Poor";
 
 export interface RecalculationSummary {
   vendor_count: number;
@@ -352,6 +359,43 @@ function worstStatus(
   return worst;
 }
 
+// ── Per-Vendor Compliance Score (0-100) ────────────────
+// A single readability number derived from the SAME per-document-type statuses
+// the payment decision uses — it never changes the Hold/Review/Approved logic,
+// it only summarizes it. Points per type are averaged over the client's required
+// document types for that vendor, so a vendor with no configured requirements
+// scores 100.
+
+export const SCORE_POINTS: Record<ComplianceStatus | "missing", number> = {
+  compliant: 100,
+  expiring_soon: 75,
+  needs_review: 50,
+  below_limit: 25,
+  missing: 0,
+  expired: 0,
+};
+
+/** Map a 0-100 score to its band: >= 80 Good, 40-79 Fair, < 40 Poor. */
+export function scoreLabelFor(score: number): ScoreLabel {
+  if (score >= 80) return "Good";
+  if (score >= 40) return "Fair";
+  return "Poor";
+}
+
+/**
+ * Average the per-type points across a vendor's required types and band it.
+ * An empty detail list (client requires no documents) scores 100/"Good".
+ */
+export function computeComplianceScore(details: PerTypeDetail[]): { compliance_score: number; score_label: ScoreLabel } {
+  if (details.length === 0) {
+    return { compliance_score: 100, score_label: "Good" };
+  }
+  let total = 0;
+  for (const d of details) total += SCORE_POINTS[d.status] ?? 0;
+  const score = Math.round(total / details.length);
+  return { compliance_score: score, score_label: scoreLabelFor(score) };
+}
+
 // ── Payment Status Decision ────────────────────────────
 
 function determinePaymentStatus(
@@ -425,7 +469,12 @@ export function calculateVendorCompliance(
   vendorId: number,
   clientId: number,
   tenantId: number,
+  opts: { persist?: boolean } = {},
 ): VendorComplianceResult {
+  // persist:false = read-only scoring pass. The caller (refreshMissingScores)
+  // reads the derived score without a status/payment write, so a read can never
+  // mutate stored compliance state. All normal callers persist (default).
+  const persist = opts.persist !== false;
   const db = getDb();
   const today = getToday();
   // Use the tenant's configured payment-week start day (not a hardcoded Monday).
@@ -443,16 +492,19 @@ export function calculateVendorCompliance(
     .all({ $client_id: clientId, $tenant_id: tenantId }) as Array<{ document_type: string; coverage_requirement: string | null }>;
 
   if (requiredTypes.length === 0) {
-    // No requirements → vendor is compliant and approved
+    // No requirements → vendor is compliant and approved (and scores full marks)
     const status: ComplianceStatus = "compliant";
     const paymentStatus: PaymentStatus = "approved";
-    upsertCompliance(db, vendorId, clientId, status, paymentStatus, tenantId);
+    const { compliance_score, score_label } = computeComplianceScore([]);
+    if (persist) upsertCompliance(db, vendorId, clientId, status, paymentStatus, tenantId, compliance_score, score_label);
     return {
       vendor_id: vendorId,
       client_id: clientId,
       status,
       payment_status: paymentStatus,
       details: [],
+      compliance_score,
+      score_label,
     };
   }
   // Fetch ALL of the vendor's documents (any type) in one query, ordered by
@@ -505,8 +557,11 @@ export function calculateVendorCompliance(
   // Determine payment status
   const paymentStatus = determinePaymentStatus(details, today, paymentWeekStart, paymentWeekEnd);
 
-  // Upsert into compliance_status
-  upsertCompliance(db, vendorId, clientId, overallStatus, paymentStatus, tenantId);
+  // Derived 0-100 score (reporting aid; the payment decision above is unchanged)
+  const { compliance_score, score_label } = computeComplianceScore(details);
+
+  // Upsert into compliance_status (skipped on a read-only scoring pass)
+  if (persist) upsertCompliance(db, vendorId, clientId, overallStatus, paymentStatus, tenantId, compliance_score, score_label);
 
   return {
     vendor_id: vendorId,
@@ -514,6 +569,8 @@ export function calculateVendorCompliance(
     status: overallStatus,
     payment_status: paymentStatus,
     details,
+    compliance_score,
+    score_label,
   };
 }
 
@@ -524,16 +581,20 @@ function upsertCompliance(
   status: ComplianceStatus,
   paymentStatus: PaymentStatus,
   tenantId: number,
+  complianceScore: number,
+  scoreLabel: ScoreLabel,
 ): void {
   db.query(
     `
-    INSERT INTO compliance_status (vendor_id, client_id, status, payment_status, calculated_at)
-    SELECT $vendor_id, $client_id, $status, $payment_status, datetime('now')
+    INSERT INTO compliance_status (vendor_id, client_id, status, payment_status, compliance_score, score_label, calculated_at)
+    SELECT $vendor_id, $client_id, $status, $payment_status, $compliance_score, $score_label, datetime('now')
     WHERE EXISTS (SELECT 1 FROM vendors WHERE id = $vendor_id AND tenant_id = $tenant_id)
     ON CONFLICT(vendor_id) DO UPDATE SET
       client_id = $client_id,
       status = $status,
       payment_status = $payment_status,
+      compliance_score = $compliance_score,
+      score_label = $score_label,
       calculated_at = datetime('now')
   `,
   ).run({
@@ -541,8 +602,45 @@ function upsertCompliance(
     $client_id: clientId,
     $status: status,
     $payment_status: paymentStatus,
+    $compliance_score: complianceScore,
+    $score_label: scoreLabel,
     $tenant_id: tenantId,
   });
+}
+
+/**
+ * Backfill for the derived score columns only.
+ *
+ * Vendors whose compliance_status row has no score yet get one computed from the
+ * engine's current document state. This NEVER touches status / payment_status /
+ * calculated_at — a read-triggered pass must not be able to change a stored
+ * compliance decision (the recalculation endpoints remain the only writers).
+ *
+ * Cheap by design: one indexed join that returns zero rows once every vendor is
+ * scored, so callers (the vendor list / dashboard reads) pay nothing in steady
+ * state. Rows created before the score columns existed, or inserted directly by
+ * the CSV importer, are filled in on first read.
+ */
+export function refreshMissingScores(tenantId: number): number {
+  const db = getDb();
+  const rows = db.query(
+    `SELECT v.id AS vendor_id, v.client_id AS client_id
+     FROM vendors v
+     JOIN compliance_status cs ON cs.vendor_id = v.id
+     WHERE v.tenant_id = $tenant_id
+       AND (cs.compliance_score IS NULL OR cs.score_label IS NULL)`,
+  ).all({ $tenant_id: tenantId }) as Array<{ vendor_id: number; client_id: number }>;
+
+  const update = db.query(
+    "UPDATE compliance_status SET compliance_score = $s, score_label = $l WHERE vendor_id = $v",
+  );
+  let refreshed = 0;
+  for (const r of rows) {
+    const res = calculateVendorCompliance(r.vendor_id, r.client_id, tenantId, { persist: false });
+    update.run({ $s: res.compliance_score, $l: res.score_label, $v: r.vendor_id });
+    refreshed++;
+  }
+  return refreshed;
 }
 
 export function calculateClientCompliance(

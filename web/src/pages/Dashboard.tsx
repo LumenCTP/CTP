@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import type { DashboardStats } from "@clear-to-pay/shared";
 import { openHelp } from "../components/HelpWidget";
 import { useAuth } from "../components/AuthContext";
+import ComplianceScore from "../components/ComplianceScore";
 
 interface ClearToPayVendor {
   vendor_id: number;
@@ -12,6 +13,9 @@ interface ClearToPayVendor {
   client_name: string;
   compliance_status: string;
   payment_status: "approved" | "review" | "hold";
+  /** Derived 0-100 compliance score (null until the vendor has been scored). */
+  compliance_score?: number | null;
+  score_label?: "Good" | "Fair" | "Poor" | null;
   missing_documents: string[];
   earliest_expiring_date: string | null;
   earliest_expiring_type: string | null;
@@ -163,9 +167,9 @@ export default function Dashboard() {
             <button className="readiness-section-header" onClick={() => setExpandedSections((current) => ({ ...current, [status]: !current[status] }))} aria-expanded={open}>
               <span><span className="readiness-chevron">{open ? "▾" : "▸"}</span>{labels[status]}</span><span className="readiness-count">{vendors.length}</span>
             </button>
-            {open && (vendors.length === 0 ? <div className="readiness-empty">No vendors in this category.</div> : <div className="readiness-table-wrap mobile-cards"><table className="readiness-table"><thead><tr><th>Vendor</th><th>Client</th><th>Compliance</th><th>Details</th></tr></thead><tbody>{vendors.map((vendor) => {
+            {open && (vendors.length === 0 ? <div className="readiness-empty">No vendors in this category.</div> : <div className="readiness-table-wrap mobile-cards"><table className="readiness-table"><thead><tr><th>Vendor</th><th>Client</th><th>Compliance</th><th>Score</th><th>Details</th></tr></thead><tbody>{vendors.map((vendor) => {
               const details = vendor.reason ?? (vendor.missing_documents.length ? `Missing: ${vendor.missing_documents.join(", ")}` : vendor.earliest_expiring_date ? `${vendor.earliest_expiring_type ?? "Document"} expires ${new Date(`${vendor.earliest_expiring_date}T00:00:00`).toLocaleDateString(undefined, { month: "short", day: "numeric" })}` : "All required documents current");
-              return <tr key={vendor.vendor_id}><td data-label="Vendor"><a href={`/app/vendors/${vendor.vendor_id}`}>{vendor.vendor_name}</a></td><td data-label="Client">{vendor.client_name}</td><td data-label="Compliance"><span className={`readiness-badge badge-${vendor.compliance_status}`}>{vendor.compliance_status.replace("_", " ")}</span></td><td data-label="Details">{details}</td></tr>;
+              return <tr key={vendor.vendor_id}><td data-label="Vendor"><a href={`/app/vendors/${vendor.vendor_id}`}>{vendor.vendor_name}</a></td><td data-label="Client">{vendor.client_name}</td><td data-label="Compliance"><span className={`readiness-badge badge-${vendor.compliance_status}`}>{vendor.compliance_status.replace("_", " ")}</span></td><td data-label="Score"><ComplianceScore score={vendor.compliance_score} label={vendor.score_label} /></td><td data-label="Details">{details}</td></tr>;
             })}</tbody></table></div>)}
           </div>;
         })}

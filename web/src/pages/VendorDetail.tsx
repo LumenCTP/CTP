@@ -3,6 +3,7 @@ import { Link, useParams } from "react-router-dom";
 import type { ComplianceDetailResponse, DocumentListItem, VendorDetail as VendorDetailType } from "@clear-to-pay/shared";
 import { apiFetch } from "../lib/api";
 import { confidencePercent } from "../lib/confidence";
+import ComplianceScore from "../components/ComplianceScore";
 
 function statusBadge(status: string | undefined) {
   const safe = status || "needs_review";
@@ -121,7 +122,18 @@ export default function VendorDetail() {
         <div className="card-header" style={{ marginTop: 20, padding: 0 }}><h3>Payment Readiness</h3></div>
         <p style={{ margin: "0 0 10px", fontSize: 12, lineHeight: 1.5, color: "var(--text-muted, #6b7280)" }}>Statuses below are informational flags based on documents on file and your configured criteria. Review source documents and verify coverage with your insurance agent or broker before making payment or coverage decisions.</p>
         <p style={{ marginBottom: 10 }}><strong>Compliance:</strong> {statusBadge(vendor.compliance_status)}</p>
-        <p><strong>Payment:</strong> {statusBadge(vendor.payment_status)}</p>
+        <p style={{ marginBottom: 10 }}><strong>Payment:</strong> {statusBadge(vendor.payment_status)}</p>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, margin: "14px 0 4px" }}>
+          <strong>Compliance Score</strong>
+          <ComplianceScore
+            score={compliance?.compliance_score ?? vendor.compliance_score}
+            label={compliance?.score_label ?? vendor.score_label}
+            size="lg"
+          />
+        </div>
+        <p style={{ margin: "0 0 4px", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>
+          Average of this vendor's required document types (compliant 100, expiring soon 75, needs review 50, below the required coverage limit 25, missing or expired 0): 80+ Good, 40–79 Fair, below 40 Poor.
+        </p>
         <button className="btn btn-primary" style={{ marginTop: 20 }} onClick={recalculate} disabled={recalculating}>{recalculating ? "Recalculating…" : "Recalculate Compliance"}</button>
         <button className="btn btn-outline" style={{ marginTop: 20, marginLeft: 10 }} onClick={requestDocs} disabled={requesting}>{requesting ? "Sending…" : "Request updated docs"}</button>
         <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>Emails this vendor a request for the documents they are missing, expired, expiring, or below your required coverage limit. It goes to the vendor's contact email (or insurance agent email on file).</p>
