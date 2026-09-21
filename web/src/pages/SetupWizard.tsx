@@ -4,6 +4,7 @@ import { Navigate, useNavigate } from "react-router-dom";
 import { useAuth } from "../components/AuthContext";
 import { openHelp } from "../components/HelpWidget";
 import Logo from "../components/Logo";
+import { inboxAddress } from "../lib/complianceInbox";
 import { DEFAULT_REQUIRED_DOCUMENTS, defaultCoverageFor, type RequiredDocument } from "@clear-to-pay/shared";
 
 const DAYS = [
@@ -588,22 +589,42 @@ export default function SetupWizard() {
                 ))}
               </ul>
             </div>
-            {user?.inbox_address && (
-              <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px dashed var(--accent, #2563eb)" }}>
-                <p style={{ margin: "0 0 8px", fontWeight: 700 }}>📥 Vendor Document Submission</p>
-                <p style={{ margin: "0 0 8px", fontSize: 14, color: "var(--text-muted, #6b7280)" }}>
-                  Have vendors email COIs and W-9s to:
-                </p>
-                <p style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, wordBreak: "break-all" }}>
-                  {user.inbox_address}
-                </p>
-                <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted, #6b7280)" }}>
-                  Share this address with your subcontractors and their insurance
-                  agents. Documents emailed here are automatically processed and
-                  matched against your compliance requirements.
-                </p>
-              </div>
-            )}
+            {/* ── Vendor list handover. The site promises "You hand us the
+                list. We handle everything after that" — so the wizard must
+                actually offer a way to hand the list over. Email instructions
+                are the supported path (the compliance inbox is already ingested
+                by the API); no upload pipeline is implied here. */}
+            <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px dashed var(--accent, #2563eb)" }}>
+              <p style={{ margin: "0 0 8px", fontWeight: 700 }}>📋 Your Vendor List</p>
+              <p style={{ margin: "0 0 8px", fontSize: 14, color: "var(--text-muted, #6b7280)" }}>
+                Email your vendor list to:
+              </p>
+              <p style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, wordBreak: "break-all" }}>
+                <a href={`mailto:${inboxAddress(user)}?subject=${encodeURIComponent(`Vendor list — ${companyName.trim() || "my company"}`)}`} style={{ color: "var(--accent, #2563eb)" }}>
+                  {inboxAddress(user)}
+                </a>
+              </p>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted, #6b7280)" }}>
+                Send it as an Excel file, CSV, or PDF — or just paste the list in the
+                email. We'll import your vendors and their compliance requirements, and
+                your weekly Clear-to-Pay report will cover them automatically. You can
+                also add vendors yourself any time under Vendors.
+              </p>
+            </div>
+            <div style={{ background: "var(--surface-2, #f8fafc)", borderRadius: 10, padding: 16, marginBottom: 20, border: "1px dashed var(--accent, #2563eb)" }}>
+              <p style={{ margin: "0 0 8px", fontWeight: 700 }}>📥 Vendor Document Submission</p>
+              <p style={{ margin: "0 0 8px", fontSize: 14, color: "var(--text-muted, #6b7280)" }}>
+                Have vendors email COIs and W-9s to:
+              </p>
+              <p style={{ margin: "0 0 8px", fontSize: 15, fontWeight: 600, wordBreak: "break-all" }}>
+                {inboxAddress(user)}
+              </p>
+              <p style={{ margin: 0, fontSize: 13, color: "var(--text-muted, #6b7280)" }}>
+                Share this address with your subcontractors and their insurance
+                agents. Documents emailed here are automatically processed and
+                matched against your compliance requirements.
+              </p>
+            </div>
             {/* ── Report recipients (collected at onboarding so the Monday
                 Clear-to-Pay email and the monthly report are configured before
                 the wizard even completes — no unconfigured-report warning). */}

@@ -4,6 +4,7 @@ import { Link } from "react-router-dom";
 import type { DashboardStats } from "@clear-to-pay/shared";
 import { openHelp } from "../components/HelpWidget";
 import { useAuth } from "../components/AuthContext";
+import { inboxAddress } from "../lib/complianceInbox";
 import ComplianceScore from "../components/ComplianceScore";
 
 interface ClearToPayVendor {
@@ -157,7 +158,7 @@ export default function Dashboard() {
   const hasVendors = (stats?.total_vendors ?? 0) > 0;
   const steps = [
     { label: "Add your first client", href: "/app/clients", done: hasClients, action: "Add Client" },
-    { label: "Add vendors under that client", href: "/app/vendors", done: hasVendors },
+    { label: "Add vendors under that client — or email us your vendor list", href: "/app/vendors", done: hasVendors },
     { label: "Upload compliance documents", href: "/app/documents", done: documentCount > 0 },
   ];
 
@@ -190,7 +191,27 @@ export default function Dashboard() {
         <section className="onboarding-card" aria-labelledby="onboarding-title">
           <h3 id="onboarding-title">👋 Welcome to ClearToPay! Let's get you set up.</h3>
           <p className="onboarding-intro">Complete these three steps to start tracking vendor compliance.</p>
-          {user?.inbox_address ? <p style={{ fontWeight: 700 }}>📥 Email documents to: {user.inbox_address}</p> : null}
+          {/* Finding #4: the marketing site promises "You hand us the list. We
+              handle everything after that" — so the first thing a new client
+              sees must actually say how to hand the list over. Importing from
+              an emailed roster is the supported path; no upload widget is
+              implied here. */}
+          <p style={{ margin: "10px 0 0", fontSize: 14, lineHeight: 1.5 }}>
+            📋 <strong>Already have a vendor list?</strong> Email it — Excel, CSV, PDF, or
+            just the names in the message — to{" "}
+            <a
+              href={`mailto:${inboxAddress(user)}?subject=${encodeURIComponent("Vendor list")}`}
+              style={{ color: "var(--blue, #2563eb)", fontWeight: 600, wordBreak: "break-all" }}
+            >
+              {inboxAddress(user)}
+            </a>{" "}
+            and we'll import your vendors and their compliance requirements for you.
+          </p>
+          <p style={{ margin: "8px 0 0", fontSize: 14, lineHeight: 1.5 }}>
+            📥 <strong>Vendor documents:</strong> share the same address with your
+            subcontractors and their insurance agents so COIs and W-9s come straight into
+            your account.
+          </p>
           <div className="onboarding-steps">
             {steps.map((step, index) => (
               <div className={`onboarding-step${step.done ? " is-complete" : ""}`} key={step.href}>
@@ -203,6 +224,25 @@ export default function Dashboard() {
           {!hasClients && <button type="button" className="onboarding-help-prompt" onClick={() => openHelp("I have questions about getting set up.", "onboarding")}>Questions about getting set up? Ask our Onboarding Officer.</button>}
           <p className="onboarding-chat-hint">💬 Ask the AI assistant why a vendor is on hold or which vendors we've reached out to this week — click the <strong>Ask AI</strong> button.</p>
         </section>
+      )}
+
+      {/* Finding #4 (continued): a tenant can end up with documents on file
+          but zero vendors, and the welcome guide above only renders in the
+          fully-empty state. Keep the vendor-list handover reachable here so a
+          client never sees 0 vendors with no way to hand over the roster. */}
+      {stats && (stats.total_vendors ?? 0) === 0 && !showGuide && (
+        <div style={{ background: "var(--blue-light, #eff6ff)", border: "1px solid var(--blue-100, #dbeafe)", borderLeft: "5px solid var(--blue, #2563eb)", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13.5, lineHeight: 1.5, color: "var(--blue-700, #1d4ed8)" }}>
+          📋 <strong>No vendors yet.</strong> Email your vendor list — Excel, CSV, PDF, or just
+          the names in the message — to{" "}
+          <a
+            href={`mailto:${inboxAddress(user)}?subject=${encodeURIComponent("Vendor list")}`}
+            style={{ color: "var(--blue, #2563eb)", fontWeight: 700, wordBreak: "break-all" }}
+          >
+            {inboxAddress(user)}
+          </a>{" "}
+          and we'll import your vendors and their compliance requirements for you. You can also{" "}
+          <Link to="/app/vendors" style={{ color: "var(--blue, #2563eb)", fontWeight: 700 }}>add vendors yourself</Link>.
+        </div>
       )}
 
       {(!showGuide || hasClients) && (
