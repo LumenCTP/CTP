@@ -326,8 +326,8 @@ export default function Clients() {
   if (loading) {
     return (
       <div className="page-container">
-        <h2 className="page-title">Clients</h2>
-        <div className="loading">Loading clients…</div>
+        <h2 className="page-title">Companies</h2>
+        <div className="loading">Loading companies…</div>
       </div>
     );
   }
@@ -335,7 +335,7 @@ export default function Clients() {
   if (error) {
     return (
       <div className="page-container">
-        <h2 className="page-title">Clients</h2>
+        <h2 className="page-title">Companies</h2>
         <div className="error-message">Error: {error}</div>
       </div>
     );
@@ -344,18 +344,18 @@ export default function Clients() {
   return (
     <div className="page-container">
       <div className="page-header">
-        <h2 className="page-title">Clients</h2>
+        <h2 className="page-title">Companies</h2>
         <div style={{ display: "flex", gap: "8px" }}>
           <button className="btn btn-outline" onClick={() => { setShowImport(true); setImportResult(null); }}>
             Import CSV
           </button>
-          <button className="btn btn-primary" onClick={openAddModal}>+ Add Client</button>
+          <button className="btn btn-primary" onClick={openAddModal}>+ Add Company</button>
         </div>
       </div>
 
       {/* ── Clients Table ── */}
       {clients.length === 0 ? (
-        <p className="page-subtitle">No clients yet. Add your first client to get started.</p>
+        <p className="page-subtitle">No companies yet. Add your first company to get started.</p>
       ) : (
         <div className="table-wrapper mobile-cards">
           <table className="data-table">
@@ -607,7 +607,7 @@ export default function Clients() {
         <div className="modal-overlay" onClick={closeModal}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>{editingClient ? "Edit Client" : "Add Client"}</h3>
+              <h3>{editingClient ? "Edit Company" : "Add Company"}</h3>
               <button className="btn-close" onClick={closeModal}>
                 ✕
               </button>
@@ -623,7 +623,7 @@ export default function Clients() {
                     className="form-input"
                     value={form.name}
                     onChange={(e) => setForm({ ...form, name: e.target.value })}
-                    placeholder="Client name"
+                    placeholder="Company name"
                     autoFocus
                   />
                 </div>
@@ -666,7 +666,7 @@ export default function Clients() {
                   Cancel
                 </button>
                 <button type="submit" className="btn btn-primary" disabled={saving}>
-                  {saving ? "Saving…" : editingClient ? "Save Changes" : "Create Client"}
+                  {saving ? "Saving…" : editingClient ? "Save Changes" : "Create Company"}
                 </button>
               </div>
             </form>
@@ -676,7 +676,7 @@ export default function Clients() {
 
       {showImport && (
         <div className="modal-overlay" onClick={() => setShowImport(false)}><div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
-          <div className="modal-header"><h3>Import Clients CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
+          <div className="modal-header"><h3>Import Companies CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
           <div className="modal-body"><p className="text-muted text-sm">Columns: name, contact_email, contact_phone, address</p>
             <div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
             <button
@@ -703,14 +703,14 @@ export default function Clients() {
           <div className="modal-overlay" onClick={() => setDeletingId(null)}>
             <div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
               <div className="modal-header">
-                <h3>Delete Client</h3>
+                <h3>Delete Company</h3>
               </div>
               <div className="modal-body">
                 <p>
                   Are you sure you want to delete <strong>{client?.name}</strong>?
                 </p>
                 <p className="text-muted text-sm">
-                  This will permanently delete the client and all associated vendors,
+                  This will permanently delete the company and all associated vendors,
                   documents, and compliance records.
                 </p>
               </div>

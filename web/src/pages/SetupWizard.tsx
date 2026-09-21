@@ -214,7 +214,7 @@ export default function SetupWizard() {
       body: JSON.stringify({ name: companyName.trim(), address: companyAddress.trim() }),
     });
     const data = await res.json();
-    if (!res.ok) throw new Error(res.status >= 500 ? "Something went wrong. Please try again." : (data.error || "Failed to create client record"));
+    if (!res.ok) throw new Error(res.status >= 500 ? "Something went wrong. Please try again." : (data.error || "Failed to create company record"));
     setComplianceClientId(data.id);
     return data.id as number;
   }
@@ -224,7 +224,7 @@ export default function SetupWizard() {
     setError("");
     try {
       const clientId = await ensureComplianceClient();
-      if (!clientId) throw new Error("Could not resolve a client record for your company.");
+      if (!clientId) throw new Error("Could not resolve a company record for your account.");
       const docsRes = await apiFetch(`/api/clients/${clientId}/documents-required`, {
         method: "POST",
         headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
@@ -633,7 +633,7 @@ export default function SetupWizard() {
               <p style={{ margin: "0 0 10px", fontSize: 12, color: "var(--text-muted, #6b7280)" }}>
                 Who should receive your Clear-to-Pay reports? Comma-separated emails
                 (e.g. you@company.com, ap@company.com). You can change these anytime
-                in Clients → Email Settings.
+                in Companies → Email Settings.
               </p>
               <div className="form-group">
                 <label htmlFor="weeklyRecipients">Weekly Clear-to-Pay Report Recipients</label>

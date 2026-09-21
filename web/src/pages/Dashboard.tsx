@@ -64,7 +64,7 @@ function readinessRows(vendors: ClearToPayVendor[]) {
   return vendors.map((vendor) => (
     <tr key={vendor.vendor_id}>
       <td data-label="Vendor"><a href={`/app/vendors/${vendor.vendor_id}`}>{vendor.vendor_name}</a></td>
-      <td data-label="Client">{vendor.client_name}</td>
+      <td data-label="Company">{vendor.client_name}</td>
       <td data-label="Compliance"><span className={`readiness-badge badge-${vendor.compliance_status}`}>{vendor.compliance_status.replace("_", " ")}</span></td>
       <td data-label="Score"><ComplianceScore score={vendor.compliance_score} label={vendor.score_label} /></td>
       <td data-label="Details">{vendorDetails(vendor)}</td>
@@ -73,7 +73,7 @@ function readinessRows(vendors: ClearToPayVendor[]) {
 }
 
 const readinessTableHeader = (
-  <thead><tr><th>Vendor</th><th>Client</th><th>Compliance</th><th>Score</th><th>Details</th></tr></thead>
+  <thead><tr><th>Vendor</th><th>Company</th><th>Compliance</th><th>Score</th><th>Details</th></tr></thead>
 );
 
 
@@ -85,7 +85,7 @@ interface MetricCard {
 }
 
 const metricCards: MetricCard[] = [
-  { key: "total_clients", label: "Total Clients", icon: "▦", color: "#1a56db" },
+  { key: "total_clients", label: "Total Companies", icon: "▦", color: "#1a56db" },
   { key: "total_vendors", label: "Total Vendors", icon: "👥", color: "#1a56db" },
   { key: "vendors_approved", label: "Approved for Payment", icon: "✓", color: "#059669" },
   { key: "vendors_review", label: "Review Before Payment", icon: "🔍", color: "#d97706" },
@@ -157,8 +157,8 @@ export default function Dashboard() {
   const hasClients = (stats?.total_clients ?? 0) > 0;
   const hasVendors = (stats?.total_vendors ?? 0) > 0;
   const steps = [
-    { label: "Add your first client", href: "/app/clients", done: hasClients, action: "Add Client" },
-    { label: "Add vendors under that client — or email us your vendor list", href: "/app/vendors", done: hasVendors },
+    { label: "Add your first company", href: "/app/clients", done: hasClients, action: "Add Company" },
+    { label: "Add vendors under that company — or email us your vendor list", href: "/app/vendors", done: hasVendors },
     { label: "Upload compliance documents", href: "/app/documents", done: documentCount > 0 },
   ];
 
@@ -181,9 +181,9 @@ export default function Dashboard() {
       {stats && (stats.total_clients ?? 0) > 0 && stats.weekly_reports_configured === false && (
         <div style={{ background: "#fef3c7", border: "1px solid #fcd34d", borderLeft: "5px solid #d97706", borderRadius: 8, padding: "12px 16px", marginBottom: 20, fontSize: 13.5, color: "#78350f", lineHeight: 1.5 }}>
           <strong>⚠️ Your weekly Clear-to-Pay report isn't configured yet.</strong>{" "}
-          No weekly report will be emailed until at least one client has report recipients set.{" "}
-          <Link to="/app/clients" style={{ color: "#92400e", fontWeight: 700 }}>Go to Clients</Link>{" "}
-          and use the ✉ Email action on a client's row to add recipients.
+          No weekly report will be emailed until at least one company has report recipients set.{" "}
+          <Link to="/app/clients" style={{ color: "#92400e", fontWeight: 700 }}>Go to Companies</Link>{" "}
+          and use the ✉ Email action on a company's row to add recipients.
         </div>
       )}
 

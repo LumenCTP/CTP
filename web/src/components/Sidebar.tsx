@@ -4,7 +4,7 @@ import Logo from "./Logo";
 
 const navItems = [
   { to: "/app", label: "Dashboard", icon: "⌂" },
-  { to: "/app/clients", label: "Clients", icon: "▦" },
+  { to: "/app/clients", label: "Companies", icon: "▦" },
   { to: "/app/vendors", label: "Vendors", icon: "👥" },
   { to: "/app/projects", label: "Projects", icon: "🏗" },
   { to: "/app/vendor-emails", label: "Vendor Emails", icon: "📧" },
