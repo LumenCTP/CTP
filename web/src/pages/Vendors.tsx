@@ -90,7 +90,7 @@ export default function Vendors() {
   const fetchClients = useCallback(async () => {
     try {
       const res = await apiFetch("/api/clients");
-      if (!res.ok) throw new Error("Failed to fetch clients");
+      if (!res.ok) throw new Error("Failed to fetch companies");
       const data: ClientWithRequiredDocs[] = await res.json();
       setClients(data);
     } catch {
@@ -239,7 +239,7 @@ export default function Vendors() {
     }
 
     if (!form.client_id) {
-      setFormError("Please select a client");
+      setFormError("Please select a company");
       return;
     }
 
@@ -345,7 +345,7 @@ export default function Vendors() {
 
       {/* ── Client + Project Filter ── */}
       <div className="filter-bar">
-        <label htmlFor="vendor-client-filter">Filter by Client:</label>
+        <label htmlFor="vendor-client-filter">Filter by Company:</label>
         <select
           id="vendor-client-filter"
           className="form-select"
@@ -355,7 +355,7 @@ export default function Vendors() {
             setFilterClientId(val ? Number(val) : null);
           }}
         >
-          <option value="">All Clients</option>
+          <option value="">All Companies</option>
           {clients.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -394,7 +394,7 @@ export default function Vendors() {
           {filterProjectId
             ? "No vendors are assigned to this project yet — assign them from the Projects page."
             : filterClientId
-              ? "No vendors found for this client."
+              ? "No vendors found for this company."
               : "No vendors yet. Add your first vendor to get started."}
         </p>
       ) : (
@@ -403,7 +403,7 @@ export default function Vendors() {
             <thead>
               <tr>
                 <th>Name</th>
-                <th>Client</th>
+                <th>Company</th>
                 <th>Contact Email</th>
                 <th>Compliance Status</th>
                 <th>Score</th>
@@ -415,7 +415,7 @@ export default function Vendors() {
               {vendors.map((vendor) => (
                 <tr key={vendor.id}>
                   <td className="td-name" data-label="Name"><Link to={`/app/vendors/${vendor.id}`}>{vendor.name}</Link></td>
-                  <td data-label="Client">{vendor.client_name}</td>
+                  <td data-label="Company">{vendor.client_name}</td>
                   <td data-label="Email">{vendor.contact_email || "—"}</td>
                   <td data-label="Compliance">{statusBadge(vendor.compliance_status)}</td>
                   <td data-label="Score">
@@ -463,7 +463,7 @@ export default function Vendors() {
               <div className="modal-body">
                 {formError && <div className="error-message">{formError}</div>}
                 <div className="form-group">
-                  <label htmlFor="vendor-client">Client *</label>
+                  <label htmlFor="vendor-client">Company *</label>
                   <select
                     id="vendor-client"
                     className="form-select"
@@ -474,7 +474,7 @@ export default function Vendors() {
                     }
                   >
                     <option value="" disabled>
-                      Select a client…
+                      Select a company…
                     </option>
                     {clients.map((c) => (
                       <option key={c.id} value={c.id}>
@@ -576,7 +576,7 @@ export default function Vendors() {
             <div className="modal-body">
               <div className="compliance-summary" style={{ marginBottom: "16px" }}>
                 <p>
-                  <strong>Client:</strong> {complianceDetail.client_name}
+                  <strong>Company:</strong> {complianceDetail.client_name}
                 </p>
                 <p>
                   <strong>Overall Status:</strong>{" "}
@@ -590,7 +590,7 @@ export default function Vendors() {
 
               <h4 style={{ marginBottom: "8px" }}>Required Documents</h4>
               {complianceDetail.details.length === 0 ? (
-                <p className="text-muted">No document requirements configured for this client.</p>
+                <p className="text-muted">No document requirements configured for this company.</p>
               ) : (
                 <div className="table-wrapper">
                   <table className="data-table">
@@ -631,7 +631,7 @@ export default function Vendors() {
       {showImport && (
         <div className="modal-overlay" onClick={() => setShowImport(false)}><div className="modal modal-sm" onClick={(e) => e.stopPropagation()}>
           <div className="modal-header"><h3>Import Vendors CSV</h3><button className="btn-close" onClick={() => setShowImport(false)}>✕</button></div>
-          <div className="modal-body"><div className="form-group"><label>Client *</label><select className="form-select" value={importClientId || ""} onChange={(e) => setImportClientId(Number(e.target.value))}><option value="" disabled>Select a client…</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
+          <div className="modal-body"><div className="form-group"><label>Company *</label><select className="form-select" value={importClientId || ""} onChange={(e) => setImportClientId(Number(e.target.value))}><option value="" disabled>Select a company…</option>{clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div>
             <p className="text-muted text-sm">Columns: name, contact_name, contact_email, contact_phone, address</p><div className="form-group"><input type="file" accept=".csv,text/csv" onChange={(e) => setImportFile(e.target.files?.[0] ?? null)} /></div>
             <button
               type="button"

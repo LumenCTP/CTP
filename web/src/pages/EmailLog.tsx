@@ -114,7 +114,7 @@ export default function EmailLog() {
 
       {/* ── Filter ── */}
       <div style={{ marginBottom: "16px", display: "flex", gap: "8px", alignItems: "center" }}>
-        <label htmlFor="client-filter" style={{ fontWeight: 500, fontSize: "14px" }}>Client:</label>
+        <label htmlFor="client-filter" style={{ fontWeight: 500, fontSize: "14px" }}>Company:</label>
         <select
           id="client-filter"
           className="form-input"
@@ -122,7 +122,7 @@ export default function EmailLog() {
           value={clientFilter}
           onChange={(e) => setClientFilter(e.target.value)}
         >
-          <option value="">All Clients</option>
+          <option value="">All Companies</option>
           {clients.map((c) => (
             <option key={c.id} value={c.id}>{c.name}</option>
           ))}
@@ -142,7 +142,7 @@ export default function EmailLog() {
               <tr>
                 <th>Date</th>
                 <th>Type</th>
-                <th>Client</th>
+                <th>Company</th>
                 <th>Vendor</th>
                 <th>Recipient</th>
                 <th>Subject</th>

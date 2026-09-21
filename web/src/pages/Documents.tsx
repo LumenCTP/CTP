@@ -415,7 +415,7 @@ export default function Documents() {
                 value={uploadForm.client_id}
                 onChange={(e) => handleClientChange(e.target.value ? Number(e.target.value) : "")}
               >
-                <option value="">Select client (optional)…</option>
+                <option value="">Select company (optional)…</option>
                 {clients.map((c) => (
                   <option key={c.id} value={c.id}>
                     {c.name}
@@ -474,7 +474,7 @@ export default function Documents() {
 
       {/* ── Filters ── */}
       <div className="filter-bar">
-        <label>Filter by Client:</label>
+        <label>Filter by Company:</label>
         <select
           className="form-select"
           value={filterClientId ?? ""}
@@ -483,7 +483,7 @@ export default function Documents() {
             setFilterClientId(val ? Number(val) : null);
           }}
         >
-          <option value="">All Clients</option>
+          <option value="">All Companies</option>
           {clients.map((c) => (
             <option key={c.id} value={c.id}>
               {c.name}
@@ -514,7 +514,7 @@ export default function Documents() {
                 <th>Type</th>
                 <th>Size</th>
                 <th>Vendor</th>
-                <th>Client</th>
+                <th>Company</th>
                 <th>Doc Type</th>
                 <th>Ingestion</th>
                 <th>Confidence</th>
@@ -636,7 +636,7 @@ function DocumentRow({
         </td>
         <td className="text-muted text-sm" data-label="Size">{formatSize(doc.file_size)}</td>
         <td data-label="Vendor">{doc.vendor_id && doc.vendor_name ? <Link to={`/app/vendors/${doc.vendor_id}`}>{doc.vendor_name}</Link> : "—"}</td>
-        <td data-label="Client">{doc.client_name || "—"}</td>
+        <td data-label="Company">{doc.client_name || "—"}</td>
         <td data-label="Doc Type">
           <span className="doc-tag">{displayDocType}</span>
         </td>

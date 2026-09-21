@@ -298,7 +298,7 @@ export default function NeedsReview() {
               <tr>
                 <th>Filename</th>
                 <th>Vendor</th>
-                <th>Client</th>
+                <th>Company</th>
                 <th>Doc Type</th>
                 <th>Confidence</th>
                 <th>Date</th>
@@ -314,7 +314,7 @@ export default function NeedsReview() {
                     </a>
                   </td>
                   <td data-label="Vendor">{item.extracted_vendor_name ?? item.vendor_name ?? "—"}</td>
-                  <td data-label="Client">{item.client_name ?? "—"}</td>
+                  <td data-label="Company">{item.client_name ?? "—"}</td>
                   <td data-label="Doc Type">
                     <span className="doc-tag">
                       {item.extracted_document_type ?? item.document_type}
@@ -465,11 +465,11 @@ export default function NeedsReview() {
                     </p>
                   </div>
                   <div className="form-group" style={{ margin: 0 }}>
-                    <label>Assign to Client (optional)</label>
+                    <label>Assign to Company (optional)</label>
                     <input
                       type="text"
                       className="form-input"
-                      placeholder="Search clients…"
+                      placeholder="Search companies…"
                       value={clientSearch}
                       onChange={(e) => setClientSearch(e.target.value)}
                       style={{ marginBottom: 6 }}
@@ -481,7 +481,7 @@ export default function NeedsReview() {
                         setForm({ ...form, client_id: e.target.value ? Number(e.target.value) : null })
                       }
                     >
-                      <option value="">— Unassigned (no client) —</option>
+                      <option value="">— Unassigned (no company) —</option>
                       {filteredClients.map((c) => (
                         <option key={c.id} value={String(c.id)}>
                           {c.name}

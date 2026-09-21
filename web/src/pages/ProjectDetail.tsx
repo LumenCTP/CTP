@@ -278,7 +278,7 @@ export default function ProjectDetail() {
               <thead>
                 <tr>
                   <th>Vendor</th>
-                  <th>Client</th>
+                  <th>Company</th>
                   <th>Compliance</th>
                   <th>Payment</th>
                   <th>Score</th>
@@ -289,7 +289,7 @@ export default function ProjectDetail() {
                 {vendors.map((v) => (
                   <tr key={v.id}>
                     <td data-label="Vendor"><Link to={`/app/vendors/${v.id}`}>{v.name}</Link></td>
-                    <td data-label="Client">{v.client_name || "—"}</td>
+                    <td data-label="Company">{v.client_name || "—"}</td>
                     <td data-label="Compliance">{statusBadge(v.compliance_status)}</td>
                     <td data-label="Payment">{paymentBadge(v.payment_status)}</td>
                     <td data-label="Score">

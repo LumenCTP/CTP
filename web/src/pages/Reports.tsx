@@ -84,7 +84,7 @@ export default function Reports() {
   useEffect(() => {
     apiFetch("/api/clients")
       .then((res) => {
-        if (!res.ok) throw new Error("Failed to fetch clients");
+        if (!res.ok) throw new Error("Failed to fetch companies");
         return res.json();
       })
       .then((data: ClientWithRequiredDocs[]) => {
@@ -269,7 +269,7 @@ export default function Reports() {
         const msg =
           (data && (data.error || data.message)) ||
           (res.status === 400
-            ? "No weekly report recipients configured for this client."
+            ? "No weekly report recipients configured for this company."
             : `HTTP ${res.status}`);
         throw new Error(msg);
       }
@@ -321,14 +321,14 @@ export default function Reports() {
       </div>
 
       {clientsLoading ? (
-        <div className="loading">Loading clients…</div>
+        <div className="loading">Loading companies…</div>
       ) : (
         <>
           {/* Configuration Panel */}
           <div className="report-config-panel">
             <div className="config-row">
               <div className="form-group" style={{ flex: 1 }}>
-                <label>Client</label>
+                <label>Company</label>
                 <select
                   className="form-select"
                   value={selectedClientId ?? ""}
@@ -477,7 +477,7 @@ export default function Reports() {
             <div className="page-header" style={{ marginBottom: 16 }}>
               <h3 className="page-title" style={{ fontSize: "1.25rem" }}>Run Weekly Report Now</h3>
               <p style={{ color: "#6b7280", fontSize: "0.875rem", marginTop: 4 }}>
-                Send this week's Clear-to-Pay report to the client's configured recipients immediately —
+                Send this week's Clear-to-Pay report to the company's configured recipients immediately —
                 the same report the automated Monday delivery would send.
               </p>
             </div>
@@ -485,7 +485,7 @@ export default function Reports() {
             <div className="report-config-panel">
               <div className="config-row" style={{ flexWrap: "wrap", gap: 12 }}>
                 <div className="form-group" style={{ flex: "1 1 240px" }}>
-                  <label>Client</label>
+                  <label>Company</label>
                   <div style={{ paddingTop: 8, fontWeight: 500 }}>
                     {clientName || "—"}
                   </div>
@@ -518,7 +518,7 @@ export default function Reports() {
                 >
                   <span>
                     This will email the Clear-to-Pay report to{" "}
-                    <strong>{clientName || "this client"}</strong>'s configured recipients right now.
+                    <strong>{clientName || "this company"}</strong>'s configured recipients right now.
                     Continue?
                   </span>
                   <span style={{ display: "flex", gap: 8, marginLeft: "auto" }}>
@@ -585,7 +585,7 @@ export default function Reports() {
             <div className="page-header" style={{ marginBottom: 16 }}>
               <h3 className="page-title" style={{ fontSize: "1.25rem" }}>Audit Package Generator</h3>
               <p style={{ color: "#6b7280", fontSize: "0.875rem", marginTop: 4 }}>
-                Search for compliance documents by client, vendor, type, and date range, then download
+                Search for compliance documents by company, vendor, type, and date range, then download
                 a ZIP archive with matching documents, vendor summaries, and compliance reports.
               </p>
             </div>
@@ -593,7 +593,7 @@ export default function Reports() {
             <div className="report-config-panel">
               <div className="config-row" style={{ flexWrap: "wrap", gap: 12 }}>
                 <div className="form-group" style={{ flex: "1 1 200px" }}>
-                  <label>Client *</label>
+                  <label>Company *</label>
                   <select
                     className="form-select"
                     value={auditClientId ?? ""}
@@ -604,7 +604,7 @@ export default function Reports() {
                     }}
                     style={{ width: "100%" }}
                   >
-                    <option value="">-- Select Client --</option>
+                    <option value="">-- Select Company --</option>
                     {clients.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
