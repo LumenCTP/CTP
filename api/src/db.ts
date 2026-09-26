@@ -8,7 +8,15 @@ import { entityKey } from "./entities";
 import { DEFAULT_REQUIRED_DOCUMENTS } from "../../shared/types";
 
 const DB_DIR = path.join(import.meta.dir, "..", "data");
-const DB_PATH = path.join(DB_DIR, "cleartopay.db");
+/**
+ * Live DB path. CTP_DB_PATH is an explicit override for offline test harnesses
+ * (e.g. scripts/daily-review-idempotency.ts) that must exercise real
+ * migrations/scheduler code against a throwaway file instead of the production
+ * DB. Unset — as it is in every deployed process — the path is unchanged.
+ */
+const DB_PATH = process.env.CTP_DB_PATH
+  ? path.resolve(process.env.CTP_DB_PATH)
+  : path.join(DB_DIR, "cleartopay.db");
 
 let db: Database | null = null;
 

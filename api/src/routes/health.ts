@@ -77,6 +77,7 @@ app.get("/api/health/full", requireAuth, requireAdmin, async (c) => {
       last_weekly_check_date: getSchedulerState(db, "last_weekly_check_date"),
       last_monthly_check_date: getSchedulerState(db, "last_monthly_check_date"),
       last_daily_renewal_date: getSchedulerState(db, "last_daily_renewal_date"),
+      last_daily_review_date: getSchedulerState(db, "last_daily_review_date"),
       last_backup_date: getSchedulerState(db, "last_backup_date"),
     };
 

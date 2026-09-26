@@ -788,13 +788,56 @@ const DAILY_REVIEW_BODY =
   "Run today's improvement review: fan out read-only UX + systems reviews and compile findings into /home/team/shared/daily-improvements/.";
 
 /**
+ * ET calendar-day key ("YYYY-MM-DD" in America/New_York) for a timestamp —
+ * the per-day key every daily dedup check uses.
+ */
+function etDateKey(now: Date): string {
+  const ny = nyWallClock(now);
+  return `${ny.year}-${String(ny.month).padStart(2, "0")}-${String(ny.day).padStart(2, "0")}`;
+}
+
+/**
+ * True when email_log already holds a `daily_review_trigger` row whose send
+ * timestamp falls on the given ET calendar day (`dateKey`).
+ *
+ * Dedup BACKSTOP for the daily improvement-review prompt, mirroring the weekly
+ * job's weekly_email_log belt-and-braces check: if the scheduler_state marker is
+ * ever lost (DB restored from a backup, state pruned by a cleanup, a hand-edited
+ * row), an already-recorded prompt for the same ET day still suppresses the
+ * re-send. At most one row per day is ever written, so only the few most recent
+ * rows are inspected — this stays a cheap query on every tick (the trigger only
+ * reaches it on the first tick at/after 7:00 AM ET).
+ *
+ * email_log.sent_at is a UTC 'YYYY-MM-DD HH:MM:SS' string (SQLite datetime('now')),
+ * so it is re-read as UTC and converted through the same ET wall-clock helper
+ * the trigger uses, which keeps the comparison DST-correct.
+ */
+export function dailyReviewAlreadyLogged(db: ReturnType<typeof getDb>, dateKey: string): boolean {
+  const rows = db.query(
+    "SELECT sent_at FROM email_log WHERE email_type = 'daily_review_trigger' ORDER BY id DESC LIMIT 5",
+  ).all() as Array<{ sent_at: string }>;
+  return rows.some((r) => {
+    const t = new Date(`${String(r.sent_at).replace(" ", "T")}Z`);
+    if (Number.isNaN(t.getTime())) return false;
+    return etDateKey(t) === dateKey;
+  });
+}
+
+/**
  * Once per calendar day (~7:00 AM America/New_York) emails a short internal
  * prompt to the team's inbox telling the lead to run the daily improvement
- * review. Idempotent via the persisted `last_daily_review_date` marker in
- * scheduler_state (same pattern as last_daily_renewal_date / last_weekly_check_date),
- * using the ET wall-clock date as the per-day key so the marker always reflects
- * the calendar day the review is being prompted for. Written BEFORE the send
- * (monthly-report pattern) so a restart can never re-fire the same day's prompt.
+ * review.
+ *
+ * At-most-once per ET calendar day, durable across API restarts, via two
+ * independent persisted checks — both live in the DB, never in memory, so a
+ * restart always sees the true last-fired value:
+ *   1. PRIMARY — the `last_daily_review_date` marker in scheduler_state (same
+ *      pattern as last_daily_renewal_date / last_weekly_check_date), using the
+ *      ET wall-clock date as the per-day key so the marker always reflects the
+ *      calendar day the review is being prompted for. Written BEFORE the send
+ *      (monthly-report pattern) so a restart mid-send cannot re-fire the prompt.
+ *   2. BACKSTOP — email_log (dailyReviewAlreadyLogged), which re-suppresses the
+ *      send and heals the marker if the marker was lost with the state table.
  */
 export async function checkDailyReviewTrigger(now: Date = new Date()): Promise<void> {
   const db = getDb();
@@ -803,9 +846,24 @@ export async function checkDailyReviewTrigger(now: Date = new Date()): Promise<v
   // tick at or after 7:00 AM ET. The tick runs every 60s, so "~7:00 AM ET".
   const ny = nyWallClock(now);
   if (ny.hour < 7) return;
-  const dateKey = `${ny.year}-${String(ny.month).padStart(2, "0")}-${String(ny.day).padStart(2, "0")}`;
+  const dateKey = etDateKey(now);
   // At-most-once per ET calendar day, even across API restarts.
   if (getSchedulerState(db, "last_daily_review_date") === dateKey) return;
+  // Backstop: today's prompt may already be recorded in email_log while the
+  // marker is gone (restored DB / pruned scheduler_state). Never let the
+  // backstop itself break the trigger — a failure here only logs and falls
+  // through to the primary decision (which already said "not fired today").
+  let alreadyLogged = false;
+  try {
+    alreadyLogged = dailyReviewAlreadyLogged(db, dateKey);
+  } catch (err) {
+    console.error(`[scheduler] Daily improvement-review backstop check failed: ${String(err)}`);
+  }
+  if (alreadyLogged) {
+    console.log(`[scheduler] Daily improvement-review trigger ${dateKey} already recorded in email_log — skipping send and restoring the scheduler_state marker`);
+    setSchedulerState(db, "last_daily_review_date", dateKey);
+    return;
+  }
 
   console.log(`[scheduler] Daily improvement-review trigger ${dateKey} 07:00 AM ET (America/New_York) — sending internal prompt`);
   // Marker written BEFORE the send (monthly-report pattern): the send goes out

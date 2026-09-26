@@ -8,7 +8,8 @@
     "seed": "bun run src/seed.ts",
     "e2e:stripe": "bun run scripts/e2e-stripe.ts",
     "test:graph-mail": "bun run scripts/test-graph-mail.ts",
-    "test:reliability": "bun run scripts/reliability-test.ts"
+    "test:reliability": "bun run scripts/reliability-test.ts",
+    "test:daily-review": "bun run scripts/daily-review-idempotency.ts"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.5",
